@@ -1,5 +1,33 @@
 # Decisions Log
 
+## v10 - 2026-08-14 (D-226 duplicate_strategies superseded)
+
+### D-266. D-226 duplicate_strategies finding superseded by post-purge analysis (Raven)
+
+D-226 recorded that `duplicate_strategies` flagged breakout_20 and
+momentum_continuation as 99.4% identical, concluding "one idea counted twice,
+inflating breadth." That was accurate for the 218,295-entry graveyard it ran
+against.
+
+The post-purge 535,425-entry graveyard (55 strategies) tells a different story.
+C2 pairs with all 54 other strategies at `identical_fraction` 1.0, because C2
+produces zero trades in all 264 rows it is compared on. The next highest members
+of the duplicate list (V2_vwap_magnet_sessionatr, V5_capitulation_equity,
+V4_gap_hold_proxy, V4_trend_reclaim, rising_three_methods, rsi_extreme,
+V3_intraday_momentum_crypto, V5_forced_flow_crypto) are the same eight
+strategies that top the zero-trade list at 99%+.
+
+Conclusion: `duplicate_strategies` and `trade_count_sanity` are one problem.
+8 of 55 strategies do not fire. They contribute no PASS rows, so they are not
+inflating the 155 distinct findings. The real cost is that 8 strategies were
+never tested and are sitting in the graveyard looking like verdicts. Fixing the
+firing should clear most of both assertions at once.
+
+D-226 is left as historical record. This entry supersedes its
+duplicate_strategies characterization only; D-226's other findings
+(trade_count_sanity, quarantine_canary) still stand as written for the
+218,295-entry graveyard.
+
 ## v9 - 2026-08-14 (Aym decisions: purge confirmed, fee model, Alpaca, paper run)
 
 ### D-261. Aym confirms the FUTURES purge (AYM RULING)
