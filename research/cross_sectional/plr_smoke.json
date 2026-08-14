@@ -1,0 +1,156 @@
+{
+ "generated": "2026-08-13 16:50:05",
+ "report": {
+  "harness": "cross_sectional",
+  "cs_gate_version": 1,
+  "strategy": "cs_paid_liquidity_reversal_v3_5",
+  "params": {
+   "anchor": "Nagel RFS 2012",
+   "vix_gate": "pctile>=0.60 of trailing 252d (context series)",
+   "residual": "5d return minus mapped sector ETF 5d return",
+   "news_exclusion": "OMITTED_NO_EARNINGS_CALENDAR",
+   "residual_reversion_exit": "OMITTED_TIME_AND_STOP_ONLY",
+   "selection": {
+    "direction": "bottom",
+    "mode": "quintile",
+    "max_names": 5,
+    "min_scored": 8
+   },
+   "exit": {
+    "type": "time",
+    "bars": 5,
+    "stop_atr_mult": 2.0
+   },
+   "entry_mode": "close",
+   "rebalance_every": 5
+  },
+  "cost_model_version": "2026-08-13",
+  "cost_model_version_uniform": true,
+  "survivorship": "survivors-only universe",
+  "asset_classes": [
+   "EQUITY"
+  ],
+  "universe_size": 10,
+  "grid_steps": 1254,
+  "fires_check": {
+   "grid_steps": 1254,
+   "formations": 46,
+   "steps_skipped_min_scored": 0,
+   "ranker_errors": 0,
+   "names_selected_total": 91,
+   "names_opened": 84,
+   "names_skipped_already_held": 7,
+   "names_skipped_missing_bar": 0,
+   "names_skipped_unfillable": 0
+  },
+  "trades": 84,
+  "wins": 49,
+  "win_rate": 0.5833,
+  "pf": 1.3648,
+  "gross_pf": 1.3705,
+  "total_pnl_usd": 65.1943,
+  "pnl_per_trade": 0.7761,
+  "return_pct_on_capital": 0.7761,
+  "twin_median_pf": 1.47,
+  "twin_percentile": 0.4,
+  "twin_sample_size": 20,
+  "time_split": {
+   "first_half": {
+    "trades": 0,
+    "pnl_per_trade": null
+   },
+   "second_half": {
+    "trades": 84,
+    "pnl_per_trade": 0.7761
+   }
+  },
+  "per_cell": [
+   {
+    "ticker": "AAPL",
+    "asset_class": "EQUITY",
+    "trades": 11,
+    "total_pnl_usd": 31.0964,
+    "pnl_per_trade": 2.8269,
+    "win_rate": 0.6364
+   },
+   {
+    "ticker": "AMZN",
+    "asset_class": "EQUITY",
+    "trades": 8,
+    "total_pnl_usd": 20.3422,
+    "pnl_per_trade": 2.5428,
+    "win_rate": 0.875
+   },
+   {
+    "ticker": "GOOGL",
+    "asset_class": "EQUITY",
+    "trades": 8,
+    "total_pnl_usd": 22.2135,
+    "pnl_per_trade": 2.7767,
+    "win_rate": 0.75
+   },
+   {
+    "ticker": "JPM",
+    "asset_class": "EQUITY",
+    "trades": 4,
+    "total_pnl_usd": 13.0719,
+    "pnl_per_trade": 3.268,
+    "win_rate": 0.5
+   },
+   {
+    "ticker": "META",
+    "asset_class": "EQUITY",
+    "trades": 10,
+    "total_pnl_usd": -20.1857,
+    "pnl_per_trade": -2.0186,
+    "win_rate": 0.3
+   },
+   {
+    "ticker": "MSFT",
+    "asset_class": "EQUITY",
+    "trades": 7,
+    "total_pnl_usd": -4.7739,
+    "pnl_per_trade": -0.682,
+    "win_rate": 0.4286
+   },
+   {
+    "ticker": "NVDA",
+    "asset_class": "EQUITY",
+    "trades": 9,
+    "total_pnl_usd": -24.0203,
+    "pnl_per_trade": -2.6689,
+    "win_rate": 0.4444
+   },
+   {
+    "ticker": "TSLA",
+    "asset_class": "EQUITY",
+    "trades": 13,
+    "total_pnl_usd": 18.2955,
+    "pnl_per_trade": 1.4073,
+    "win_rate": 0.5385
+   },
+   {
+    "ticker": "UNH",
+    "asset_class": "EQUITY",
+    "trades": 10,
+    "total_pnl_usd": -4.2335,
+    "pnl_per_trade": -0.4234,
+    "win_rate": 0.6
+   },
+   {
+    "ticker": "XOM",
+    "asset_class": "EQUITY",
+    "trades": 4,
+    "total_pnl_usd": 13.3881,
+    "pnl_per_trade": 3.347,
+    "win_rate": 1.0
+   }
+  ],
+  "leave_one_out": {
+   "n_assets": 10,
+   "worst_drop_asset": "AAPL",
+   "pnl_per_trade_worst_drop": 0.4671,
+   "carried_by_one_asset": true
+  }
+ }
+}

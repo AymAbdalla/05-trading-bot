@@ -1,0 +1,259 @@
+{
+  "generated": "2026-08-13 22:26:37",
+  "all_pass": true,
+  "results": {
+    "oracle": [
+      {
+        "ticker": "AAPL",
+        "timeframe": "1d",
+        "oracle_trades": 392,
+        "oracle_pf_zero_cost": null,
+        "oracle_win_rate": 100.0,
+        "a1_pass": true,
+        "delayed_pf": 1.179,
+        "a3_pass": true,
+        "net_le_gross": true,
+        "pass": true
+      },
+      {
+        "ticker": "AAPL",
+        "timeframe": "1h",
+        "oracle_trades": 2664,
+        "oracle_pf_zero_cost": null,
+        "oracle_win_rate": 100.0,
+        "a1_pass": true,
+        "delayed_pf": 1.22,
+        "a3_pass": true,
+        "net_le_gross": true,
+        "pass": true
+      },
+      {
+        "ticker": "MSFT",
+        "timeframe": "1d",
+        "oracle_trades": 393,
+        "oracle_pf_zero_cost": null,
+        "oracle_win_rate": 100.0,
+        "a1_pass": true,
+        "delayed_pf": 0.94,
+        "a3_pass": true,
+        "net_le_gross": true,
+        "pass": true
+      },
+      {
+        "ticker": "NVDA",
+        "timeframe": "1d",
+        "oracle_trades": 403,
+        "oracle_pf_zero_cost": null,
+        "oracle_win_rate": 100.0,
+        "a1_pass": true,
+        "delayed_pf": 1.119,
+        "a3_pass": true,
+        "net_le_gross": true,
+        "pass": true
+      },
+      {
+        "ticker": "SPY",
+        "timeframe": "1d",
+        "oracle_trades": 399,
+        "oracle_pf_zero_cost": 6.46,
+        "oracle_win_rate": 99.7,
+        "a1_pass": true,
+        "delayed_pf": 1.26,
+        "a3_pass": true,
+        "net_le_gross": true,
+        "pass": true
+      },
+      {
+        "ticker": "TSLA",
+        "timeframe": "1d",
+        "oracle_trades": 390,
+        "oracle_pf_zero_cost": null,
+        "oracle_win_rate": 100.0,
+        "a1_pass": true,
+        "delayed_pf": 0.733,
+        "a3_pass": true,
+        "net_le_gross": true,
+        "pass": true
+      },
+      {
+        "ticker": "BTC_USD",
+        "timeframe": "1d",
+        "oracle_trades": 204,
+        "oracle_pf_zero_cost": null,
+        "oracle_win_rate": 100.0,
+        "a1_pass": true,
+        "delayed_pf": 0.979,
+        "a3_pass": true,
+        "net_le_gross": true,
+        "pass": true
+      },
+      {
+        "ticker": "JPM",
+        "timeframe": "1d",
+        "oracle_trades": 409,
+        "oracle_pf_zero_cost": null,
+        "oracle_win_rate": 100.0,
+        "a1_pass": true,
+        "delayed_pf": 1.436,
+        "a3_pass": true,
+        "net_le_gross": true,
+        "pass": true
+      }
+    ],
+    "buyhold": [
+      {
+        "ticker": "AAPL",
+        "timeframe": "1d",
+        "trade_pnl_usd": 74.8926,
+        "bh_pnl_usd": 74.8926,
+        "accounting_diff_usd": 0.0,
+        "net_return_pct": 74.89,
+        "buy_hold_pct": 75.34,
+        "ret_diff_pct": 0.45,
+        "allowed_diff_pct": 0.726,
+        "pass": true
+      },
+      {
+        "ticker": "AAPL",
+        "timeframe": "1h",
+        "trade_pnl_usd": 33.1504,
+        "bh_pnl_usd": 33.1504,
+        "accounting_diff_usd": 0.0,
+        "net_return_pct": 33.15,
+        "buy_hold_pct": 33.52,
+        "ret_diff_pct": 0.367,
+        "allowed_diff_pct": 0.601,
+        "pass": true
+      },
+      {
+        "ticker": "MSFT",
+        "timeframe": "1d",
+        "trade_pnl_usd": 56.4267,
+        "bh_pnl_usd": 56.4267,
+        "accounting_diff_usd": 0.0,
+        "net_return_pct": 56.43,
+        "buy_hold_pct": 56.84,
+        "ret_diff_pct": 0.413,
+        "allowed_diff_pct": 0.671,
+        "pass": true
+      },
+      {
+        "ticker": "NVDA",
+        "timeframe": "1d",
+        "trade_pnl_usd": 712.6397,
+        "bh_pnl_usd": 712.6397,
+        "accounting_diff_usd": 0.0,
+        "net_return_pct": 712.64,
+        "buy_hold_pct": 714.37,
+        "ret_diff_pct": 1.728,
+        "allowed_diff_pct": 2.643,
+        "pass": true
+      },
+      {
+        "ticker": "SPY",
+        "timeframe": "1d",
+        "trade_pnl_usd": 64.8835,
+        "bh_pnl_usd": 64.8835,
+        "accounting_diff_usd": 0.0,
+        "net_return_pct": 64.88,
+        "buy_hold_pct": 65.31,
+        "ret_diff_pct": 0.43,
+        "allowed_diff_pct": 0.696,
+        "pass": true
+      },
+      {
+        "ticker": "TSLA",
+        "timeframe": "1d",
+        "trade_pnl_usd": -9.9843,
+        "bh_pnl_usd": -9.9843,
+        "accounting_diff_usd": 0.0,
+        "net_return_pct": -9.98,
+        "buy_hold_pct": -9.7,
+        "ret_diff_pct": 0.28,
+        "allowed_diff_pct": 0.471,
+        "pass": true
+      },
+      {
+        "ticker": "BTC_USD",
+        "timeframe": "1d",
+        "trade_pnl_usd": -33.0317,
+        "bh_pnl_usd": -33.0317,
+        "accounting_diff_usd": 0.0,
+        "net_return_pct": -33.03,
+        "buy_hold_pct": -32.8,
+        "ret_diff_pct": 0.234,
+        "allowed_diff_pct": 0.402,
+        "pass": true
+      },
+      {
+        "ticker": "JPM",
+        "timeframe": "1d",
+        "trade_pnl_usd": 120.1049,
+        "bh_pnl_usd": 120.1049,
+        "accounting_diff_usd": 0.0,
+        "net_return_pct": 120.1,
+        "buy_hold_pct": 120.65,
+        "ret_diff_pct": 0.541,
+        "allowed_diff_pct": 0.862,
+        "pass": true
+      }
+    ],
+    "coinflip": [
+      {
+        "ticker": "AAPL",
+        "timeframe": "1d",
+        "seeds_checked": 10,
+        "avg_pf_with_fees": 0.95,
+        "violations": [],
+        "pass": true
+      },
+      {
+        "ticker": "AAPL",
+        "timeframe": "1h",
+        "seeds_checked": 10,
+        "avg_pf_with_fees": 1.017,
+        "violations": [],
+        "pass": true
+      },
+      {
+        "ticker": "MSFT",
+        "timeframe": "1d",
+        "seeds_checked": 10,
+        "avg_pf_with_fees": 0.892,
+        "violations": [],
+        "pass": true
+      },
+      {
+        "ticker": "NVDA",
+        "timeframe": "1d",
+        "seeds_checked": 10,
+        "avg_pf_with_fees": 0.999,
+        "violations": [],
+        "pass": true
+      },
+      {
+        "ticker": "SPY",
+        "timeframe": "1d",
+        "seeds_checked": 10,
+        "avg_pf_with_fees": 0.978,
+        "violations": [],
+        "pass": true
+      }
+    ],
+    "assertions": [
+      {
+        "check": "cross_harness",
+        "pass": true
+      },
+      {
+        "total_tickers": 191,
+        "known_delisted_present": [
+          "MULN",
+          "SNDL"
+        ],
+        "pass": true,
+        "note": "Universe should include delisted names for unbiased backtesting. Currently only quarantine tickers are present. Full survivorship-complete data requires a paid source (CRSP/Norgate/Sharadar)."
+      }
+    ]
+  }
+}

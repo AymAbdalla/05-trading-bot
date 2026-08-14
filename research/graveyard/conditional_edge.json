@@ -1,0 +1,48 @@
+{
+ "cost_floor": -0.3,
+ "splits": 20,
+ "min_trades_select": 100,
+ "min_trades_verify": 50,
+ "summary": {
+  "class": {
+   "selected_total": 953,
+   "judged_total": 909,
+   "survived_total": 488,
+   "survival_rate": 0.5368536853685368,
+   "survival_rate_stdev": 0.05575961530358762,
+   "mean_verify_pnl_per_trade": -0.31062827194679893
+  },
+  "sector": {
+   "selected_total": 4561,
+   "judged_total": 4185,
+   "survived_total": 2434,
+   "survival_rate": 0.5816009557945042,
+   "survival_rate_stdev": 0.03469189623244256,
+   "mean_verify_pnl_per_trade": -0.2773558362378656
+  },
+  "timeframe": {
+   "selected_total": 864,
+   "judged_total": 863,
+   "survived_total": 462,
+   "survival_rate": 0.5353418308227115,
+   "survival_rate_stdev": 0.08182807712355437,
+   "mean_verify_pnl_per_trade": -0.32329689947731755
+  },
+  "class_x_timeframe": {
+   "selected_total": 2584,
+   "judged_total": 2471,
+   "survived_total": 1450,
+   "survival_rate": 0.5868069607446378,
+   "survival_rate_stdev": 0.05299857136767239,
+   "mean_verify_pnl_per_trade": -0.3030536283147974
+  },
+  "class_x_exit": {
+   "selected_total": 5915,
+   "judged_total": 5640,
+   "survived_total": 3065,
+   "survival_rate": 0.5434397163120568,
+   "survival_rate_stdev": 0.05488101946698948,
+   "mean_verify_pnl_per_trade": -0.2965750666969929
+  }
+ }
+}

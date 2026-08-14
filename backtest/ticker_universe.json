@@ -1,0 +1,216 @@
+{
+  "Technology Mega Cap": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "GOOGL",
+    "META"
+  ],
+  "Technology Mid/Large": [
+    "AVGO",
+    "ORCL",
+    "CRM",
+    "AMD",
+    "INTC",
+    "ADBE",
+    "CSCO",
+    "QCOM"
+  ],
+  "Semiconductors": [
+    "NVDA",
+    "AMD",
+    "INTC",
+    "TSM",
+    "MU",
+    "AMAT",
+    "LRCX"
+  ],
+  "Internet/E-commerce": [
+    "AMZN",
+    "EBAY",
+    "SHOP",
+    "BABA",
+    "SE"
+  ],
+  "Financial Services": [
+    "JPM",
+    "BAC",
+    "WFC",
+    "GS",
+    "MS",
+    "V",
+    "MA",
+    "C"
+  ],
+  "Energy": [
+    "XOM",
+    "CVX",
+    "COP",
+    "SLB",
+    "EOG",
+    "PSX"
+  ],
+  "Healthcare": [
+    "JNJ",
+    "UNH",
+    "PFE",
+    "ABBV",
+    "LLY",
+    "MRK",
+    "BMY"
+  ],
+  "Consumer Discretionary": [
+    "TSLA",
+    "HD",
+    "WMT",
+    "COST",
+    "NKE",
+    "LOW",
+    "SBUX"
+  ],
+  "Consumer Staples": [
+    "PG",
+    "KO",
+    "PEP",
+    "COST",
+    "MO",
+    "PM",
+    "MDLZ"
+  ],
+  "Industrials": [
+    "BA",
+    "CAT",
+    "GE",
+    "MMM",
+    "HON",
+    "UPS",
+    "RTX",
+    "LMT"
+  ],
+  "Telecom/Media": [
+    "DIS",
+    "NFLX",
+    "T",
+    "VZ",
+    "CMCSA",
+    "TMO"
+  ],
+  "Utilities": [
+    "NEE",
+    "DUK",
+    "SO",
+    "D",
+    "AEP"
+  ],
+  "Real Estate": [
+    "AMT",
+    "PLD",
+    "EQIX",
+    "SPG"
+  ],
+  "Materials": [
+    "LIN",
+    "APD",
+    "SHW",
+    "FCX",
+    "NEM"
+  ],
+  "Biotech (high vol)": [
+    "MRNA",
+    "BNTX",
+    "GILD",
+    "AMGN",
+    "REGN"
+  ],
+  "EV/Automotive": [
+    "TSLA",
+    "F",
+    "GM",
+    "RIVN",
+    "LCID",
+    "NIO",
+    "XPEV"
+  ],
+  "Crypto-related": [
+    "COIN",
+    "MSTR",
+    "RIOT",
+    "MARA",
+    "CLSK"
+  ],
+  "Hot/Speculative (high vol)": [
+    "SOFI",
+    "PLTR",
+    "RBLX",
+    "DUOL",
+    "SNDL",
+    "MULN",
+    "NVAX",
+    "BBBYQ"
+  ],
+  "Index ETFs": [
+    "SPY",
+    "QQQ",
+    "IWM",
+    "DIA",
+    "VOO",
+    "VTI"
+  ],
+  "Leveraged ETFs": [
+    "TQQQ",
+    "SQQQ",
+    "SOXL",
+    "SOXS",
+    "TNA",
+    "TZA",
+    "UPRO",
+    "SPXU",
+    "LABU",
+    "LABD"
+  ],
+  "Sector ETFs": [
+    "XLK",
+    "XLF",
+    "XLE",
+    "XLV",
+    "XLY",
+    "XLP",
+    "XLB",
+    "XLRE",
+    "XLU",
+    "XLI"
+  ],
+  "Commodity ETFs": [
+    "GLD",
+    "SLV",
+    "USO",
+    "UNG",
+    "CORN",
+    "WEAT"
+  ],
+  "Bond ETFs": [
+    "TLT",
+    "IEF",
+    "HYG",
+    "LQD"
+  ],
+  "Volatility": [
+    "UVXY",
+    "VXX"
+  ],
+  "Crypto (Yahoo)": [
+    "BTC-USD",
+    "ETH-USD",
+    "SOL-USD"
+  ],
+  "Futures": [
+    "ES=F",
+    "NQ=F",
+    "CL=F",
+    "GC=F",
+    "YM=F",
+    "RTY=F",
+    "ZB=F",
+    "NG=F"
+  ]
+}

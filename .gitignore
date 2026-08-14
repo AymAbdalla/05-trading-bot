@@ -1,0 +1,29 @@
+# Secrets
+.env
+
+# Database
+db/trading.db
+db/trading.db-wal
+db/trading.db-shm
+
+# Backups
+backups/
+
+# Logs
+logs/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# macOS
+.DS_Store
+
+# Large graveyard JSON files (>100MB, GitHub limit)
+research/graveyard/v0_graveyard_full.json
+research/graveyard/archive/v0_graveyard_full*.json
+
+# Pytest cache
+.pytest_cache/

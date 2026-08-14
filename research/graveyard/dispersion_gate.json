@@ -1,0 +1,3487 @@
+{
+ "experiment": "dispersion_gate (Lab v5 P3)",
+ "source_doc": "references/strategy-lab-v5.md SS2 (Toll Law), SS3 P3",
+ "cost_model_version": "2026-08-13",
+ "gate_version": 2,
+ "kappa": 0.1,
+ "per_class_c_refinement": "v5 doc assumed flat c=14bps -> 1.4%% gate; this run derives c PER ASSET CLASS from backtest/cost_model.py, so the gate is sharper: see per_class_c_bps.",
+ "per_class_c_bps": {
+  "CRYPTO": {
+   "series": 9,
+   "c_bps_min": 12.0,
+   "c_bps_max": 14.0,
+   "c_bps_mean": 13.556,
+   "atr_hold_threshold_pct_min": 1.2,
+   "atr_hold_threshold_pct_max": 1.4
+  },
+  "EQUITY": {
+   "series": 254,
+   "c_bps_min": 4.206,
+   "c_bps_max": 4.395,
+   "c_bps_mean": 4.207,
+   "atr_hold_threshold_pct_min": 0.4206,
+   "atr_hold_threshold_pct_max": 0.4395
+  },
+  "ETF": {
+   "series": 75,
+   "c_bps_min": 4.206,
+   "c_bps_max": 4.206,
+   "c_bps_mean": 4.206,
+   "atr_hold_threshold_pct_min": 0.4206,
+   "atr_hold_threshold_pct_max": 0.4206
+  },
+  "FUTURES": {
+   "series": 15,
+   "c_bps_min": Infinity,
+   "c_bps_max": Infinity,
+   "c_bps_mean": Infinity,
+   "atr_hold_threshold_pct_min": Infinity,
+   "atr_hold_threshold_pct_max": Infinity
+  }
+ },
+ "strategy_mapping": {
+  "grid_2.0atr": "GridStrategy(2.0)  [exact name match]",
+  "stoch_rsi_oversold": "StochRsiOversold()  [exact name match]",
+  "dca_7": "DCAStrategy(7)  [P3 says \"dca\"; dca_7 chosen over dca_14: higher frequency. CONTROL, is_benchmark]"
+ },
+ "control_strategies": [
+  "dca_7"
+ ],
+ "exit_holds": {
+  "time_4c": 4,
+  "time_8c": 8,
+  "time_16c": 16
+ },
+ "confirmation_stack": "OFF for both arms (gate is the only variable)",
+ "pooling": "cross-class dollar pooling is SPOT-only (CRYPTO/EQUITY/ETF); FUTURES PnL is contract dollars on ~$34k exposure vs $100 spot clips (ROADMAP P0.4) and appears only in fires_check and results.by_class",
+ "holdout": "calendar-midpoint split per series; judgment on H2",
+ "kill_conditions": [
+  "KILL 1 (P3 verbatim): monotone-flat edge across vol deciles pooled => dispersion conditioning is dead and SS4's 116 trades were the hammer's $1.48 in a costume.",
+  "KILL 2 (SS2 falsifiability): gated per-trade net on the H2 holdout not better than ungated for the non-control entries => the derived gate selects nothing; Toll-Law gate at kappa=0.10 dead on this universe."
+ ],
+ "pre_registered_predictions": [
+  "Edge vs entry-time vol-decile pooled: flat-negative through the middle deciles, positive only in the top decile-and-a-half.",
+  "Gated entries clear the toll where ungated do not; effect survives the time-based holdout (judged on H2)."
+ ],
+ "universe": {
+  "series": 353,
+  "timeframes": [
+   "1d",
+   "1h"
+  ],
+  "smoke": false,
+  "min_candles": 400
+ },
+ "per_series_thresholds": [
+  {
+   "ticker": "BTC/USDT",
+   "timeframe": "1h",
+   "asset_class": "CRYPTO",
+   "c_bps": 12.0,
+   "atr_hold_threshold_pct": 1.2
+  },
+  {
+   "ticker": "ETH/USDT",
+   "timeframe": "1h",
+   "asset_class": "CRYPTO",
+   "c_bps": 12.0,
+   "atr_hold_threshold_pct": 1.2
+  },
+  {
+   "ticker": "SOL/USDT",
+   "timeframe": "1h",
+   "asset_class": "CRYPTO",
+   "c_bps": 14.0,
+   "atr_hold_threshold_pct": 1.4
+  },
+  {
+   "ticker": "AAPL",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "AAPL",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "ABBV",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "ABBV",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "ABNB",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "ABNB",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "ADBE",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "ADBE",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "AEP",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "AEP",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "AFRM",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "AFRM",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "AMAT",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "AMAT",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "AMD",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "AMD",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "AMGN",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "AMGN",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "AMT",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "AMT",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "AMZN",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "AMZN",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "APD",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "APD",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "ARM",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "AVGO",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "AVGO",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "BA",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "BA",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "BABA",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "BABA",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "BAC",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "BAC",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "BMY",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "BMY",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "BNTX",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "BNTX",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "BTC_USD",
+   "timeframe": "1d",
+   "asset_class": "CRYPTO",
+   "c_bps": 14.0,
+   "atr_hold_threshold_pct": 1.4
+  },
+  {
+   "ticker": "BTC_USD",
+   "timeframe": "1h",
+   "asset_class": "CRYPTO",
+   "c_bps": 14.0,
+   "atr_hold_threshold_pct": 1.4
+  },
+  {
+   "ticker": "C",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "C",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "CAT",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "CAT",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "CLSK",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "CLSK",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "CL_F",
+   "timeframe": "1d",
+   "asset_class": "FUTURES",
+   "c_bps": Infinity,
+   "atr_hold_threshold_pct": Infinity
+  },
+  {
+   "ticker": "CL_F",
+   "timeframe": "1h",
+   "asset_class": "FUTURES",
+   "c_bps": Infinity,
+   "atr_hold_threshold_pct": Infinity
+  },
+  {
+   "ticker": "CMCSA",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "CMCSA",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "COIN",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "COIN",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "COP",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "COP",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "CORN",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "CORN",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "COST",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "COST",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "CRM",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "CRM",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "CSCO",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "CSCO",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "CVNA",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "CVNA",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "CVX",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "CVX",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "D",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "D",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "DASH",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "DASH",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "DIA",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "DIA",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "DIS",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "DIS",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "DUK",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "DUK",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "DUOL",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "DUOL",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "EBAY",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "EBAY",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "EOG",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "EOG",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "EQIX",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "EQIX",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "ES_F",
+   "timeframe": "1d",
+   "asset_class": "FUTURES",
+   "c_bps": Infinity,
+   "atr_hold_threshold_pct": Infinity
+  },
+  {
+   "ticker": "ES_F",
+   "timeframe": "1h",
+   "asset_class": "FUTURES",
+   "c_bps": Infinity,
+   "atr_hold_threshold_pct": Infinity
+  },
+  {
+   "ticker": "ETH_USD",
+   "timeframe": "1d",
+   "asset_class": "CRYPTO",
+   "c_bps": 14.0,
+   "atr_hold_threshold_pct": 1.4
+  },
+  {
+   "ticker": "ETH_USD",
+   "timeframe": "1h",
+   "asset_class": "CRYPTO",
+   "c_bps": 14.0,
+   "atr_hold_threshold_pct": 1.4
+  },
+  {
+   "ticker": "F",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "F",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "FCX",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "FCX",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "GC_F",
+   "timeframe": "1d",
+   "asset_class": "FUTURES",
+   "c_bps": Infinity,
+   "atr_hold_threshold_pct": Infinity
+  },
+  {
+   "ticker": "GC_F",
+   "timeframe": "1h",
+   "asset_class": "FUTURES",
+   "c_bps": Infinity,
+   "atr_hold_threshold_pct": Infinity
+  },
+  {
+   "ticker": "GDX",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "GDX",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "GE",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "GE",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "GILD",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "GILD",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "GLD",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "GLD",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "GM",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "GM",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "GOOGL",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "GOOGL",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "GS",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "GS",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "HD",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "HD",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "HON",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "HON",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "HOOD",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "HOOD",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "HYG",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "HYG",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "IBIT",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "IEF",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "IEF",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "INTC",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "INTC",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "IWM",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "IWM",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "JD",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "JD",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "JETS",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "JETS",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "JNJ",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "JNJ",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "JPM",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "JPM",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "KO",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "KO",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "KRE",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "KRE",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "KWEB",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "KWEB",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "LABD",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "LABD",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "LABU",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "LABU",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "LCID",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "LCID",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "LIN",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "LIN",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "LLY",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "LLY",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "LMT",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "LMT",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "LOW",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "LOW",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "LQD",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "LQD",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "LRCX",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "LRCX",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "MA",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "MA",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "MARA",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "MARA",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "MDLZ",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "MDLZ",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "META",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "META",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "MMM",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "MMM",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "MO",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "MO",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "MRK",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "MRK",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "MRNA",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "MRNA",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "MRVL",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "MRVL",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "MS",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "MS",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "MSFT",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "MSFT",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "MSTR",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "MSTR",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "MU",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "MU",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "MULN",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "NEE",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "NEE",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "NEM",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "NEM",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "NFLX",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "NFLX",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "NG_F",
+   "timeframe": "1h",
+   "asset_class": "FUTURES",
+   "c_bps": Infinity,
+   "atr_hold_threshold_pct": Infinity
+  },
+  {
+   "ticker": "NIO",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "NIO",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "NKE",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "NKE",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "NQ_F",
+   "timeframe": "1d",
+   "asset_class": "FUTURES",
+   "c_bps": Infinity,
+   "atr_hold_threshold_pct": Infinity
+  },
+  {
+   "ticker": "NQ_F",
+   "timeframe": "1h",
+   "asset_class": "FUTURES",
+   "c_bps": Infinity,
+   "atr_hold_threshold_pct": Infinity
+  },
+  {
+   "ticker": "NVAX",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "NVAX",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "NVDA",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "NVDA",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "ORCL",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "ORCL",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "PDD",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "PDD",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "PEP",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "PEP",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "PFE",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "PFE",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "PG",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "PG",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "PLD",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "PLD",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "PLTR",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "PLTR",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "PM",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "PM",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "PSX",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "PSX",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "PYPL",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "PYPL",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "QCOM",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "QCOM",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "QQQ",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "QQQ",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "RBLX",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "RBLX",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "RDDT",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "REGN",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "REGN",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "RIOT",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "RIOT",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "RIVN",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "RIVN",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "RTX",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "RTX",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "RTY_F",
+   "timeframe": "1d",
+   "asset_class": "FUTURES",
+   "c_bps": Infinity,
+   "atr_hold_threshold_pct": Infinity
+  },
+  {
+   "ticker": "RTY_F",
+   "timeframe": "1h",
+   "asset_class": "FUTURES",
+   "c_bps": Infinity,
+   "atr_hold_threshold_pct": Infinity
+  },
+  {
+   "ticker": "SBUX",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SBUX",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SE",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SE",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SHOP",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SHOP",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SHW",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SHW",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SLB",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SLB",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SLV",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SLV",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SMCI",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SMCI",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SMH",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SMH",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SNDL",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.222,
+   "atr_hold_threshold_pct": 0.4222
+  },
+  {
+   "ticker": "SNDL",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.395,
+   "atr_hold_threshold_pct": 0.4395
+  },
+  {
+   "ticker": "SO",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SO",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SOFI",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SOFI",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SOL_USD",
+   "timeframe": "1d",
+   "asset_class": "CRYPTO",
+   "c_bps": 14.0,
+   "atr_hold_threshold_pct": 1.4
+  },
+  {
+   "ticker": "SOL_USD",
+   "timeframe": "1h",
+   "asset_class": "CRYPTO",
+   "c_bps": 14.0,
+   "atr_hold_threshold_pct": 1.4
+  },
+  {
+   "ticker": "SOXL",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SOXL",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SOXS",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SPG",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SPG",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SPXU",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SPXU",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SPY",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SPY",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SQQQ",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SQQQ",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "T",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "T",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "TLT",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "TLT",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "TMO",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "TMO",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "TNA",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "TNA",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "TQQQ",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "TQQQ",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "TSLA",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "TSLA",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "TSM",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "TSM",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "TZA",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "TZA",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "UBER",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "UBER",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "UNG",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "UNG",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "UNH",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "UNH",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "UPRO",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "UPRO",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "UPS",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "UPS",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "USO",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "USO",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "UVXY",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "UVXY",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "V",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "V",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "VOO",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "VOO",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "VRT",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "VRT",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "VTI",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "VTI",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "VXX",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "VXX",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "VZ",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "VZ",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "WEAT",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "WEAT",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "WFC",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "WFC",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "WMT",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "WMT",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "XBI",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "XBI",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "XLB",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "XLB",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "XLE",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "XLE",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "XLF",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "XLF",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "XLI",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "XLI",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "XLK",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "XLK",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "XLP",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "XLP",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "XLRE",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "XLRE",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "XLU",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "XLU",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "XLV",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "XLV",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "XLY",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "XLY",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "XOM",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "XOM",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "XPEV",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "XPEV",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "XYZ",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "XYZ",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "YM_F",
+   "timeframe": "1d",
+   "asset_class": "FUTURES",
+   "c_bps": Infinity,
+   "atr_hold_threshold_pct": Infinity
+  },
+  {
+   "ticker": "YM_F",
+   "timeframe": "1h",
+   "asset_class": "FUTURES",
+   "c_bps": Infinity,
+   "atr_hold_threshold_pct": Infinity
+  },
+  {
+   "ticker": "ZB_F",
+   "timeframe": "1d",
+   "asset_class": "FUTURES",
+   "c_bps": Infinity,
+   "atr_hold_threshold_pct": Infinity
+  },
+  {
+   "ticker": "ZB_F",
+   "timeframe": "1h",
+   "asset_class": "FUTURES",
+   "c_bps": Infinity,
+   "atr_hold_threshold_pct": Infinity
+  }
+ ],
+ "fires_check": [
+  {
+   "strategy": "dca_7",
+   "exit": "time_16c",
+   "asset_class": "CRYPTO",
+   "candidate_entries": 11427,
+   "gated_out": 553,
+   "gated_out_pct": 4.84,
+   "surviving_gated_trades": 4187
+  },
+  {
+   "strategy": "dca_7",
+   "exit": "time_16c",
+   "asset_class": "EQUITY",
+   "candidate_entries": 108319,
+   "gated_out": 0,
+   "gated_out_pct": 0.0,
+   "surviving_gated_trades": 40401
+  },
+  {
+   "strategy": "dca_7",
+   "exit": "time_16c",
+   "asset_class": "ETF",
+   "candidate_entries": 35206,
+   "gated_out": 408,
+   "gated_out_pct": 1.16,
+   "surviving_gated_trades": 13059
+  },
+  {
+   "strategy": "dca_7",
+   "exit": "time_16c",
+   "asset_class": "FUTURES",
+   "candidate_entries": 15902,
+   "gated_out": 15902,
+   "gated_out_pct": 100.0,
+   "surviving_gated_trades": 0
+  },
+  {
+   "strategy": "dca_7",
+   "exit": "time_4c",
+   "asset_class": "CRYPTO",
+   "candidate_entries": 11427,
+   "gated_out": 4311,
+   "gated_out_pct": 37.73,
+   "surviving_gated_trades": 7116
+  },
+  {
+   "strategy": "dca_7",
+   "exit": "time_4c",
+   "asset_class": "EQUITY",
+   "candidate_entries": 108319,
+   "gated_out": 5,
+   "gated_out_pct": 0.0,
+   "surviving_gated_trades": 81277
+  },
+  {
+   "strategy": "dca_7",
+   "exit": "time_4c",
+   "asset_class": "ETF",
+   "candidate_entries": 35206,
+   "gated_out": 2803,
+   "gated_out_pct": 7.96,
+   "surviving_gated_trades": 25906
+  },
+  {
+   "strategy": "dca_7",
+   "exit": "time_4c",
+   "asset_class": "FUTURES",
+   "candidate_entries": 15902,
+   "gated_out": 15902,
+   "gated_out_pct": 100.0,
+   "surviving_gated_trades": 0
+  },
+  {
+   "strategy": "dca_7",
+   "exit": "time_8c",
+   "asset_class": "CRYPTO",
+   "candidate_entries": 11427,
+   "gated_out": 1760,
+   "gated_out_pct": 15.4,
+   "surviving_gated_trades": 5204
+  },
+  {
+   "strategy": "dca_7",
+   "exit": "time_8c",
+   "asset_class": "EQUITY",
+   "candidate_entries": 108319,
+   "gated_out": 0,
+   "gated_out_pct": 0.0,
+   "surviving_gated_trades": 60790
+  },
+  {
+   "strategy": "dca_7",
+   "exit": "time_8c",
+   "asset_class": "ETF",
+   "candidate_entries": 35206,
+   "gated_out": 1246,
+   "gated_out_pct": 3.54,
+   "surviving_gated_trades": 19084
+  },
+  {
+   "strategy": "dca_7",
+   "exit": "time_8c",
+   "asset_class": "FUTURES",
+   "candidate_entries": 15902,
+   "gated_out": 15902,
+   "gated_out_pct": 100.0,
+   "surviving_gated_trades": 0
+  },
+  {
+   "strategy": "grid_2.0atr",
+   "exit": "time_16c",
+   "asset_class": "CRYPTO",
+   "candidate_entries": 40631,
+   "gated_out": 1463,
+   "gated_out_pct": 3.6,
+   "surviving_gated_trades": 4810
+  },
+  {
+   "strategy": "grid_2.0atr",
+   "exit": "time_16c",
+   "asset_class": "EQUITY",
+   "candidate_entries": 392127,
+   "gated_out": 0,
+   "gated_out_pct": 0.0,
+   "surviving_gated_trades": 44752
+  },
+  {
+   "strategy": "grid_2.0atr",
+   "exit": "time_16c",
+   "asset_class": "ETF",
+   "candidate_entries": 123256,
+   "gated_out": 1349,
+   "gated_out_pct": 1.09,
+   "surviving_gated_trades": 14218
+  },
+  {
+   "strategy": "grid_2.0atr",
+   "exit": "time_16c",
+   "asset_class": "FUTURES",
+   "candidate_entries": 53959,
+   "gated_out": 53959,
+   "gated_out_pct": 100.0,
+   "surviving_gated_trades": 0
+  },
+  {
+   "strategy": "grid_2.0atr",
+   "exit": "time_4c",
+   "asset_class": "CRYPTO",
+   "candidate_entries": 40631,
+   "gated_out": 14255,
+   "gated_out_pct": 35.08,
+   "surviving_gated_trades": 6913
+  },
+  {
+   "strategy": "grid_2.0atr",
+   "exit": "time_4c",
+   "asset_class": "EQUITY",
+   "candidate_entries": 392127,
+   "gated_out": 17,
+   "gated_out_pct": 0.0,
+   "surviving_gated_trades": 98802
+  },
+  {
+   "strategy": "grid_2.0atr",
+   "exit": "time_4c",
+   "asset_class": "ETF",
+   "candidate_entries": 123256,
+   "gated_out": 9669,
+   "gated_out_pct": 7.84,
+   "surviving_gated_trades": 28757
+  },
+  {
+   "strategy": "grid_2.0atr",
+   "exit": "time_4c",
+   "asset_class": "FUTURES",
+   "candidate_entries": 53959,
+   "gated_out": 53959,
+   "gated_out_pct": 100.0,
+   "surviving_gated_trades": 0
+  },
+  {
+   "strategy": "grid_2.0atr",
+   "exit": "time_8c",
+   "asset_class": "CRYPTO",
+   "candidate_entries": 40631,
+   "gated_out": 5398,
+   "gated_out_pct": 13.29,
+   "surviving_gated_trades": 6200
+  },
+  {
+   "strategy": "grid_2.0atr",
+   "exit": "time_8c",
+   "asset_class": "EQUITY",
+   "candidate_entries": 392127,
+   "gated_out": 0,
+   "gated_out_pct": 0.0,
+   "surviving_gated_trades": 65208
+  },
+  {
+   "strategy": "grid_2.0atr",
+   "exit": "time_8c",
+   "asset_class": "ETF",
+   "candidate_entries": 123256,
+   "gated_out": 4519,
+   "gated_out_pct": 3.67,
+   "surviving_gated_trades": 20119
+  },
+  {
+   "strategy": "grid_2.0atr",
+   "exit": "time_8c",
+   "asset_class": "FUTURES",
+   "candidate_entries": 53959,
+   "gated_out": 53959,
+   "gated_out_pct": 100.0,
+   "surviving_gated_trades": 0
+  },
+  {
+   "strategy": "stoch_rsi_oversold",
+   "exit": "time_16c",
+   "asset_class": "CRYPTO",
+   "candidate_entries": 8567,
+   "gated_out": 401,
+   "gated_out_pct": 4.68,
+   "surviving_gated_trades": 2337
+  },
+  {
+   "strategy": "stoch_rsi_oversold",
+   "exit": "time_16c",
+   "asset_class": "EQUITY",
+   "candidate_entries": 82720,
+   "gated_out": 0,
+   "gated_out_pct": 0.0,
+   "surviving_gated_trades": 22639
+  },
+  {
+   "strategy": "stoch_rsi_oversold",
+   "exit": "time_16c",
+   "asset_class": "ETF",
+   "candidate_entries": 25040,
+   "gated_out": 370,
+   "gated_out_pct": 1.48,
+   "surviving_gated_trades": 7118
+  },
+  {
+   "strategy": "stoch_rsi_oversold",
+   "exit": "time_16c",
+   "asset_class": "FUTURES",
+   "candidate_entries": 12890,
+   "gated_out": 12890,
+   "gated_out_pct": 100.0,
+   "surviving_gated_trades": 0
+  },
+  {
+   "strategy": "stoch_rsi_oversold",
+   "exit": "time_4c",
+   "asset_class": "CRYPTO",
+   "candidate_entries": 8567,
+   "gated_out": 3491,
+   "gated_out_pct": 40.75,
+   "surviving_gated_trades": 2128
+  },
+  {
+   "strategy": "stoch_rsi_oversold",
+   "exit": "time_4c",
+   "asset_class": "EQUITY",
+   "candidate_entries": 82720,
+   "gated_out": 10,
+   "gated_out_pct": 0.01,
+   "surviving_gated_trades": 33118
+  },
+  {
+   "strategy": "stoch_rsi_oversold",
+   "exit": "time_4c",
+   "asset_class": "ETF",
+   "candidate_entries": 25040,
+   "gated_out": 2646,
+   "gated_out_pct": 10.57,
+   "surviving_gated_trades": 9277
+  },
+  {
+   "strategy": "stoch_rsi_oversold",
+   "exit": "time_4c",
+   "asset_class": "FUTURES",
+   "candidate_entries": 12890,
+   "gated_out": 12890,
+   "gated_out_pct": 100.0,
+   "surviving_gated_trades": 0
+  },
+  {
+   "strategy": "stoch_rsi_oversold",
+   "exit": "time_8c",
+   "asset_class": "CRYPTO",
+   "candidate_entries": 8567,
+   "gated_out": 1377,
+   "gated_out_pct": 16.07,
+   "surviving_gated_trades": 2492
+  },
+  {
+   "strategy": "stoch_rsi_oversold",
+   "exit": "time_8c",
+   "asset_class": "EQUITY",
+   "candidate_entries": 82720,
+   "gated_out": 0,
+   "gated_out_pct": 0.0,
+   "surviving_gated_trades": 27292
+  },
+  {
+   "strategy": "stoch_rsi_oversold",
+   "exit": "time_8c",
+   "asset_class": "ETF",
+   "candidate_entries": 25040,
+   "gated_out": 1018,
+   "gated_out_pct": 4.07,
+   "surviving_gated_trades": 8294
+  },
+  {
+   "strategy": "stoch_rsi_oversold",
+   "exit": "time_8c",
+   "asset_class": "FUTURES",
+   "candidate_entries": 12890,
+   "gated_out": 12890,
+   "gated_out_pct": 100.0,
+   "surviving_gated_trades": 0
+  }
+ ],
+ "decile_excluded_trades": 0,
+ "results": {
+  "pooled_gated_vs_ungated": {
+   "grid_2.0atr|time_4c|ungated": {
+    "H1": {
+     "trades": 67254,
+     "pnl_usd": 303.3592,
+     "pnl_per_trade": 0.004511
+    },
+    "H2": {
+     "trades": 73105,
+     "pnl_usd": 1628.0189,
+     "pnl_per_trade": 0.02227
+    },
+    "pooled": {
+     "trades": 140359,
+     "pnl_usd": 1931.3781,
+     "pnl_per_trade": 0.01376
+    }
+   },
+   "grid_2.0atr|time_4c|gated": {
+    "H1": {
+     "trades": 64718,
+     "pnl_usd": 522.832,
+     "pnl_per_trade": 0.008079
+    },
+    "H2": {
+     "trades": 69754,
+     "pnl_usd": 1925.9131,
+     "pnl_per_trade": 0.02761
+    },
+    "pooled": {
+     "trades": 134472,
+     "pnl_usd": 2448.7451,
+     "pnl_per_trade": 0.01821
+    }
+   },
+   "grid_2.0atr|time_8c|ungated": {
+    "H1": {
+     "trades": 44691,
+     "pnl_usd": 2498.6463,
+     "pnl_per_trade": 0.055909
+    },
+    "H2": {
+     "trades": 48427,
+     "pnl_usd": 4298.5279,
+     "pnl_per_trade": 0.088763
+    },
+    "pooled": {
+     "trades": 93118,
+     "pnl_usd": 6797.1741,
+     "pnl_per_trade": 0.072995
+    }
+   },
+   "grid_2.0atr|time_8c|gated": {
+    "H1": {
+     "trades": 44088,
+     "pnl_usd": 2546.1336,
+     "pnl_per_trade": 0.057751
+    },
+    "H2": {
+     "trades": 47439,
+     "pnl_usd": 4366.3877,
+     "pnl_per_trade": 0.092042
+    },
+    "pooled": {
+     "trades": 91527,
+     "pnl_usd": 6912.5213,
+     "pnl_per_trade": 0.075524
+    }
+   },
+   "grid_2.0atr|time_16c|ungated": {
+    "H1": {
+     "trades": 30819,
+     "pnl_usd": 4217.934,
+     "pnl_per_trade": 0.136861
+    },
+    "H2": {
+     "trades": 33268,
+     "pnl_usd": 4803.1907,
+     "pnl_per_trade": 0.144379
+    },
+    "pooled": {
+     "trades": 64087,
+     "pnl_usd": 9021.1247,
+     "pnl_per_trade": 0.140764
+    }
+   },
+   "grid_2.0atr|time_16c|gated": {
+    "H1": {
+     "trades": 30729,
+     "pnl_usd": 4210.8708,
+     "pnl_per_trade": 0.137032
+    },
+    "H2": {
+     "trades": 33051,
+     "pnl_usd": 4806.3809,
+     "pnl_per_trade": 0.145423
+    },
+    "pooled": {
+     "trades": 63780,
+     "pnl_usd": 9017.2517,
+     "pnl_per_trade": 0.141381
+    }
+   },
+   "stoch_rsi_oversold|time_4c|ungated": {
+    "H1": {
+     "trades": 23202,
+     "pnl_usd": -147.8862,
+     "pnl_per_trade": -0.006374
+    },
+    "H2": {
+     "trades": 23750,
+     "pnl_usd": 119.629,
+     "pnl_per_trade": 0.005037
+    },
+    "pooled": {
+     "trades": 46952,
+     "pnl_usd": -28.2572,
+     "pnl_per_trade": -0.000602
+    }
+   },
+   "stoch_rsi_oversold|time_4c|gated": {
+    "H1": {
+     "trades": 22056,
+     "pnl_usd": -74.9513,
+     "pnl_per_trade": -0.003398
+    },
+    "H2": {
+     "trades": 22467,
+     "pnl_usd": 247.1391,
+     "pnl_per_trade": 0.011
+    },
+    "pooled": {
+     "trades": 44523,
+     "pnl_usd": 172.1878,
+     "pnl_per_trade": 0.003867
+    }
+   },
+   "stoch_rsi_oversold|time_8c|ungated": {
+    "H1": {
+     "trades": 19187,
+     "pnl_usd": 484.5659,
+     "pnl_per_trade": 0.025255
+    },
+    "H2": {
+     "trades": 19670,
+     "pnl_usd": 1123.3631,
+     "pnl_per_trade": 0.05711
+    },
+    "pooled": {
+     "trades": 38857,
+     "pnl_usd": 1607.929,
+     "pnl_per_trade": 0.041381
+    }
+   },
+   "stoch_rsi_oversold|time_8c|gated": {
+    "H1": {
+     "trades": 18848,
+     "pnl_usd": 509.7718,
+     "pnl_per_trade": 0.027046
+    },
+    "H2": {
+     "trades": 19230,
+     "pnl_usd": 1150.8153,
+     "pnl_per_trade": 0.059845
+    },
+    "pooled": {
+     "trades": 38078,
+     "pnl_usd": 1660.5872,
+     "pnl_per_trade": 0.04361
+    }
+   },
+   "stoch_rsi_oversold|time_16c|ungated": {
+    "H1": {
+     "trades": 15913,
+     "pnl_usd": 995.3729,
+     "pnl_per_trade": 0.062551
+    },
+    "H2": {
+     "trades": 16390,
+     "pnl_usd": 891.6842,
+     "pnl_per_trade": 0.054404
+    },
+    "pooled": {
+     "trades": 32303,
+     "pnl_usd": 1887.0571,
+     "pnl_per_trade": 0.058417
+    }
+   },
+   "stoch_rsi_oversold|time_16c|gated": {
+    "H1": {
+     "trades": 15843,
+     "pnl_usd": 990.5623,
+     "pnl_per_trade": 0.062524
+    },
+    "H2": {
+     "trades": 16251,
+     "pnl_usd": 906.5889,
+     "pnl_per_trade": 0.055787
+    },
+    "pooled": {
+     "trades": 32094,
+     "pnl_usd": 1897.1512,
+     "pnl_per_trade": 0.059112
+    }
+   },
+   "dca_7|time_4c|ungated": {
+    "H1": {
+     "trades": 58394,
+     "pnl_usd": 3532.4622,
+     "pnl_per_trade": 0.060494
+    },
+    "H2": {
+     "trades": 62370,
+     "pnl_usd": 2599.4268,
+     "pnl_per_trade": 0.041678
+    },
+    "pooled": {
+     "trades": 120764,
+     "pnl_usd": 6131.889,
+     "pnl_per_trade": 0.050776
+    }
+   },
+   "dca_7|time_4c|gated": {
+    "H1": {
+     "trades": 55583,
+     "pnl_usd": 3763.3034,
+     "pnl_per_trade": 0.067706
+    },
+    "H2": {
+     "trades": 58716,
+     "pnl_usd": 3093.4801,
+     "pnl_per_trade": 0.052685
+    },
+    "pooled": {
+     "trades": 114299,
+     "pnl_usd": 6856.7834,
+     "pnl_per_trade": 0.05999
+    }
+   },
+   "dca_7|time_8c|ungated": {
+    "H1": {
+     "trades": 41081,
+     "pnl_usd": 3539.243,
+     "pnl_per_trade": 0.086153
+    },
+    "H2": {
+     "trades": 45504,
+     "pnl_usd": 2623.2824,
+     "pnl_per_trade": 0.057649
+    },
+    "pooled": {
+     "trades": 86585,
+     "pnl_usd": 6162.5254,
+     "pnl_per_trade": 0.071173
+    }
+   },
+   "dca_7|time_8c|gated": {
+    "H1": {
+     "trades": 40528,
+     "pnl_usd": 3583.7866,
+     "pnl_per_trade": 0.088427
+    },
+    "H2": {
+     "trades": 44550,
+     "pnl_usd": 2729.1108,
+     "pnl_per_trade": 0.06126
+    },
+    "pooled": {
+     "trades": 85078,
+     "pnl_usd": 6312.8973,
+     "pnl_per_trade": 0.074201
+    }
+   },
+   "dca_7|time_16c|ungated": {
+    "H1": {
+     "trades": 27888,
+     "pnl_usd": 4480.8463,
+     "pnl_per_trade": 0.160673
+    },
+    "H2": {
+     "trades": 30051,
+     "pnl_usd": 3745.2946,
+     "pnl_per_trade": 0.124631
+    },
+    "pooled": {
+     "trades": 57939,
+     "pnl_usd": 8226.141,
+     "pnl_per_trade": 0.141979
+    }
+   },
+   "dca_7|time_16c|gated": {
+    "H1": {
+     "trades": 27804,
+     "pnl_usd": 4483.9939,
+     "pnl_per_trade": 0.161272
+    },
+    "H2": {
+     "trades": 29843,
+     "pnl_usd": 3746.0536,
+     "pnl_per_trade": 0.125525
+    },
+    "pooled": {
+     "trades": 57647,
+     "pnl_usd": 8230.0475,
+     "pnl_per_trade": 0.142766
+    }
+   }
+  },
+  "by_class": {
+   "grid_2.0atr|ungated|CRYPTO": {
+    "trades": 22544,
+    "pnl_usd": -2260.0646,
+    "pnl_per_trade": -0.100251
+   },
+   "grid_2.0atr|gated|CRYPTO": {
+    "trades": 17923,
+    "pnl_usd": -1765.1399,
+    "pnl_per_trade": -0.098485
+   },
+   "stoch_rsi_oversold|ungated|CRYPTO": {
+    "trades": 8935,
+    "pnl_usd": -925.8007,
+    "pnl_per_trade": -0.103615
+   },
+   "stoch_rsi_oversold|gated|CRYPTO": {
+    "trades": 6957,
+    "pnl_usd": -748.1131,
+    "pnl_per_trade": -0.107534
+   },
+   "dca_7|ungated|CRYPTO": {
+    "trades": 21826,
+    "pnl_usd": -2621.6265,
+    "pnl_per_trade": -0.120115
+   },
+   "dca_7|gated|CRYPTO": {
+    "trades": 16507,
+    "pnl_usd": -1862.407,
+    "pnl_per_trade": -0.112825
+   },
+   "grid_2.0atr|ungated|EQUITY": {
+    "trades": 208766,
+    "pnl_usd": 18811.1815,
+    "pnl_per_trade": 0.090107
+   },
+   "grid_2.0atr|gated|EQUITY": {
+    "trades": 208762,
+    "pnl_usd": 18812.465,
+    "pnl_per_trade": 0.090114
+   },
+   "stoch_rsi_oversold|ungated|EQUITY": {
+    "trades": 83052,
+    "pnl_usd": 4457.0619,
+    "pnl_per_trade": 0.053666
+   },
+   "stoch_rsi_oversold|gated|EQUITY": {
+    "trades": 83049,
+    "pnl_usd": 4457.5202,
+    "pnl_per_trade": 0.053673
+   },
+   "dca_7|ungated|EQUITY": {
+    "trades": 182473,
+    "pnl_usd": 23155.9991,
+    "pnl_per_trade": 0.126901
+   },
+   "dca_7|gated|EQUITY": {
+    "trades": 182468,
+    "pnl_usd": 23156.2186,
+    "pnl_per_trade": 0.126906
+   },
+   "grid_2.0atr|ungated|ETF": {
+    "trades": 66254,
+    "pnl_usd": 1198.56,
+    "pnl_per_trade": 0.01809
+   },
+   "grid_2.0atr|gated|ETF": {
+    "trades": 63094,
+    "pnl_usd": 1331.1929,
+    "pnl_per_trade": 0.021099
+   },
+   "stoch_rsi_oversold|ungated|ETF": {
+    "trades": 26125,
+    "pnl_usd": -64.5322,
+    "pnl_per_trade": -0.00247
+   },
+   "stoch_rsi_oversold|gated|ETF": {
+    "trades": 24689,
+    "pnl_usd": 20.5191,
+    "pnl_per_trade": 0.000831
+   },
+   "dca_7|ungated|ETF": {
+    "trades": 60989,
+    "pnl_usd": -13.8172,
+    "pnl_per_trade": -0.000227
+   },
+   "dca_7|gated|ETF": {
+    "trades": 58049,
+    "pnl_usd": 105.9167,
+    "pnl_per_trade": 0.001825
+   }
+  },
+  "vol_deciles_ungated": {
+   "grid_2.0atr": {
+    "decile_0": {
+     "trades": 24392,
+     "pnl_usd": 1626.9421,
+     "pnl_per_trade": 0.0667
+    },
+    "decile_1": {
+     "trades": 22488,
+     "pnl_usd": 864.6254,
+     "pnl_per_trade": 0.038448
+    },
+    "decile_2": {
+     "trades": 22650,
+     "pnl_usd": 551.3641,
+     "pnl_per_trade": 0.024343
+    },
+    "decile_3": {
+     "trades": 23877,
+     "pnl_usd": 1298.4045,
+     "pnl_per_trade": 0.054379
+    },
+    "decile_4": {
+     "trades": 24903,
+     "pnl_usd": 968.2905,
+     "pnl_per_trade": 0.038882
+    },
+    "decile_5": {
+     "trades": 26658,
+     "pnl_usd": 1105.9877,
+     "pnl_per_trade": 0.041488
+    },
+    "decile_6": {
+     "trades": 29120,
+     "pnl_usd": -81.1935,
+     "pnl_per_trade": -0.002788
+    },
+    "decile_7": {
+     "trades": 32937,
+     "pnl_usd": 692.7916,
+     "pnl_per_trade": 0.021034
+    },
+    "decile_8": {
+     "trades": 39082,
+     "pnl_usd": 1975.8931,
+     "pnl_per_trade": 0.050558
+    },
+    "decile_9": {
+     "trades": 51457,
+     "pnl_usd": 8746.5715,
+     "pnl_per_trade": 0.169978
+    }
+   },
+   "stoch_rsi_oversold": {
+    "decile_0": {
+     "trades": 14462,
+     "pnl_usd": 1457.7389,
+     "pnl_per_trade": 0.100798
+    },
+    "decile_1": {
+     "trades": 11882,
+     "pnl_usd": 604.2825,
+     "pnl_per_trade": 0.050857
+    },
+    "decile_2": {
+     "trades": 10954,
+     "pnl_usd": 931.5355,
+     "pnl_per_trade": 0.085041
+    },
+    "decile_3": {
+     "trades": 10819,
+     "pnl_usd": 780.6029,
+     "pnl_per_trade": 0.072151
+    },
+    "decile_4": {
+     "trades": 10795,
+     "pnl_usd": -213.2922,
+     "pnl_per_trade": -0.019758
+    },
+    "decile_5": {
+     "trades": 10827,
+     "pnl_usd": 344.7312,
+     "pnl_per_trade": 0.03184
+    },
+    "decile_6": {
+     "trades": 11094,
+     "pnl_usd": 99.6658,
+     "pnl_per_trade": 0.008984
+    },
+    "decile_7": {
+     "trades": 11505,
+     "pnl_usd": -252.1129,
+     "pnl_per_trade": -0.021913
+    },
+    "decile_8": {
+     "trades": 12716,
+     "pnl_usd": 1012.3363,
+     "pnl_per_trade": 0.079611
+    },
+    "decile_9": {
+     "trades": 13058,
+     "pnl_usd": -1298.759,
+     "pnl_per_trade": -0.099461
+    }
+   },
+   "dca_7": {
+    "decile_0": {
+     "trades": 27875,
+     "pnl_usd": 2862.1889,
+     "pnl_per_trade": 0.102679
+    },
+    "decile_1": {
+     "trades": 23099,
+     "pnl_usd": 1901.9358,
+     "pnl_per_trade": 0.082338
+    },
+    "decile_2": {
+     "trades": 22437,
+     "pnl_usd": 973.0473,
+     "pnl_per_trade": 0.043368
+    },
+    "decile_3": {
+     "trades": 22917,
+     "pnl_usd": 2846.3458,
+     "pnl_per_trade": 0.124202
+    },
+    "decile_4": {
+     "trades": 22759,
+     "pnl_usd": 1329.5587,
+     "pnl_per_trade": 0.058419
+    },
+    "decile_5": {
+     "trades": 24025,
+     "pnl_usd": 2821.5991,
+     "pnl_per_trade": 0.117444
+    },
+    "decile_6": {
+     "trades": 25812,
+     "pnl_usd": 901.8118,
+     "pnl_per_trade": 0.034938
+    },
+    "decile_7": {
+     "trades": 28198,
+     "pnl_usd": 2703.1223,
+     "pnl_per_trade": 0.095862
+    },
+    "decile_8": {
+     "trades": 31609,
+     "pnl_usd": 1498.2694,
+     "pnl_per_trade": 0.0474
+    },
+    "decile_9": {
+     "trades": 36557,
+     "pnl_usd": 2682.6763,
+     "pnl_per_trade": 0.073383
+    }
+   }
+  },
+  "leave_one_asset_out": {
+   "grid_2.0atr|ungated": {
+    "trades": 297564,
+    "pnl_per_trade": 0.05965,
+    "worst_drop_asset": "SOXL",
+    "pnl_per_trade_without_it": 0.055532,
+    "carried_by_one_asset": false
+   },
+   "grid_2.0atr|gated": {
+    "trades": 289779,
+    "pnl_per_trade": 0.063423,
+    "worst_drop_asset": "SOXL",
+    "pnl_per_trade_without_it": 0.059212,
+    "carried_by_one_asset": false
+   },
+   "stoch_rsi_oversold|ungated": {
+    "trades": 118112,
+    "pnl_per_trade": 0.029351,
+    "worst_drop_asset": "MU",
+    "pnl_per_trade_without_it": 0.022158,
+    "carried_by_one_asset": false
+   },
+   "stoch_rsi_oversold|gated": {
+    "trades": 114695,
+    "pnl_per_trade": 0.03252,
+    "worst_drop_asset": "MU",
+    "pnl_per_trade_without_it": 0.025132,
+    "carried_by_one_asset": false
+   },
+   "dca_7|ungated": {
+    "trades": 265288,
+    "pnl_per_trade": 0.077352,
+    "worst_drop_asset": "SOXL",
+    "pnl_per_trade_without_it": 0.072453,
+    "carried_by_one_asset": false
+   },
+   "dca_7|gated": {
+    "trades": 257024,
+    "pnl_per_trade": 0.08326,
+    "worst_drop_asset": "SOXL",
+    "pnl_per_trade_without_it": 0.078233,
+    "carried_by_one_asset": false
+   }
+  },
+  "power": {
+   "bar_for_009_edges": [
+    4000,
+    8700
+   ],
+   "pooled_gated_trades_noncontrol": 404474,
+   "status": "VERDICT-CAPABLE"
+  }
+ }
+}

@@ -1,0 +1,177 @@
+{
+  "graveyard": "v0_graveyard_full.json",
+  "entries": 539,
+  "assertions_run": 8,
+  "failed": [
+    "trade_count_sanity"
+  ],
+  "results": [
+    {
+      "assertion": "quarantine_canary",
+      "pass": true,
+      "quarantine_tickers_present": [],
+      "violations": [],
+      "violation_count": 0,
+      "implication": "PF > 1.3 on a reverse-split / dilution wreck suggests fake fills, missing borrow cost, or a bad split adjustment - a HARNESS bug, not an edge.",
+      "note": "no quarantine tickers in this run - the canary is not deployed"
+    },
+    {
+      "assertion": "mirror_pair_contradiction",
+      "pass": true,
+      "violations": [],
+      "implication": "the same long strategy cannot genuinely profit on a 3x bull ETF and its 3x bear twin over the same window; suspect signal logic or data mislabeling."
+    },
+    {
+      "assertion": "win_rate_ceiling",
+      "pass": true,
+      "violations": [],
+      "violation_count": 0,
+      "implication": "win rate > 85% on 20+ trades with a stop on every trade suggests the stop is unreachable or exits resolve in the strategy favor."
+    },
+    {
+      "assertion": "trade_count_sanity",
+      "pass": false,
+      "violations": [
+        {
+          "strategy": "piercing_line",
+          "zero_trade_fraction": 1.0,
+          "zero": 11,
+          "of": 11
+        },
+        {
+          "strategy": "bullish_abandoned_baby",
+          "zero_trade_fraction": 1.0,
+          "zero": 11,
+          "of": 11
+        },
+        {
+          "strategy": "mat_hold",
+          "zero_trade_fraction": 1.0,
+          "zero": 11,
+          "of": 11
+        },
+        {
+          "strategy": "rising_three_methods",
+          "zero_trade_fraction": 1.0,
+          "zero": 11,
+          "of": 11
+        },
+        {
+          "strategy": "upside_tasuki_gap",
+          "zero_trade_fraction": 1.0,
+          "zero": 11,
+          "of": 11
+        },
+        {
+          "strategy": "dragonfly_doji",
+          "zero_trade_fraction": 1.0,
+          "zero": 11,
+          "of": 11
+        },
+        {
+          "strategy": "rsi_extreme",
+          "zero_trade_fraction": 1.0,
+          "zero": 11,
+          "of": 11
+        },
+        {
+          "strategy": "S1",
+          "zero_trade_fraction": 1.0,
+          "zero": 11,
+          "of": 11
+        },
+        {
+          "strategy": "C5",
+          "zero_trade_fraction": 1.0,
+          "zero": 11,
+          "of": 11
+        },
+        {
+          "strategy": "D1",
+          "zero_trade_fraction": 1.0,
+          "zero": 11,
+          "of": 11
+        },
+        {
+          "strategy": "V2_wick_autopsy",
+          "zero_trade_fraction": 1.0,
+          "zero": 11,
+          "of": 11
+        },
+        {
+          "strategy": "V2_liquidation_echo",
+          "zero_trade_fraction": 1.0,
+          "zero": 11,
+          "of": 11
+        },
+        {
+          "strategy": "V2_vwap_magnet_sessionatr",
+          "zero_trade_fraction": 1.0,
+          "zero": 11,
+          "of": 11
+        },
+        {
+          "strategy": "V3_intraday_momentum",
+          "zero_trade_fraction": 1.0,
+          "zero": 11,
+          "of": 11
+        },
+        {
+          "strategy": "V3_intraday_momentum_crypto",
+          "zero_trade_fraction": 1.0,
+          "zero": 11,
+          "of": 11
+        },
+        {
+          "strategy": "V3_macro_drift",
+          "zero_trade_fraction": 1.0,
+          "zero": 11,
+          "of": 11
+        },
+        {
+          "strategy": "V3_macro_drift_nfp",
+          "zero_trade_fraction": 1.0,
+          "zero": 11,
+          "of": 11
+        },
+        {
+          "strategy": "V3_vacuum_refill",
+          "zero_trade_fraction": 1.0,
+          "zero": 11,
+          "of": 11
+        }
+      ],
+      "implication": "a strategy producing zero trades on more than 60% of tickers has a broken trigger condition, not a selective one."
+    },
+    {
+      "assertion": "duplicate_strategies",
+      "pass": true,
+      "violations": [],
+      "implication": "near-identical trade counts across many tickers means these are one idea counted twice; effective test count and any breadth claim are overstated."
+    },
+    {
+      "assertion": "timeframe_coherence",
+      "pass": true,
+      "violations": [],
+      "violation_count": 0,
+      "compared": 187,
+      "implication": "large 5m-vs-15m divergence on the same ticker and exit suggests a resampling or timestamp-alignment bug."
+    },
+    {
+      "assertion": "gate_version_uniform",
+      "pass": true,
+      "versions_present": {
+        "2": 539
+      },
+      "implication": "mixed gate versions mean some verdicts were produced under different rules; the graveyard cannot be read as one dataset."
+    },
+    {
+      "assertion": "cost_model_version_uniform",
+      "pass": true,
+      "versions_present": {
+        "2026-08-13": 539
+      },
+      "implication": "mixed cost-model versions mean the same trade costs different amounts in different rows; pooled edges and per-trade means are meaningless across them."
+    }
+  ]
+}

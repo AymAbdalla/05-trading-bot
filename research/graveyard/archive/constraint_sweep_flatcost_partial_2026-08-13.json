@@ -1,0 +1,643 @@
+{
+ "levels": {
+  "AGGRESSIVE": {
+   "apply_confirmation_stack": false,
+   "require_regime_uptrend": false,
+   "rsi_max_entry": 100.0,
+   "volume_min_ratio": 0.0
+  },
+  "BASE": {
+   "apply_confirmation_stack": true,
+   "require_regime_uptrend": true,
+   "rsi_max_entry": 70.0,
+   "volume_min_ratio": 1.2
+  },
+  "CONSERVATIVE": {
+   "apply_confirmation_stack": true,
+   "require_regime_uptrend": true,
+   "rsi_max_entry": 45.0,
+   "volume_min_ratio": 2.0
+  }
+ },
+ "totals": {
+  "AGGRESSIVE": [
+   13711,
+   -3338.722248759458,
+   -0.2435068374851913
+  ],
+  "BASE": [
+   3956,
+   -1148.9375670737122,
+   -0.2904291120004328
+  ],
+  "CONSERVATIVE": [
+   116,
+   10.93524284121619,
+   0.09426933483807061
+  ]
+ },
+ "per_strategy": {
+  "bullish_engulfing": {
+   "AGGRESSIVE": [
+    388,
+    -125.84965782454572
+   ],
+   "BASE": [
+    18,
+    -2.172246132883353
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "hammer": {
+   "AGGRESSIVE": [
+    352,
+    -111.90097483440252
+   ],
+   "BASE": [
+    13,
+    -3.4469721790519654
+   ],
+   "CONSERVATIVE": [
+    1,
+    1.4794884839926903
+   ]
+  },
+  "inverted_hammer": {
+   "AGGRESSIVE": [
+    413,
+    -127.15523941627134
+   ],
+   "BASE": [
+    6,
+    -0.7416259514856696
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "morning_star": {
+   "AGGRESSIVE": [
+    109,
+    -46.33165123740407
+   ],
+   "BASE": [
+    3,
+    2.740087054651185
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "piercing_line": {
+   "AGGRESSIVE": [
+    49,
+    -33.61349659961756
+   ],
+   "BASE": [
+    0,
+    0.0
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "three_inside_up": {
+   "AGGRESSIVE": [
+    200,
+    -52.104578465603524
+   ],
+   "BASE": [
+    8,
+    5.850387878989172
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "tweezer_bottom": {
+   "AGGRESSIVE": [
+    826,
+    -258.36772099879715
+   ],
+   "BASE": [
+    34,
+    -9.781956290626491
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "bullish_harami": {
+   "AGGRESSIVE": [
+    430,
+    -56.77896090020385
+   ],
+   "BASE": [
+    30,
+    -6.7866307509868316
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "bullish_marubozu": {
+   "AGGRESSIVE": [
+    412,
+    -139.34604334648762
+   ],
+   "BASE": [
+    35,
+    -13.74941773443107
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "bullish_abandoned_baby": {
+   "AGGRESSIVE": [
+    2,
+    -1.2062372698213704
+   ],
+   "BASE": [
+    0,
+    0.0
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "mat_hold": {
+   "AGGRESSIVE": [
+    7,
+    -2.4136841891378062
+   ],
+   "BASE": [
+    2,
+    -3.382571787116894
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "rising_three_methods": {
+   "AGGRESSIVE": [
+    3,
+    1.1878500036221427
+   ],
+   "BASE": [
+    0,
+    0.0
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "upside_tasuki_gap": {
+   "AGGRESSIVE": [
+    18,
+    -5.148371033614995
+   ],
+   "BASE": [
+    1,
+    -0.7457384163213228
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "dragonfly_doji": {
+   "AGGRESSIVE": [
+    77,
+    -14.614464899571686
+   ],
+   "BASE": [
+    4,
+    1.4601265728216744
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "breakout_20": {
+   "AGGRESSIVE": [
+    258,
+    12.353447551888475
+   ],
+   "BASE": [
+    114,
+    -10.705008858692224
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "breakout_50": {
+   "AGGRESSIVE": [
+    169,
+    26.565164711540422
+   ],
+   "BASE": [
+    77,
+    -29.630434213801102
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "ema_pullback": {
+   "AGGRESSIVE": [
+    952,
+    -327.64720066192336
+   ],
+   "BASE": [
+    330,
+    -117.76616181925577
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "bollinger_reversion": {
+   "AGGRESSIVE": [
+    251,
+    -79.53584190709192
+   ],
+   "BASE": [
+    152,
+    -27.214236718127477
+   ],
+   "CONSERVATIVE": [
+    12,
+    0.4789629807785334
+   ]
+  },
+  "rsi_extreme": {
+   "AGGRESSIVE": [
+    0,
+    0.0
+   ],
+   "BASE": [
+    0,
+    0.0
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "fair_value_gap": {
+   "AGGRESSIVE": [
+    1181,
+    -443.0676400256116
+   ],
+   "BASE": [
+    488,
+    -187.5674676915183
+   ],
+   "CONSERVATIVE": [
+    1,
+    -0.5968263996545347
+   ]
+  },
+  "volume_surge": {
+   "AGGRESSIVE": [
+    133,
+    12.163697835661017
+   ],
+   "BASE": [
+    58,
+    -26.896372723033053
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "momentum_continuation": {
+   "AGGRESSIVE": [
+    256,
+    12.845609259110084
+   ],
+   "BASE": [
+    114,
+    -10.705008858692224
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "macd_crossover": {
+   "AGGRESSIVE": [
+    421,
+    -75.50699489761215
+   ],
+   "BASE": [
+    111,
+    -26.62329693756114
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "stoch_rsi_oversold": {
+   "AGGRESSIVE": [
+    676,
+    -185.28136225840657
+   ],
+   "BASE": [
+    368,
+    -121.67948108695533
+   ],
+   "CONSERVATIVE": [
+    23,
+    4.660880417707181
+   ]
+  },
+  "grid_1.0atr": {
+   "AGGRESSIVE": [
+    2482,
+    -654.8599671825635
+   ],
+   "BASE": [
+    774,
+    -242.1110612226969
+   ],
+   "CONSERVATIVE": [
+    26,
+    0.4772229736839124
+   ]
+  },
+  "grid_2.0atr": {
+   "AGGRESSIVE": [
+    775,
+    -125.87938858092551
+   ],
+   "BASE": [
+    257,
+    -62.96424227764737
+   ],
+   "CONSERVATIVE": [
+    26,
+    -2.4346078824124806
+   ]
+  },
+  "dca_7": {
+   "AGGRESSIVE": [
+    374,
+    22.773046742637252
+   ],
+   "BASE": [
+    183,
+    -33.001421999759025
+   ],
+   "CONSERVATIVE": [
+    8,
+    2.928675101386604
+   ]
+  },
+  "dca_14": {
+   "AGGRESSIVE": [
+    306,
+    47.90805706571228
+   ],
+   "BASE": [
+    169,
+    -4.228985172985408
+   ],
+   "CONSERVATIVE": [
+    2,
+    0.6055350149246457
+   ]
+  },
+  "S6": {
+   "AGGRESSIVE": [
+    122,
+    -48.47237870545082
+   ],
+   "BASE": [
+    46,
+    -32.792069929694186
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "S1": {
+   "AGGRESSIVE": [
+    45,
+    -12.052514920679204
+   ],
+   "BASE": [
+    11,
+    1.7708415798109884
+   ],
+   "CONSERVATIVE": [
+    1,
+    1.2617399052472218
+   ]
+  },
+  "C5": {
+   "AGGRESSIVE": [
+    49,
+    34.418948884202365
+   ],
+   "BASE": [
+    8,
+    -16.343896608342547
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "S2": {
+   "AGGRESSIVE": [
+    428,
+    -90.59822390906263
+   ],
+   "BASE": [
+    255,
+    -87.85506096735061
+   ],
+   "CONSERVATIVE": [
+    14,
+    1.1411007067608745
+   ]
+  },
+  "D2": {
+   "AGGRESSIVE": [
+    122,
+    -45.89065961734322
+   ],
+   "BASE": [
+    42,
+    -30.583412530820645
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "D1": {
+   "AGGRESSIVE": [
+    303,
+    -100.085238158529
+   ],
+   "BASE": [
+    21,
+    -6.682492606086991
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "V2_wick_autopsy": {
+   "AGGRESSIVE": [
+    2,
+    3.67352479659539
+   ],
+   "BASE": [
+    1,
+    5.124258946336847
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "V2_round_number_decay": {
+   "AGGRESSIVE": [
+    871,
+    -298.93675019061834
+   ],
+   "BASE": [
+    159,
+    -22.04175675033021
+   ],
+   "CONSERVATIVE": [
+    2,
+    0.9330715388015416
+   ]
+  },
+  "V2_liquidation_echo": {
+   "AGGRESSIVE": [
+    4,
+    -3.04388794374106
+   ],
+   "BASE": [
+    1,
+    -0.9614774177196449
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "V2_second_break": {
+   "AGGRESSIVE": [
+    0,
+    0.0
+   ],
+   "BASE": [
+    0,
+    0.0
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "V2_volume_desert": {
+   "AGGRESSIVE": [
+    36,
+    36.153359986219485
+   ],
+   "BASE": [
+    5,
+    -3.7328287894611716
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "V2_vwap_magnet": {
+   "AGGRESSIVE": [
+    0,
+    0.0
+   ],
+   "BASE": [
+    0,
+    0.0
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "V2_vwap_magnet_sessionatr": {
+   "AGGRESSIVE": [
+    0,
+    0.0
+   ],
+   "BASE": [
+    0,
+    0.0
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "V2_expiry_pin": {
+   "AGGRESSIVE": [
+    209,
+    -83.07582562160927
+   ],
+   "BASE": [
+    58,
+    -22.989934682887217
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  },
+  "V2_0dte_amplifier": {
+   "AGGRESSIVE": [
+    0,
+    0.0
+   ],
+   "BASE": [
+    0,
+    0.0
+   ],
+   "CONSERVATIVE": [
+    0,
+    0.0
+   ]
+  }
+ }
+}

@@ -1,0 +1,33 @@
+{
+  "graveyard": "v0_graveyard_full.json",
+  "entries_total": 15120,
+  "verdict_counts": {
+    "FAIL": 14676,
+    "NOT_TESTED": 432,
+    "PASS": 12
+  },
+  "raw_pass_rows": 12,
+  "benchmark_pass_rows": 0,
+  "distinct_findings": {
+    "strategy_x_ticker_x_timeframe": 3,
+    "strategy_family_x_ticker_x_timeframe": 2,
+    "strategy_x_ticker": 3,
+    "tickers_with_any_pass": 2
+  },
+  "pass_concentration_top5": [
+    {
+      "ticker_timeframe": "ADBE 1h",
+      "pass_rows": 11
+    },
+    {
+      "ticker_timeframe": "ETH/USDT 15m",
+      "pass_rows": 1
+    }
+  ],
+  "multiple_comparisons": {
+    "tests_completed": 14688,
+    "expected_max_z_under_null": 4.38,
+    "note": "With 14688 tests, chance alone is expected to produce a best result around 4.4 sigma. A single impressive row is the base rate, not evidence. Judge must correct on hypotheses GENERATED, and use effective test count (correlated tickers/timeframes are not independent), not raw row count."
+  },
+  "reading_guide": "raw_pass_rows counts (strategy, ticker, timeframe, exit_config) rows. One strategy that works on one ticker across 9 exit configs produces 9 rows and ONE finding. Always cite distinct_findings."
+}

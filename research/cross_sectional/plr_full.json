@@ -1,0 +1,612 @@
+{
+ "generated": "2026-08-14 08:58:09",
+ "report": {
+  "harness": "cross_sectional",
+  "cs_gate_version": 1,
+  "strategy": "cs_paid_liquidity_reversal_v3_5",
+  "params": {
+   "anchor": "Nagel RFS 2012",
+   "vix_gate": "pctile>=0.60 of trailing 252d (context series)",
+   "residual": "5d return minus mapped sector ETF 5d return",
+   "news_exclusion": "OMITTED_NO_EARNINGS_CALENDAR",
+   "residual_reversion_exit": "OMITTED_TIME_AND_STOP_ONLY",
+   "selection": {
+    "direction": "bottom",
+    "mode": "quintile",
+    "max_names": 5,
+    "min_scored": 20
+   },
+   "exit": {
+    "type": "time",
+    "bars": 5,
+    "stop_atr_mult": 2.0
+   },
+   "entry_mode": "close",
+   "rebalance_every": 5
+  },
+  "cost_model_version": "2026-08-13",
+  "cost_model_version_uniform": true,
+  "survivorship": "survivors-only universe",
+  "asset_classes": [
+   "EQUITY"
+  ],
+  "universe_size": 106,
+  "grid_steps": 1254,
+  "fires_check": {
+   "grid_steps": 1254,
+   "formations": 46,
+   "steps_skipped_min_scored": 1,
+   "ranker_errors": 0,
+   "names_selected_total": 230,
+   "names_opened": 219,
+   "names_skipped_already_held": 11,
+   "names_skipped_missing_bar": 0,
+   "names_skipped_unfillable": 0
+  },
+  "trades": 219,
+  "wins": 119,
+  "win_rate": 0.5434,
+  "pf": 1.2357,
+  "gross_pf": 1.2397,
+  "total_pnl_usd": 152.0393,
+  "pnl_per_trade": 0.6942,
+  "return_pct_on_capital": 0.6942,
+  "twin_median_pf": 1.2167,
+  "twin_percentile": 0.51,
+  "twin_sample_size": 100,
+  "time_split": {
+   "first_half": {
+    "trades": 0,
+    "pnl_per_trade": null
+   },
+   "second_half": {
+    "trades": 219,
+    "pnl_per_trade": 0.6942
+   }
+  },
+  "per_cell": [
+   {
+    "ticker": "AAPL",
+    "asset_class": "EQUITY",
+    "trades": 3,
+    "total_pnl_usd": 14.3506,
+    "pnl_per_trade": 4.7835,
+    "win_rate": 1.0
+   },
+   {
+    "ticker": "ADBE",
+    "asset_class": "EQUITY",
+    "trades": 7,
+    "total_pnl_usd": 10.9108,
+    "pnl_per_trade": 1.5587,
+    "win_rate": 0.5714
+   },
+   {
+    "ticker": "AMAT",
+    "asset_class": "EQUITY",
+    "trades": 2,
+    "total_pnl_usd": -1.2981,
+    "pnl_per_trade": -0.649,
+    "win_rate": 0.5
+   },
+   {
+    "ticker": "AMD",
+    "asset_class": "EQUITY",
+    "trades": 1,
+    "total_pnl_usd": -4.036,
+    "pnl_per_trade": -4.036,
+    "win_rate": 0.0
+   },
+   {
+    "ticker": "AMZN",
+    "asset_class": "EQUITY",
+    "trades": 1,
+    "total_pnl_usd": 3.2188,
+    "pnl_per_trade": 3.2188,
+    "win_rate": 1.0
+   },
+   {
+    "ticker": "AVGO",
+    "asset_class": "EQUITY",
+    "trades": 2,
+    "total_pnl_usd": -4.3145,
+    "pnl_per_trade": -2.1572,
+    "win_rate": 0.5
+   },
+   {
+    "ticker": "BA",
+    "asset_class": "EQUITY",
+    "trades": 4,
+    "total_pnl_usd": 16.5184,
+    "pnl_per_trade": 4.1296,
+    "win_rate": 0.5
+   },
+   {
+    "ticker": "BABA",
+    "asset_class": "EQUITY",
+    "trades": 5,
+    "total_pnl_usd": -14.2035,
+    "pnl_per_trade": -2.8407,
+    "win_rate": 0.4
+   },
+   {
+    "ticker": "BMY",
+    "asset_class": "EQUITY",
+    "trades": 1,
+    "total_pnl_usd": -2.9998,
+    "pnl_per_trade": -2.9998,
+    "win_rate": 0.0
+   },
+   {
+    "ticker": "BNTX",
+    "asset_class": "EQUITY",
+    "trades": 2,
+    "total_pnl_usd": 0.9736,
+    "pnl_per_trade": 0.4868,
+    "win_rate": 0.5
+   },
+   {
+    "ticker": "C",
+    "asset_class": "EQUITY",
+    "trades": 1,
+    "total_pnl_usd": 3.3596,
+    "pnl_per_trade": 3.3596,
+    "win_rate": 1.0
+   },
+   {
+    "ticker": "CLSK",
+    "asset_class": "EQUITY",
+    "trades": 9,
+    "total_pnl_usd": -26.2356,
+    "pnl_per_trade": -2.9151,
+    "win_rate": 0.4444
+   },
+   {
+    "ticker": "CMCSA",
+    "asset_class": "EQUITY",
+    "trades": 1,
+    "total_pnl_usd": 4.966,
+    "pnl_per_trade": 4.966,
+    "win_rate": 1.0
+   },
+   {
+    "ticker": "COIN",
+    "asset_class": "EQUITY",
+    "trades": 12,
+    "total_pnl_usd": 17.7052,
+    "pnl_per_trade": 1.4754,
+    "win_rate": 0.6667
+   },
+   {
+    "ticker": "COP",
+    "asset_class": "EQUITY",
+    "trades": 1,
+    "total_pnl_usd": 0.2872,
+    "pnl_per_trade": 0.2872,
+    "win_rate": 1.0
+   },
+   {
+    "ticker": "COST",
+    "asset_class": "EQUITY",
+    "trades": 1,
+    "total_pnl_usd": -5.4628,
+    "pnl_per_trade": -5.4628,
+    "win_rate": 0.0
+   },
+   {
+    "ticker": "CRM",
+    "asset_class": "EQUITY",
+    "trades": 4,
+    "total_pnl_usd": 21.0054,
+    "pnl_per_trade": 5.2513,
+    "win_rate": 1.0
+   },
+   {
+    "ticker": "CSCO",
+    "asset_class": "EQUITY",
+    "trades": 1,
+    "total_pnl_usd": 1.1177,
+    "pnl_per_trade": 1.1177,
+    "win_rate": 1.0
+   },
+   {
+    "ticker": "D",
+    "asset_class": "EQUITY",
+    "trades": 1,
+    "total_pnl_usd": -0.262,
+    "pnl_per_trade": -0.262,
+    "win_rate": 0.0
+   },
+   {
+    "ticker": "DUOL",
+    "asset_class": "EQUITY",
+    "trades": 6,
+    "total_pnl_usd": -6.9257,
+    "pnl_per_trade": -1.1543,
+    "win_rate": 0.3333
+   },
+   {
+    "ticker": "EBAY",
+    "asset_class": "EQUITY",
+    "trades": 3,
+    "total_pnl_usd": 15.2899,
+    "pnl_per_trade": 5.0966,
+    "win_rate": 1.0
+   },
+   {
+    "ticker": "F",
+    "asset_class": "EQUITY",
+    "trades": 1,
+    "total_pnl_usd": -3.9765,
+    "pnl_per_trade": -3.9765,
+    "win_rate": 0.0
+   },
+   {
+    "ticker": "FCX",
+    "asset_class": "EQUITY",
+    "trades": 2,
+    "total_pnl_usd": 15.9404,
+    "pnl_per_trade": 7.9702,
+    "win_rate": 1.0
+   },
+   {
+    "ticker": "GM",
+    "asset_class": "EQUITY",
+    "trades": 1,
+    "total_pnl_usd": -3.8889,
+    "pnl_per_trade": -3.8889,
+    "win_rate": 0.0
+   },
+   {
+    "ticker": "GOOGL",
+    "asset_class": "EQUITY",
+    "trades": 2,
+    "total_pnl_usd": 7.2438,
+    "pnl_per_trade": 3.6219,
+    "win_rate": 1.0
+   },
+   {
+    "ticker": "INTC",
+    "asset_class": "EQUITY",
+    "trades": 3,
+    "total_pnl_usd": 29.1195,
+    "pnl_per_trade": 9.7065,
+    "win_rate": 0.6667
+   },
+   {
+    "ticker": "LCID",
+    "asset_class": "EQUITY",
+    "trades": 10,
+    "total_pnl_usd": -49.9319,
+    "pnl_per_trade": -4.9932,
+    "win_rate": 0.3
+   },
+   {
+    "ticker": "LMT",
+    "asset_class": "EQUITY",
+    "trades": 1,
+    "total_pnl_usd": 2.6559,
+    "pnl_per_trade": 2.6559,
+    "win_rate": 1.0
+   },
+   {
+    "ticker": "LRCX",
+    "asset_class": "EQUITY",
+    "trades": 2,
+    "total_pnl_usd": 1.0614,
+    "pnl_per_trade": 0.5307,
+    "win_rate": 0.5
+   },
+   {
+    "ticker": "MARA",
+    "asset_class": "EQUITY",
+    "trades": 9,
+    "total_pnl_usd": 20.7423,
+    "pnl_per_trade": 2.3047,
+    "win_rate": 0.6667
+   },
+   {
+    "ticker": "META",
+    "asset_class": "EQUITY",
+    "trades": 4,
+    "total_pnl_usd": 13.5662,
+    "pnl_per_trade": 3.3915,
+    "win_rate": 0.5
+   },
+   {
+    "ticker": "MMM",
+    "asset_class": "EQUITY",
+    "trades": 1,
+    "total_pnl_usd": -2.9729,
+    "pnl_per_trade": -2.9729,
+    "win_rate": 0.0
+   },
+   {
+    "ticker": "MRNA",
+    "asset_class": "EQUITY",
+    "trades": 9,
+    "total_pnl_usd": -10.3576,
+    "pnl_per_trade": -1.1508,
+    "win_rate": 0.4444
+   },
+   {
+    "ticker": "MSFT",
+    "asset_class": "EQUITY",
+    "trades": 1,
+    "total_pnl_usd": -6.4606,
+    "pnl_per_trade": -6.4606,
+    "win_rate": 0.0
+   },
+   {
+    "ticker": "MSTR",
+    "asset_class": "EQUITY",
+    "trades": 12,
+    "total_pnl_usd": -2.7538,
+    "pnl_per_trade": -0.2295,
+    "win_rate": 0.4167
+   },
+   {
+    "ticker": "MU",
+    "asset_class": "EQUITY",
+    "trades": 3,
+    "total_pnl_usd": 47.2362,
+    "pnl_per_trade": 15.7454,
+    "win_rate": 1.0
+   },
+   {
+    "ticker": "NEE",
+    "asset_class": "EQUITY",
+    "trades": 2,
+    "total_pnl_usd": 0.575,
+    "pnl_per_trade": 0.2875,
+    "win_rate": 0.5
+   },
+   {
+    "ticker": "NEM",
+    "asset_class": "EQUITY",
+    "trades": 1,
+    "total_pnl_usd": 5.0329,
+    "pnl_per_trade": 5.0329,
+    "win_rate": 1.0
+   },
+   {
+    "ticker": "NFLX",
+    "asset_class": "EQUITY",
+    "trades": 1,
+    "total_pnl_usd": -0.3768,
+    "pnl_per_trade": -0.3768,
+    "win_rate": 0.0
+   },
+   {
+    "ticker": "NIO",
+    "asset_class": "EQUITY",
+    "trades": 4,
+    "total_pnl_usd": -39.0787,
+    "pnl_per_trade": -9.7697,
+    "win_rate": 0.25
+   },
+   {
+    "ticker": "NKE",
+    "asset_class": "EQUITY",
+    "trades": 2,
+    "total_pnl_usd": 2.5853,
+    "pnl_per_trade": 1.2926,
+    "win_rate": 0.5
+   },
+   {
+    "ticker": "NVAX",
+    "asset_class": "EQUITY",
+    "trades": 8,
+    "total_pnl_usd": -8.6598,
+    "pnl_per_trade": -1.0825,
+    "win_rate": 0.375
+   },
+   {
+    "ticker": "NVDA",
+    "asset_class": "EQUITY",
+    "trades": 1,
+    "total_pnl_usd": 10.2006,
+    "pnl_per_trade": 10.2006,
+    "win_rate": 1.0
+   },
+   {
+    "ticker": "ORCL",
+    "asset_class": "EQUITY",
+    "trades": 6,
+    "total_pnl_usd": 18.3224,
+    "pnl_per_trade": 3.0537,
+    "win_rate": 0.5
+   },
+   {
+    "ticker": "PFE",
+    "asset_class": "EQUITY",
+    "trades": 1,
+    "total_pnl_usd": -2.388,
+    "pnl_per_trade": -2.388,
+    "win_rate": 0.0
+   },
+   {
+    "ticker": "PLTR",
+    "asset_class": "EQUITY",
+    "trades": 5,
+    "total_pnl_usd": 36.9212,
+    "pnl_per_trade": 7.3842,
+    "win_rate": 0.8
+   },
+   {
+    "ticker": "PSX",
+    "asset_class": "EQUITY",
+    "trades": 1,
+    "total_pnl_usd": 0.4024,
+    "pnl_per_trade": 0.4024,
+    "win_rate": 1.0
+   },
+   {
+    "ticker": "QCOM",
+    "asset_class": "EQUITY",
+    "trades": 2,
+    "total_pnl_usd": 15.1591,
+    "pnl_per_trade": 7.5795,
+    "win_rate": 1.0
+   },
+   {
+    "ticker": "RBLX",
+    "asset_class": "EQUITY",
+    "trades": 4,
+    "total_pnl_usd": 10.9072,
+    "pnl_per_trade": 2.7268,
+    "win_rate": 0.75
+   },
+   {
+    "ticker": "REGN",
+    "asset_class": "EQUITY",
+    "trades": 1,
+    "total_pnl_usd": -4.3869,
+    "pnl_per_trade": -4.3869,
+    "win_rate": 0.0
+   },
+   {
+    "ticker": "RIOT",
+    "asset_class": "EQUITY",
+    "trades": 7,
+    "total_pnl_usd": 1.6146,
+    "pnl_per_trade": 0.2307,
+    "win_rate": 0.4286
+   },
+   {
+    "ticker": "RIVN",
+    "asset_class": "EQUITY",
+    "trades": 1,
+    "total_pnl_usd": -7.7487,
+    "pnl_per_trade": -7.7487,
+    "win_rate": 0.0
+   },
+   {
+    "ticker": "RTX",
+    "asset_class": "EQUITY",
+    "trades": 1,
+    "total_pnl_usd": 1.8921,
+    "pnl_per_trade": 1.8921,
+    "win_rate": 1.0
+   },
+   {
+    "ticker": "SE",
+    "asset_class": "EQUITY",
+    "trades": 3,
+    "total_pnl_usd": -6.2425,
+    "pnl_per_trade": -2.0808,
+    "win_rate": 0.3333
+   },
+   {
+    "ticker": "SHOP",
+    "asset_class": "EQUITY",
+    "trades": 5,
+    "total_pnl_usd": -2.291,
+    "pnl_per_trade": -0.4582,
+    "win_rate": 0.8
+   },
+   {
+    "ticker": "SLB",
+    "asset_class": "EQUITY",
+    "trades": 1,
+    "total_pnl_usd": 9.499,
+    "pnl_per_trade": 9.499,
+    "win_rate": 1.0
+   },
+   {
+    "ticker": "SNDL",
+    "asset_class": "EQUITY",
+    "trades": 5,
+    "total_pnl_usd": -6.3085,
+    "pnl_per_trade": -1.2617,
+    "win_rate": 0.4
+   },
+   {
+    "ticker": "SOFI",
+    "asset_class": "EQUITY",
+    "trades": 7,
+    "total_pnl_usd": 12.4808,
+    "pnl_per_trade": 1.783,
+    "win_rate": 0.5714
+   },
+   {
+    "ticker": "T",
+    "asset_class": "EQUITY",
+    "trades": 2,
+    "total_pnl_usd": -3.4924,
+    "pnl_per_trade": -1.7462,
+    "win_rate": 0.5
+   },
+   {
+    "ticker": "TMO",
+    "asset_class": "EQUITY",
+    "trades": 1,
+    "total_pnl_usd": -4.8359,
+    "pnl_per_trade": -4.8359,
+    "win_rate": 0.0
+   },
+   {
+    "ticker": "TSLA",
+    "asset_class": "EQUITY",
+    "trades": 3,
+    "total_pnl_usd": 25.0092,
+    "pnl_per_trade": 8.3364,
+    "win_rate": 0.6667
+   },
+   {
+    "ticker": "UNH",
+    "asset_class": "EQUITY",
+    "trades": 2,
+    "total_pnl_usd": -3.0828,
+    "pnl_per_trade": -1.5414,
+    "win_rate": 0.5
+   },
+   {
+    "ticker": "UPS",
+    "asset_class": "EQUITY",
+    "trades": 2,
+    "total_pnl_usd": 3.9055,
+    "pnl_per_trade": 1.9527,
+    "win_rate": 1.0
+   },
+   {
+    "ticker": "VZ",
+    "asset_class": "EQUITY",
+    "trades": 3,
+    "total_pnl_usd": 0.5594,
+    "pnl_per_trade": 0.1865,
+    "win_rate": 0.6667
+   },
+   {
+    "ticker": "WFC",
+    "asset_class": "EQUITY",
+    "trades": 2,
+    "total_pnl_usd": -4.683,
+    "pnl_per_trade": -2.3415,
+    "win_rate": 0.0
+   },
+   {
+    "ticker": "WMT",
+    "asset_class": "EQUITY",
+    "trades": 1,
+    "total_pnl_usd": 0.9851,
+    "pnl_per_trade": 0.9851,
+    "win_rate": 1.0
+   },
+   {
+    "ticker": "XPEV",
+    "asset_class": "EQUITY",
+    "trades": 5,
+    "total_pnl_usd": -11.6258,
+    "pnl_per_trade": -2.3252,
+    "win_rate": 0.4
+   }
+  ],
+  "leave_one_out": {
+   "n_assets": 67,
+   "worst_drop_asset": "MU",
+   "pnl_per_trade_worst_drop": 0.4852,
+   "carried_by_one_asset": true
+  }
+ }
+}

@@ -1,0 +1,1158 @@
+{
+ "experiment": "dispersion_gate (Lab v5 P3)",
+ "source_doc": "references/strategy-lab-v5.md SS2 (Toll Law), SS3 P3",
+ "cost_model_version": "2026-08-13",
+ "gate_version": 2,
+ "kappa": 0.1,
+ "per_class_c_refinement": "v5 doc assumed flat c=14bps -> 1.4%% gate; this run derives c PER ASSET CLASS from backtest/cost_model.py, so the gate is sharper: see per_class_c_bps.",
+ "per_class_c_bps": {
+  "CRYPTO": {
+   "series": 4,
+   "c_bps_min": 14.0,
+   "c_bps_max": 14.0,
+   "c_bps_mean": 14.0,
+   "atr_hold_threshold_pct_min": 1.4,
+   "atr_hold_threshold_pct_max": 1.4
+  },
+  "EQUITY": {
+   "series": 4,
+   "c_bps_min": 4.206,
+   "c_bps_max": 4.206,
+   "c_bps_mean": 4.206,
+   "atr_hold_threshold_pct_min": 0.4206,
+   "atr_hold_threshold_pct_max": 0.4206
+  },
+  "ETF": {
+   "series": 6,
+   "c_bps_min": 4.206,
+   "c_bps_max": 4.206,
+   "c_bps_mean": 4.206,
+   "atr_hold_threshold_pct_min": 0.4206,
+   "atr_hold_threshold_pct_max": 0.4206
+  },
+  "FUTURES": {
+   "series": 2,
+   "c_bps_min": 1.422,
+   "c_bps_max": 1.498,
+   "c_bps_mean": 1.46,
+   "atr_hold_threshold_pct_min": 0.1422,
+   "atr_hold_threshold_pct_max": 0.1498
+  }
+ },
+ "strategy_mapping": {
+  "grid_2.0atr": "GridStrategy(2.0)  [exact name match]",
+  "stoch_rsi_oversold": "StochRsiOversold()  [exact name match]",
+  "dca_7": "DCAStrategy(7)  [P3 says \"dca\"; dca_7 chosen over dca_14: higher frequency. CONTROL, is_benchmark]"
+ },
+ "control_strategies": [
+  "dca_7"
+ ],
+ "exit_holds": {
+  "time_4c": 4,
+  "time_8c": 8,
+  "time_16c": 16
+ },
+ "confirmation_stack": "OFF for both arms (gate is the only variable)",
+ "pooling": "cross-class dollar pooling is SPOT-only (CRYPTO/EQUITY/ETF); FUTURES PnL is contract dollars on ~$34k exposure vs $100 spot clips (ROADMAP P0.4) and appears only in fires_check and results.by_class",
+ "holdout": "calendar-midpoint split per series; judgment on H2",
+ "kill_conditions": [
+  "KILL 1 (P3 verbatim): monotone-flat edge across vol deciles pooled => dispersion conditioning is dead and SS4's 116 trades were the hammer's $1.48 in a costume.",
+  "KILL 2 (SS2 falsifiability): gated per-trade net on the H2 holdout not better than ungated for the non-control entries => the derived gate selects nothing; Toll-Law gate at kappa=0.10 dead on this universe."
+ ],
+ "pre_registered_predictions": [
+  "Edge vs entry-time vol-decile pooled: flat-negative through the middle deciles, positive only in the top decile-and-a-half.",
+  "Gated entries clear the toll where ungated do not; effect survives the time-based holdout (judged on H2)."
+ ],
+ "universe": {
+  "series": 16,
+  "timeframes": [
+   "1d",
+   "1h"
+  ],
+  "smoke": true,
+  "min_candles": 400
+ },
+ "per_series_thresholds": [
+  {
+   "ticker": "AAPL",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "AAPL",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "MSFT",
+   "timeframe": "1d",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "MSFT",
+   "timeframe": "1h",
+   "asset_class": "EQUITY",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SPY",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "SPY",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "QQQ",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "QQQ",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "GLD",
+   "timeframe": "1d",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "GLD",
+   "timeframe": "1h",
+   "asset_class": "ETF",
+   "c_bps": 4.206,
+   "atr_hold_threshold_pct": 0.4206
+  },
+  {
+   "ticker": "BTC_USD",
+   "timeframe": "1d",
+   "asset_class": "CRYPTO",
+   "c_bps": 14.0,
+   "atr_hold_threshold_pct": 1.4
+  },
+  {
+   "ticker": "BTC_USD",
+   "timeframe": "1h",
+   "asset_class": "CRYPTO",
+   "c_bps": 14.0,
+   "atr_hold_threshold_pct": 1.4
+  },
+  {
+   "ticker": "ETH_USD",
+   "timeframe": "1d",
+   "asset_class": "CRYPTO",
+   "c_bps": 14.0,
+   "atr_hold_threshold_pct": 1.4
+  },
+  {
+   "ticker": "ETH_USD",
+   "timeframe": "1h",
+   "asset_class": "CRYPTO",
+   "c_bps": 14.0,
+   "atr_hold_threshold_pct": 1.4
+  },
+  {
+   "ticker": "ES_F",
+   "timeframe": "1d",
+   "asset_class": "FUTURES",
+   "c_bps": 1.422,
+   "atr_hold_threshold_pct": 0.1422
+  },
+  {
+   "ticker": "ES_F",
+   "timeframe": "1h",
+   "asset_class": "FUTURES",
+   "c_bps": 1.498,
+   "atr_hold_threshold_pct": 0.1498
+  }
+ ],
+ "fires_check": [
+  {
+   "strategy": "dca_7",
+   "exit": "time_16c",
+   "asset_class": "CRYPTO",
+   "candidate_entries": 5144,
+   "gated_out": 463,
+   "gated_out_pct": 9.0,
+   "surviving_gated_trades": 1818
+  },
+  {
+   "strategy": "dca_7",
+   "exit": "time_16c",
+   "asset_class": "EQUITY",
+   "candidate_entries": 2695,
+   "gated_out": 0,
+   "gated_out_pct": 0.0,
+   "surviving_gated_trades": 997
+  },
+  {
+   "strategy": "dca_7",
+   "exit": "time_16c",
+   "asset_class": "ETF",
+   "candidate_entries": 3486,
+   "gated_out": 2,
+   "gated_out_pct": 0.06,
+   "surviving_gated_trades": 1302
+  },
+  {
+   "strategy": "dca_7",
+   "exit": "time_16c",
+   "asset_class": "FUTURES",
+   "candidate_entries": 2004,
+   "gated_out": 0,
+   "gated_out_pct": 0.0,
+   "surviving_gated_trades": 785
+  },
+  {
+   "strategy": "dca_7",
+   "exit": "time_4c",
+   "asset_class": "CRYPTO",
+   "candidate_entries": 5144,
+   "gated_out": 2859,
+   "gated_out_pct": 55.58,
+   "surviving_gated_trades": 2285
+  },
+  {
+   "strategy": "dca_7",
+   "exit": "time_4c",
+   "asset_class": "EQUITY",
+   "candidate_entries": 2695,
+   "gated_out": 5,
+   "gated_out_pct": 0.19,
+   "surviving_gated_trades": 2602
+  },
+  {
+   "strategy": "dca_7",
+   "exit": "time_4c",
+   "asset_class": "ETF",
+   "candidate_entries": 3486,
+   "gated_out": 388,
+   "gated_out_pct": 11.13,
+   "surviving_gated_trades": 2778
+  },
+  {
+   "strategy": "dca_7",
+   "exit": "time_4c",
+   "asset_class": "FUTURES",
+   "candidate_entries": 2004,
+   "gated_out": 1,
+   "gated_out_pct": 0.05,
+   "surviving_gated_trades": 1983
+  },
+  {
+   "strategy": "dca_7",
+   "exit": "time_8c",
+   "asset_class": "CRYPTO",
+   "candidate_entries": 5144,
+   "gated_out": 1303,
+   "gated_out_pct": 25.33,
+   "surviving_gated_trades": 2099
+  },
+  {
+   "strategy": "dca_7",
+   "exit": "time_8c",
+   "asset_class": "EQUITY",
+   "candidate_entries": 2695,
+   "gated_out": 0,
+   "gated_out_pct": 0.0,
+   "surviving_gated_trades": 1464
+  },
+  {
+   "strategy": "dca_7",
+   "exit": "time_8c",
+   "asset_class": "ETF",
+   "candidate_entries": 3486,
+   "gated_out": 69,
+   "gated_out_pct": 1.98,
+   "surviving_gated_trades": 1902
+  },
+  {
+   "strategy": "dca_7",
+   "exit": "time_8c",
+   "asset_class": "FUTURES",
+   "candidate_entries": 2004,
+   "gated_out": 0,
+   "gated_out_pct": 0.0,
+   "surviving_gated_trades": 1089
+  },
+  {
+   "strategy": "grid_2.0atr",
+   "exit": "time_16c",
+   "asset_class": "CRYPTO",
+   "candidate_entries": 18495,
+   "gated_out": 1232,
+   "gated_out_pct": 6.66,
+   "surviving_gated_trades": 2133
+  },
+  {
+   "strategy": "grid_2.0atr",
+   "exit": "time_16c",
+   "asset_class": "EQUITY",
+   "candidate_entries": 9077,
+   "gated_out": 0,
+   "gated_out_pct": 0.0,
+   "surviving_gated_trades": 1036
+  },
+  {
+   "strategy": "grid_2.0atr",
+   "exit": "time_16c",
+   "asset_class": "ETF",
+   "candidate_entries": 10144,
+   "gated_out": 8,
+   "gated_out_pct": 0.08,
+   "surviving_gated_trades": 1284
+  },
+  {
+   "strategy": "grid_2.0atr",
+   "exit": "time_16c",
+   "asset_class": "FUTURES",
+   "candidate_entries": 6095,
+   "gated_out": 0,
+   "gated_out_pct": 0.0,
+   "surviving_gated_trades": 823
+  },
+  {
+   "strategy": "grid_2.0atr",
+   "exit": "time_4c",
+   "asset_class": "CRYPTO",
+   "candidate_entries": 18495,
+   "gated_out": 9612,
+   "gated_out_pct": 51.97,
+   "surviving_gated_trades": 2356
+  },
+  {
+   "strategy": "grid_2.0atr",
+   "exit": "time_4c",
+   "asset_class": "EQUITY",
+   "candidate_entries": 9077,
+   "gated_out": 14,
+   "gated_out_pct": 0.15,
+   "surviving_gated_trades": 2294
+  },
+  {
+   "strategy": "grid_2.0atr",
+   "exit": "time_4c",
+   "asset_class": "ETF",
+   "candidate_entries": 10144,
+   "gated_out": 943,
+   "gated_out_pct": 9.3,
+   "surviving_gated_trades": 2395
+  },
+  {
+   "strategy": "grid_2.0atr",
+   "exit": "time_4c",
+   "asset_class": "FUTURES",
+   "candidate_entries": 6095,
+   "gated_out": 0,
+   "gated_out_pct": 0.0,
+   "surviving_gated_trades": 1609
+  },
+  {
+   "strategy": "grid_2.0atr",
+   "exit": "time_8c",
+   "asset_class": "CRYPTO",
+   "candidate_entries": 18495,
+   "gated_out": 4137,
+   "gated_out_pct": 22.37,
+   "surviving_gated_trades": 2552
+  },
+  {
+   "strategy": "grid_2.0atr",
+   "exit": "time_8c",
+   "asset_class": "EQUITY",
+   "candidate_entries": 9077,
+   "gated_out": 0,
+   "gated_out_pct": 0.0,
+   "surviving_gated_trades": 1551
+  },
+  {
+   "strategy": "grid_2.0atr",
+   "exit": "time_8c",
+   "asset_class": "ETF",
+   "candidate_entries": 10144,
+   "gated_out": 179,
+   "gated_out_pct": 1.76,
+   "surviving_gated_trades": 1782
+  },
+  {
+   "strategy": "grid_2.0atr",
+   "exit": "time_8c",
+   "asset_class": "FUTURES",
+   "candidate_entries": 6095,
+   "gated_out": 0,
+   "gated_out_pct": 0.0,
+   "surviving_gated_trades": 1139
+  },
+  {
+   "strategy": "stoch_rsi_oversold",
+   "exit": "time_16c",
+   "asset_class": "CRYPTO",
+   "candidate_entries": 3848,
+   "gated_out": 359,
+   "gated_out_pct": 9.33,
+   "surviving_gated_trades": 977
+  },
+  {
+   "strategy": "stoch_rsi_oversold",
+   "exit": "time_16c",
+   "asset_class": "EQUITY",
+   "candidate_entries": 2010,
+   "gated_out": 0,
+   "gated_out_pct": 0.0,
+   "surviving_gated_trades": 533
+  },
+  {
+   "strategy": "stoch_rsi_oversold",
+   "exit": "time_16c",
+   "asset_class": "ETF",
+   "candidate_entries": 2981,
+   "gated_out": 9,
+   "gated_out_pct": 0.3,
+   "surviving_gated_trades": 813
+  },
+  {
+   "strategy": "stoch_rsi_oversold",
+   "exit": "time_16c",
+   "asset_class": "FUTURES",
+   "candidate_entries": 1751,
+   "gated_out": 0,
+   "gated_out_pct": 0.0,
+   "surviving_gated_trades": 518
+  },
+  {
+   "strategy": "stoch_rsi_oversold",
+   "exit": "time_4c",
+   "asset_class": "CRYPTO",
+   "candidate_entries": 3848,
+   "gated_out": 2344,
+   "gated_out_pct": 60.91,
+   "surviving_gated_trades": 626
+  },
+  {
+   "strategy": "stoch_rsi_oversold",
+   "exit": "time_4c",
+   "asset_class": "EQUITY",
+   "candidate_entries": 2010,
+   "gated_out": 9,
+   "gated_out_pct": 0.45,
+   "surviving_gated_trades": 792
+  },
+  {
+   "strategy": "stoch_rsi_oversold",
+   "exit": "time_4c",
+   "asset_class": "ETF",
+   "candidate_entries": 2981,
+   "gated_out": 575,
+   "gated_out_pct": 19.29,
+   "surviving_gated_trades": 987
+  },
+  {
+   "strategy": "stoch_rsi_oversold",
+   "exit": "time_4c",
+   "asset_class": "FUTURES",
+   "candidate_entries": 1751,
+   "gated_out": 0,
+   "gated_out_pct": 0.0,
+   "surviving_gated_trades": 720
+  },
+  {
+   "strategy": "stoch_rsi_oversold",
+   "exit": "time_8c",
+   "asset_class": "CRYPTO",
+   "candidate_entries": 3848,
+   "gated_out": 1054,
+   "gated_out_pct": 27.39,
+   "surviving_gated_trades": 962
+  },
+  {
+   "strategy": "stoch_rsi_oversold",
+   "exit": "time_8c",
+   "asset_class": "EQUITY",
+   "candidate_entries": 2010,
+   "gated_out": 0,
+   "gated_out_pct": 0.0,
+   "surviving_gated_trades": 651
+  },
+  {
+   "strategy": "stoch_rsi_oversold",
+   "exit": "time_8c",
+   "asset_class": "ETF",
+   "candidate_entries": 2981,
+   "gated_out": 110,
+   "gated_out_pct": 3.69,
+   "surviving_gated_trades": 957
+  },
+  {
+   "strategy": "stoch_rsi_oversold",
+   "exit": "time_8c",
+   "asset_class": "FUTURES",
+   "candidate_entries": 1751,
+   "gated_out": 0,
+   "gated_out_pct": 0.0,
+   "surviving_gated_trades": 613
+  }
+ ],
+ "decile_excluded_trades": 0,
+ "results": {
+  "pooled_gated_vs_ungated": {
+   "grid_2.0atr|time_4c|ungated": {
+    "H1": {
+     "trades": 4772,
+     "pnl_usd": -213.9182,
+     "pnl_per_trade": -0.044828
+    },
+    "H2": {
+     "trades": 4922,
+     "pnl_usd": -435.1767,
+     "pnl_per_trade": -0.088415
+    },
+    "pooled": {
+     "trades": 9694,
+     "pnl_usd": -649.0949,
+     "pnl_per_trade": -0.066958
+    }
+   },
+   "grid_2.0atr|time_4c|gated": {
+    "H1": {
+     "trades": 3514,
+     "pnl_usd": -80.7272,
+     "pnl_per_trade": -0.022973
+    },
+    "H2": {
+     "trades": 3531,
+     "pnl_usd": -244.8885,
+     "pnl_per_trade": -0.069354
+    },
+    "pooled": {
+     "trades": 7045,
+     "pnl_usd": -325.6157,
+     "pnl_per_trade": -0.046219
+    }
+   },
+   "grid_2.0atr|time_8c|ungated": {
+    "H1": {
+     "trades": 3261,
+     "pnl_usd": 31.8209,
+     "pnl_per_trade": 0.009758
+    },
+    "H2": {
+     "trades": 3353,
+     "pnl_usd": -143.011,
+     "pnl_per_trade": -0.042652
+    },
+    "pooled": {
+     "trades": 6614,
+     "pnl_usd": -111.1901,
+     "pnl_per_trade": -0.016811
+    }
+   },
+   "grid_2.0atr|time_8c|gated": {
+    "H1": {
+     "trades": 2924,
+     "pnl_usd": 67.1044,
+     "pnl_per_trade": 0.02295
+    },
+    "H2": {
+     "trades": 2961,
+     "pnl_usd": -97.8841,
+     "pnl_per_trade": -0.033058
+    },
+    "pooled": {
+     "trades": 5885,
+     "pnl_usd": -30.7797,
+     "pnl_per_trade": -0.00523
+    }
+   },
+   "grid_2.0atr|time_16c|ungated": {
+    "H1": {
+     "trades": 2257,
+     "pnl_usd": 103.5063,
+     "pnl_per_trade": 0.04586
+    },
+    "H2": {
+     "trades": 2333,
+     "pnl_usd": -95.2525,
+     "pnl_per_trade": -0.040828
+    },
+    "pooled": {
+     "trades": 4590,
+     "pnl_usd": 8.2538,
+     "pnl_per_trade": 0.001798
+    }
+   },
+   "grid_2.0atr|time_16c|gated": {
+    "H1": {
+     "trades": 2201,
+     "pnl_usd": 93.3,
+     "pnl_per_trade": 0.04239
+    },
+    "H2": {
+     "trades": 2252,
+     "pnl_usd": -95.5396,
+     "pnl_per_trade": -0.042424
+    },
+    "pooled": {
+     "trades": 4453,
+     "pnl_usd": -2.2396,
+     "pnl_per_trade": -0.000503
+    }
+   },
+   "stoch_rsi_oversold|time_4c|ungated": {
+    "H1": {
+     "trades": 1849,
+     "pnl_usd": -24.2445,
+     "pnl_per_trade": -0.013112
+    },
+    "H2": {
+     "trades": 1710,
+     "pnl_usd": -48.2536,
+     "pnl_per_trade": -0.028219
+    },
+    "pooled": {
+     "trades": 3559,
+     "pnl_usd": -72.4981,
+     "pnl_per_trade": -0.02037
+    }
+   },
+   "stoch_rsi_oversold|time_4c|gated": {
+    "H1": {
+     "trades": 1260,
+     "pnl_usd": 14.5055,
+     "pnl_per_trade": 0.011512
+    },
+    "H2": {
+     "trades": 1145,
+     "pnl_usd": 16.7067,
+     "pnl_per_trade": 0.014591
+    },
+    "pooled": {
+     "trades": 2405,
+     "pnl_usd": 31.2122,
+     "pnl_per_trade": 0.012978
+    }
+   },
+   "stoch_rsi_oversold|time_8c|ungated": {
+    "H1": {
+     "trades": 1537,
+     "pnl_usd": -26.8928,
+     "pnl_per_trade": -0.017497
+    },
+    "H2": {
+     "trades": 1401,
+     "pnl_usd": -55.9387,
+     "pnl_per_trade": -0.039928
+    },
+    "pooled": {
+     "trades": 2938,
+     "pnl_usd": -82.8316,
+     "pnl_per_trade": -0.028193
+    }
+   },
+   "stoch_rsi_oversold|time_8c|gated": {
+    "H1": {
+     "trades": 1345,
+     "pnl_usd": -14.3893,
+     "pnl_per_trade": -0.010698
+    },
+    "H2": {
+     "trades": 1225,
+     "pnl_usd": -45.3124,
+     "pnl_per_trade": -0.03699
+    },
+    "pooled": {
+     "trades": 2570,
+     "pnl_usd": -59.7017,
+     "pnl_per_trade": -0.02323
+    }
+   },
+   "stoch_rsi_oversold|time_16c|ungated": {
+    "H1": {
+     "trades": 1280,
+     "pnl_usd": 57.4181,
+     "pnl_per_trade": 0.044858
+    },
+    "H2": {
+     "trades": 1146,
+     "pnl_usd": -46.8074,
+     "pnl_per_trade": -0.040844
+    },
+    "pooled": {
+     "trades": 2426,
+     "pnl_usd": 10.6106,
+     "pnl_per_trade": 0.004374
+    }
+   },
+   "stoch_rsi_oversold|time_16c|gated": {
+    "H1": {
+     "trades": 1228,
+     "pnl_usd": 51.0932,
+     "pnl_per_trade": 0.041607
+    },
+    "H2": {
+     "trades": 1095,
+     "pnl_usd": -37.787,
+     "pnl_per_trade": -0.034509
+    },
+    "pooled": {
+     "trades": 2323,
+     "pnl_usd": 13.3062,
+     "pnl_per_trade": 0.005728
+    }
+   },
+   "dca_7|time_4c|ungated": {
+    "H1": {
+     "trades": 5362,
+     "pnl_usd": -116.1361,
+     "pnl_per_trade": -0.021659
+    },
+    "H2": {
+     "trades": 5547,
+     "pnl_usd": -350.6974,
+     "pnl_per_trade": -0.063223
+    },
+    "pooled": {
+     "trades": 10909,
+     "pnl_usd": -466.8335,
+     "pnl_per_trade": -0.042793
+    }
+   },
+   "dca_7|time_4c|gated": {
+    "H1": {
+     "trades": 3832,
+     "pnl_usd": 38.1873,
+     "pnl_per_trade": 0.009965
+    },
+    "H2": {
+     "trades": 3833,
+     "pnl_usd": -57.3417,
+     "pnl_per_trade": -0.01496
+    },
+    "pooled": {
+     "trades": 7665,
+     "pnl_usd": -19.1545,
+     "pnl_per_trade": -0.002499
+    }
+   },
+   "dca_7|time_8c|ungated": {
+    "H1": {
+     "trades": 3001,
+     "pnl_usd": 29.4996,
+     "pnl_per_trade": 0.00983
+    },
+    "H2": {
+     "trades": 3124,
+     "pnl_usd": -105.9937,
+     "pnl_per_trade": -0.033929
+    },
+    "pooled": {
+     "trades": 6125,
+     "pnl_usd": -76.4941,
+     "pnl_per_trade": -0.012489
+    }
+   },
+   "dca_7|time_8c|gated": {
+    "H1": {
+     "trades": 2699,
+     "pnl_usd": 56.8901,
+     "pnl_per_trade": 0.021078
+    },
+    "H2": {
+     "trades": 2766,
+     "pnl_usd": -52.3686,
+     "pnl_per_trade": -0.018933
+    },
+    "pooled": {
+     "trades": 5465,
+     "pnl_usd": 4.5214,
+     "pnl_per_trade": 0.000827
+    }
+   },
+   "dca_7|time_16c|ungated": {
+    "H1": {
+     "trades": 2088,
+     "pnl_usd": 189.8332,
+     "pnl_per_trade": 0.090916
+    },
+    "H2": {
+     "trades": 2171,
+     "pnl_usd": -72.375,
+     "pnl_per_trade": -0.033337
+    },
+    "pooled": {
+     "trades": 4259,
+     "pnl_usd": 117.4582,
+     "pnl_per_trade": 0.027579
+    }
+   },
+   "dca_7|time_16c|gated": {
+    "H1": {
+     "trades": 2031,
+     "pnl_usd": 188.6963,
+     "pnl_per_trade": 0.092908
+    },
+    "H2": {
+     "trades": 2086,
+     "pnl_usd": -65.2052,
+     "pnl_per_trade": -0.031258
+    },
+    "pooled": {
+     "trades": 4117,
+     "pnl_usd": 123.4911,
+     "pnl_per_trade": 0.029995
+    }
+   }
+  },
+  "by_class": {
+   "grid_2.0atr|ungated|EQUITY": {
+    "trades": 4884,
+    "pnl_usd": 157.8262,
+    "pnl_per_trade": 0.032315
+   },
+   "grid_2.0atr|gated|EQUITY": {
+    "trades": 4881,
+    "pnl_usd": 158.4341,
+    "pnl_per_trade": 0.032459
+   },
+   "stoch_rsi_oversold|ungated|EQUITY": {
+    "trades": 1979,
+    "pnl_usd": 101.8729,
+    "pnl_per_trade": 0.051477
+   },
+   "stoch_rsi_oversold|gated|EQUITY": {
+    "trades": 1976,
+    "pnl_usd": 102.3312,
+    "pnl_per_trade": 0.051787
+   },
+   "dca_7|ungated|EQUITY": {
+    "trades": 5068,
+    "pnl_usd": 330.2201,
+    "pnl_per_trade": 0.065158
+   },
+   "dca_7|gated|EQUITY": {
+    "trades": 5063,
+    "pnl_usd": 330.4396,
+    "pnl_per_trade": 0.065266
+   },
+   "grid_2.0atr|ungated|ETF": {
+    "trades": 5723,
+    "pnl_usd": 419.0135,
+    "pnl_per_trade": 0.073216
+   },
+   "grid_2.0atr|gated|ETF": {
+    "trades": 5461,
+    "pnl_usd": 433.7656,
+    "pnl_per_trade": 0.07943
+   },
+   "stoch_rsi_oversold|ungated|ETF": {
+    "trades": 2983,
+    "pnl_usd": 142.5399,
+    "pnl_per_trade": 0.047784
+   },
+   "stoch_rsi_oversold|gated|ETF": {
+    "trades": 2757,
+    "pnl_usd": 149.6837,
+    "pnl_per_trade": 0.054292
+   },
+   "dca_7|ungated|ETF": {
+    "trades": 6390,
+    "pnl_usd": 536.4391,
+    "pnl_per_trade": 0.08395
+   },
+   "dca_7|gated|ETF": {
+    "trades": 5982,
+    "pnl_usd": 552.8135,
+    "pnl_per_trade": 0.092413
+   },
+   "grid_2.0atr|ungated|CRYPTO": {
+    "trades": 10291,
+    "pnl_usd": -1328.8708,
+    "pnl_per_trade": -0.129129
+   },
+   "grid_2.0atr|gated|CRYPTO": {
+    "trades": 7041,
+    "pnl_usd": -950.8347,
+    "pnl_per_trade": -0.135043
+   },
+   "stoch_rsi_oversold|ungated|CRYPTO": {
+    "trades": 3961,
+    "pnl_usd": -389.1316,
+    "pnl_per_trade": -0.098241
+   },
+   "stoch_rsi_oversold|gated|CRYPTO": {
+    "trades": 2565,
+    "pnl_usd": -267.198,
+    "pnl_per_trade": -0.104171
+   },
+   "dca_7|ungated|CRYPTO": {
+    "trades": 9835,
+    "pnl_usd": -1292.5289,
+    "pnl_per_trade": -0.131421
+   },
+   "dca_7|gated|CRYPTO": {
+    "trades": 6202,
+    "pnl_usd": -774.3949,
+    "pnl_per_trade": -0.124862
+   },
+   "grid_2.0atr|ungated|FUTURES": {
+    "trades": 3571,
+    "pnl_usd": 34104.1406,
+    "pnl_per_trade": 9.550305
+   },
+   "grid_2.0atr|gated|FUTURES": {
+    "trades": 3571,
+    "pnl_usd": 34104.1406,
+    "pnl_per_trade": 9.550305
+   },
+   "stoch_rsi_oversold|ungated|FUTURES": {
+    "trades": 1851,
+    "pnl_usd": 3492.9651,
+    "pnl_per_trade": 1.887069
+   },
+   "stoch_rsi_oversold|gated|FUTURES": {
+    "trades": 1851,
+    "pnl_usd": 3492.9651,
+    "pnl_per_trade": 1.887069
+   },
+   "dca_7|ungated|FUTURES": {
+    "trades": 3858,
+    "pnl_usd": 27712.1567,
+    "pnl_per_trade": 7.183037
+   },
+   "dca_7|gated|FUTURES": {
+    "trades": 3857,
+    "pnl_usd": 27699.0331,
+    "pnl_per_trade": 7.181497
+   }
+  },
+  "vol_deciles_ungated": {
+   "grid_2.0atr": {
+    "decile_0": {
+     "trades": 1819,
+     "pnl_usd": 6.5129,
+     "pnl_per_trade": 0.00358
+    },
+    "decile_1": {
+     "trades": 1785,
+     "pnl_usd": -103.2768,
+     "pnl_per_trade": -0.057858
+    },
+    "decile_2": {
+     "trades": 1792,
+     "pnl_usd": -189.4256,
+     "pnl_per_trade": -0.105706
+    },
+    "decile_3": {
+     "trades": 1819,
+     "pnl_usd": -61.7608,
+     "pnl_per_trade": -0.033953
+    },
+    "decile_4": {
+     "trades": 1914,
+     "pnl_usd": -30.1029,
+     "pnl_per_trade": -0.015728
+    },
+    "decile_5": {
+     "trades": 1850,
+     "pnl_usd": -19.8303,
+     "pnl_per_trade": -0.010719
+    },
+    "decile_6": {
+     "trades": 2050,
+     "pnl_usd": -328.643,
+     "pnl_per_trade": -0.160314
+    },
+    "decile_7": {
+     "trades": 2161,
+     "pnl_usd": -168.9736,
+     "pnl_per_trade": -0.078192
+    },
+    "decile_8": {
+     "trades": 2499,
+     "pnl_usd": -74.3834,
+     "pnl_per_trade": -0.029765
+    },
+    "decile_9": {
+     "trades": 3209,
+     "pnl_usd": 217.8524,
+     "pnl_per_trade": 0.067888
+    }
+   },
+   "stoch_rsi_oversold": {
+    "decile_0": {
+     "trades": 1279,
+     "pnl_usd": 113.8476,
+     "pnl_per_trade": 0.089013
+    },
+    "decile_1": {
+     "trades": 1177,
+     "pnl_usd": -41.1334,
+     "pnl_per_trade": -0.034948
+    },
+    "decile_2": {
+     "trades": 889,
+     "pnl_usd": -75.0948,
+     "pnl_per_trade": -0.084471
+    },
+    "decile_3": {
+     "trades": 979,
+     "pnl_usd": -52.7373,
+     "pnl_per_trade": -0.053869
+    },
+    "decile_4": {
+     "trades": 902,
+     "pnl_usd": 72.8621,
+     "pnl_per_trade": 0.080778
+    },
+    "decile_5": {
+     "trades": 845,
+     "pnl_usd": -55.0286,
+     "pnl_per_trade": -0.065123
+    },
+    "decile_6": {
+     "trades": 761,
+     "pnl_usd": -92.7847,
+     "pnl_per_trade": -0.121925
+    },
+    "decile_7": {
+     "trades": 738,
+     "pnl_usd": -114.451,
+     "pnl_per_trade": -0.155083
+    },
+    "decile_8": {
+     "trades": 703,
+     "pnl_usd": 40.0827,
+     "pnl_per_trade": 0.057017
+    },
+    "decile_9": {
+     "trades": 650,
+     "pnl_usd": 59.7184,
+     "pnl_per_trade": 0.091874
+    }
+   },
+   "dca_7": {
+    "decile_0": {
+     "trades": 2366,
+     "pnl_usd": -71.4129,
+     "pnl_per_trade": -0.030183
+    },
+    "decile_1": {
+     "trades": 1983,
+     "pnl_usd": -43.7207,
+     "pnl_per_trade": -0.022048
+    },
+    "decile_2": {
+     "trades": 1902,
+     "pnl_usd": -95.0692,
+     "pnl_per_trade": -0.049984
+    },
+    "decile_3": {
+     "trades": 1962,
+     "pnl_usd": -225.1008,
+     "pnl_per_trade": -0.11473
+    },
+    "decile_4": {
+     "trades": 1883,
+     "pnl_usd": 55.7575,
+     "pnl_per_trade": 0.029611
+    },
+    "decile_5": {
+     "trades": 1952,
+     "pnl_usd": 66.5949,
+     "pnl_per_trade": 0.034116
+    },
+    "decile_6": {
+     "trades": 1983,
+     "pnl_usd": -183.7307,
+     "pnl_per_trade": -0.092653
+    },
+    "decile_7": {
+     "trades": 2160,
+     "pnl_usd": -215.8063,
+     "pnl_per_trade": -0.09991
+    },
+    "decile_8": {
+     "trades": 2354,
+     "pnl_usd": -149.8775,
+     "pnl_per_trade": -0.063669
+    },
+    "decile_9": {
+     "trades": 2748,
+     "pnl_usd": 436.4963,
+     "pnl_per_trade": 0.158841
+    }
+   }
+  },
+  "leave_one_asset_out": {
+   "grid_2.0atr|ungated": {
+    "trades": 20898,
+    "pnl_per_trade": -0.035986,
+    "worst_drop_asset": "GLD",
+    "pnl_per_trade_without_it": -0.048563,
+    "carried_by_one_asset": false
+   },
+   "grid_2.0atr|gated": {
+    "trades": 17383,
+    "pnl_per_trade": -0.020631,
+    "worst_drop_asset": "GLD",
+    "pnl_per_trade_without_it": -0.034647,
+    "carried_by_one_asset": false
+   },
+   "stoch_rsi_oversold|ungated": {
+    "trades": 8923,
+    "pnl_per_trade": -0.016219,
+    "worst_drop_asset": "GLD",
+    "pnl_per_trade_without_it": -0.033166,
+    "carried_by_one_asset": false
+   },
+   "stoch_rsi_oversold|gated": {
+    "trades": 7298,
+    "pnl_per_trade": -0.00208,
+    "worst_drop_asset": "GLD",
+    "pnl_per_trade_without_it": -0.021612,
+    "carried_by_one_asset": false
+   },
+   "dca_7|ungated": {
+    "trades": 21293,
+    "pnl_per_trade": -0.02,
+    "worst_drop_asset": "AAPL",
+    "pnl_per_trade_without_it": -0.035497,
+    "carried_by_one_asset": false
+   },
+   "dca_7|gated": {
+    "trades": 17247,
+    "pnl_per_trade": 0.006312,
+    "worst_drop_asset": "GLD",
+    "pnl_per_trade_without_it": -0.010129,
+    "carried_by_one_asset": false
+   }
+  },
+  "power": {
+   "bar_for_009_edges": [
+    4000,
+    8700
+   ],
+   "pooled_gated_trades_noncontrol": 24681,
+   "status": "VERDICT-CAPABLE"
+  }
+ }
+}

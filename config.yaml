@@ -1,0 +1,127 @@
+# Trading Bot v1 Configuration
+
+mode: paper  # paper | live (changing to live also requires TRADING_LIVE_ACK=I_UNDERSTAND env var)
+
+exchange:
+  name: binanceus
+  pairs:
+    - BTC/USDT
+    - ETH/USDT
+    - SOL/USDT
+  fees:
+    maker: 0.001   # 0.10%
+    taker: 0.001   # 0.10%
+  slippage:
+    market: 0.0005  # 0.05% adverse
+    limit: 0.0      # limit fills at the price
+
+# ---------------------------------------------------------------------------
+# COST PROFILES BY VENUE / ASSET CLASS  (added 2026-08-13)
+#
+# WHY: the harness applied ONE cost model - Binance.US crypto taker fees -
+# to every instrument, including 905,124 equity trades. Alpaca charges $0
+# commission on equities, so those runs were charged roughly 6-15x the real
+# cost. The gross-edge-is-zero verdict survives this (gross was ~0 in every
+# class), but the BAR for future work differs by class by an order of
+# magnitude, so the model must stop pretending they are the same.
+#
+# STATUS: WIRED 2026-08-13 (D-235) via backtest/cost_model.py, which is the
+# single source of truth for rates - the profiles below are documentation.
+# Harnesses use venue-accurate costs only when `use_cost_model: true` is set
+# (the graveyard runner forces it); otherwise they run the legacy flat
+# exchange.fees model, bit-identical to before, which the cross-harness
+# referee requires. Every result row is stamped `cost_model_version`, and
+# results with different stamps can never be pooled (backtest/assertions.py).
+#
+# UNVERIFIED: the binanceus rates below are the SPEC's original assumption.
+# Two reviewers report Binance.US moved to 0% maker / 0.02% taker in April
+# 2026; ccxt's public data still reports 0.10% (possibly its static default).
+# Account-specific rates need an authenticated call. AYM TO VERIFY.
+# ---------------------------------------------------------------------------
+cost_profiles:
+  binanceus_crypto:
+    maker: 0.001          # 0.10% - UNVERIFIED, may now be 0.0
+    taker: 0.001          # 0.10% - UNVERIFIED, may now be 0.0002
+    slippage_market: 0.0005
+    model: percentage
+  alpaca_equity:
+    maker: 0.0            # commission-free
+    taker: 0.0            # commission-free
+    slippage_market: 0.0002   # spread-driven, ~2bps round trip on liquid names
+    model: percentage_spread_only
+  futures_per_contract:
+    commission_per_contract: 2.50   # round turn, typical retail
+    model: fixed_per_contract
+    # WARNING: a single ES contract is ~$250k notional. The $100 fixed-notional
+    # model CANNOT trade futures. All 79,642 futures backtest rows are
+    # structurally fictional and must be re-scoped to micro contracts (MES/MNQ)
+    # or dropped from the tradeable universe.
+  options_per_contract:
+    commission_per_contract: 0.65
+    model: fixed_per_contract
+    # Fixed cost INVERTS the size logic (see research/2026-08-13-position-size-and-costs.md)
+
+# Venue-accurate backtest costs (backtest/cost_model.py). False = legacy flat
+# exchange.fees model. The graveyard runner overrides this to true in code.
+use_cost_model: false
+
+timeframes:
+  signal: 15m
+  regime: 1h
+
+strategy:
+  patterns:
+    - bullish_engulfing
+    - hammer
+    - morning_star
+    - piercing_line
+    - three_white_soldiers
+    - bearish_exit
+    - doji_filter
+  confirmation:
+    regime_ema_period: 50
+    regime_lookback: 10
+    rsi_period: 14
+    rsi_max_entry: 60
+    rsi_reversal_boost: 45
+    volume_sma_period: 20
+    volume_min_ratio: 1.5
+    support_lookback: 100
+    support_min_touches: 2
+    support_cluster_atr_mult: 0.5
+    location_atr_mult: 1.5
+    spread_max: 0.001  # 0.10%
+
+risk:
+  notional_cap_usd: 100          # FIXED notional cap per trade. Does NOT scale with balance.
+  fee_to_edge_max: 0.15         # reject trade if fee / (entry - stop) > this (15% of edge eaten by fees)
+  max_trades_per_day: 1         # F4/R6: start at 1, tune up when profitable
+  consecutive_loss_pause: 4     # 4 losing trades in a row = 24h pause on new entries
+  daily_ops_stop_multiplier: 3  # equity drop > 3x notional_cap in a day = halt (ops backstop)
+  weekly_ops_stop_multiplier: 15 # equity drop > 15x notional_cap in a week = halt (ops backstop)
+  max_concurrent_positions: 2
+  max_positions_per_pair: 1
+  atr_period: 14
+  atr_stop_mult: 0.25           # stop = signal low - 0.25 * ATR
+  target_r: 2.0                 # 2R target
+
+paper:
+  starting_equity: 2000.0
+  currency: USDT
+
+notion:
+  trading_journal_db: ""     # Notion database ID (fill when created)
+  daily_summary_db: ""       # Notion database ID (fill when created)
+  weekly_summary_db: ""      # Notion database ID (fill when created)
+
+telegram:
+  # Emergency alerts only: daily loss shutdown, engine crash, API error storm, kill switch
+  enabled: true
+  bot_token: ""              # Telegram bot token for emergency alerts
+  chat_id: ""                # Telegram chat ID to send alerts to
+
+logging:
+  level: INFO                 # DEBUG | INFO | WARNING | ERROR
+  file: logs/engine.log
+  max_size_mb: 50
+  backup_count: 5

@@ -1,0 +1,14 @@
+{
+  "status": "DURABLE",
+  "harness_validated": true,
+  "graveyard": "v0_graveyard_full.json",
+  "strategy_filter": null,
+  "entries_total": 0,
+  "silent_assertions": null,
+  "distinct_findings": null,
+  "graveyard_summary": null,
+  "strategies": [],
+  "asset_class_breakdown": [],
+  "expected_best_by_chance": null,
+  "note": "not available: no graveyard entries for this path/filter"
+}

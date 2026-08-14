@@ -1,0 +1,67 @@
+{
+  "trades": 4633,
+  "buckets": [
+    {
+      "bucket": 1,
+      "n": 926,
+      "premium_pct_range": [
+        0.118,
+        0.781
+      ],
+      "mean_return_on_premium": 23.39,
+      "median_return_on_premium": -16.2,
+      "win_rate": 46.0,
+      "stdev": 163.41
+    },
+    {
+      "bucket": 2,
+      "n": 926,
+      "premium_pct_range": [
+        0.781,
+        1.287
+      ],
+      "mean_return_on_premium": 13.81,
+      "median_return_on_premium": -7.09,
+      "win_rate": 48.4,
+      "stdev": 107.09
+    },
+    {
+      "bucket": 3,
+      "n": 926,
+      "premium_pct_range": [
+        1.287,
+        1.751
+      ],
+      "mean_return_on_premium": 6.09,
+      "median_return_on_premium": -20.34,
+      "win_rate": 44.9,
+      "stdev": 106.39
+    },
+    {
+      "bucket": 4,
+      "n": 926,
+      "premium_pct_range": [
+        1.751,
+        2.714
+      ],
+      "mean_return_on_premium": 7.02,
+      "median_return_on_premium": -11.62,
+      "win_rate": 47.1,
+      "stdev": 84.89
+    },
+    {
+      "bucket": 5,
+      "n": 929,
+      "premium_pct_range": [
+        2.714,
+        9.441
+      ],
+      "mean_return_on_premium": 10.31,
+      "median_return_on_premium": -0.73,
+      "win_rate": 49.7,
+      "stdev": 89.32
+    }
+  ],
+  "cheap_minus_expensive_pp": 13.08,
+  "monotone": false
+}
