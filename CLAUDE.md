@@ -33,62 +33,59 @@
 > that wrote the file but never POSTed - so the FILE is the durable artifact;
 > write it even if everything else is on fire.
 
-**Last updated by:** Cody (session 2, 2026-08-13, end of session)
+**Last updated by:** Cody, 2026-08-14 (post-purge state, README and docs committed)
 **Project path:** ~/aym/projects/05-trading-bot/
 
 ## Current state in one paragraph
 
-T1-T9 built. **559 tests passing, 1 skipped** (the "547" in the previous
-version of this file never reconciled; the verified pre-session baseline was
-543 - see the session-2 handoff).
-`validate_harness.py` 21/21, status DURABLE. v0 verdict stands: 33 of 35
-strategies have zero gross edge - the measurement apparatus is the asset,
-strategies are fungible. Cost model, cross-sectional harness, contract sizing,
-Labs v2-v5 and Judge-as-code are all built. **A graveyard sweep started 16:01
-is still running and is executing stale code** - it predates the D-249 sizing
-fix, so its FUTURES rows are contaminated and need a purge + rebuild that is
-built but not yet run. No live trading. Paper/backtest only until Aym says so.
+T1-T9 built. 559 tests passing, 1 skipped. `validate_harness.py` 21/21.
+v0 verdict: 33 of 35 strategies zero gross edge. The graveyard sweep, the chain,
+and the post-sweep repair are all COMPLETE (finished 13:45, Aug 14). FUTURES
+purge complete (D-261): 23,595 contract rows dropped, futures rebuilt under the
+fixed cost model, graveyard back to 535,425 entries across 55 strategies. The
+judge evidence pack is DURABLE and the one on disk now is a real result, not the
+old empty pack. Nothing is running. No live trading; paper and backtest only.
+Aym's directive: backtesting and getting judge up to speed (D-264).
 
-## What's running right now
+## What just happened (Aug 14)
 
-**Check with `pgrep -f run_incremental_graveyard`, NOT `ps aux | grep python`** -
-the interpreter is capital-P `Python` and the plain grep misses it. Session 2
-wrongly concluded the sweep had died that way.
+- Post-sweep repair COMPLETE at 13:45. Purge, rebuild, judge, all exit 0.
+  Log: `logs/post_sweep_repair.log`. The pre-purge graveyard is backed up in
+  `research/graveyard/archive/`.
+- Judge pack emitted: 535,425 entries, 55 strategies, 381 PASS,
+  52 PASS_BENCHMARK, 155 distinct findings, status DURABLE, `degraded` null.
+  Where those live in `research/judge_evidence_pack.json` (they are NOT
+  top-level keys): pass counts at `graveyard_summary.verdict_counts`,
+  509,080 tests at `graveyard_summary.multiple_comparisons.tests_completed`
+  (mirrored at `expected_best_by_chance.tests_completed`), 155 at
+  `distinct_findings.strategy_x_ticker_x_timeframe`.
+- 4 of the 8 silent assertions FAIL on the current graveyard: quarantine_canary
+  (MULN/SNDL rows present), trade_count_sanity, duplicate_strategies (C2 is
+  identical to C5/D1/D2/S1/S2 across all 264 compared rows), timeframe_coherence.
+  Known from D-226, not new, but not fixed either. Do not describe the pack as
+  clean. DURABLE is a statement about harness validation only.
+- README.md fully rewritten and COMMITTED (574c5d4). Handoff:
+  `docs/handoffs/2026-08-14-readme-rewrite.md`.
+- D-261's row count corrected in DECISIONS.md (said 12,936, actual 23,595).
+  Factual correction, no version bump. Raven ruled the four remaining 12,936
+  references in D-254/D-259 stay as written: they are the historical record of
+  what was believed at decision time, and rewriting them would falsify it.
+- The repo is PUBLIC on github.com/AymAbdalla/05-trading-bot. Docs are committed
+  and pushed. The graveyard JSON files (`research/judge_evidence_pack.json`,
+  `research/graveyard/harness_validation.json`) are modified but deliberately
+  UNCOMMITTED - Raven wants to review the diff before they go public.
 
-- `run_incremental_graveyard.py` (PID 63767, started 16:01) - was ~60% done
-  (114/191 tickers, at PLTR) at 22:26. ETA was ~4h from there.
-- `run_queued_chain.sh` (PID 69639) - polls every 300s, then runs: incremental
-  pass (backfills v4/v5), dispersion gate, horizon ladder, PLR.
+## Aym's decisions (2026-08-14, DECISIONS.md v9)
 
-## The one thing to understand before using any sweep output
-
-The running sweep imported its code at 16:01. `cost_model.py` (the D-249
-contract-sizing fix) changed at 17:45, v4 at 16:19, v5 at 16:45. So the run in
-flight has **49 strategies, not 54, and pre-fix futures sizing**. Confirmed by
-`strategies_tested: 49` in the graveyard header (28+7+9+5).
-
-Only FUTURES/OPTIONS are affected - `is_contract` is true for those alone -
-which is 12,936 of ~288k rows. EQUITY/ETF/CRYPTO are fine. That is why the
-sweep was left running rather than killed (D-253).
-
-The fix shipped **without a `COST_MODEL_VERSION` bump**, so every row reads
-`'2026-08-13'` and the "never pool across cost_model_version" rule cannot see
-the contamination. `backtest/purge_stale_futures.py` is the remedy: drops all
-contract rows so they rebuild under current code. Dry-run default; refuses to
-run while the sweep is alive; backs up and writes atomically; 15 tests on the
-destructive edges (D-259). **Not run yet** - it discards 51 PASS rows, and Aym
-should see that named first (D-254).
-
-The whole repair is one gated command once he confirms:
-
-```bash
-nohup bash backtest/run_post_sweep_repair.sh --confirm > logs/post_sweep_repair.log 2>&1 &
-```
-
-It waits out the sweep AND the chain, dry-runs the purge into the log, applies
-it, rebuilds futures + backfills v4/v5 in one pass, then emits a judge pack
-(D-260). **Never edit `run_queued_chain.sh` while it is running** - bash reads
-a script by byte offset as it executes.
+- **D-261:** Purge confirmed and COMPLETE. 23,595 rows dropped, graveyard
+  rebuilt to 535,425 entries.
+- **D-262:** Alpaca keys already rotated by Aym; he will rotate again.
+  .env lives at `~/aym/projects/05-trading-bot/.env` (gitignored).
+  Keys: `ALPACA_API_KEY`, `ALPACA_API_SECRET`, `ALPACA_ENDPOINT`. D-110 closed.
+- **D-263:** Binance.US live fee verification RETIRED as a checklist item.
+- **D-264:** Paper run + kill-switch drill deferred. Focus: backtesting + judge.
+- **D-265:** `references/broker-fee-reference-2026.md` is the single source of
+  truth for costs.
 
 ## What's built (files that exist and work)
 
@@ -97,16 +94,16 @@ a script by byte offset as it executes.
 - `backtest/` - vectorized + event + cross-sectional harnesses, cost model
   (4 venue regimes), `instruments.py` (contract sizing), assertions, pooled
   analysis, asset-class analysis, conditional edge, inversion, graveyard
-  builder, toll collector, dispersion gate, **`purge_stale_futures.py` +
-  `run_post_sweep_repair.sh` (new, tested, not armed)**
+  builder, toll collector, dispersion gate, `purge_stale_futures.py` +
+  `run_post_sweep_repair.sh` (both used in anger Aug 14, no longer untried)
 - `strategies/builtin/` - expanded.py (28), strategy_lab.py (7),
-  strategy_lab_v2.py (9), v3 (5), v4 (3 ignitions), v5 (2 forced-flow) = 54
+  strategy_lab_v2.py (9), v3 (6), v4 (3 ignitions), v5 (2 forced-flow) = 55
 - `indicators/` - ATR, RSI, EMA, MACD/Stoch (ta-library facades)
 - `agents/` - Quant SOUL.md (active, LLM), `judge.py` (active, pure Python, no
   LLM), Scout/Forge/Coach/Echo SOULs drafted but not active (split trigger is
   5+ live strategies; currently zero). `agents/README.md` has the org chart and
   the judge.py runbook.
-- `docs/ROADMAP.md` (P0-P6), `docs/DECISIONS.md` (now at v8, D-257)
+- `docs/ROADMAP.md` (P0-P6), `docs/DECISIONS.md` (v9, D-101 through D-265)
 
 ## Key conventions (learned the hard way, follow these)
 
@@ -121,48 +118,55 @@ a script by byte offset as it executes.
 8. Every entry needs stop strictly below entry. Harness rejects inverted stops.
 9. Write a handoff note to docs/handoffs/ after every build session. Not optional.
 10. Write decisions to DECISIONS.md with a D-number, who decided, why, where.
-11. NOT_TESTED means "could not run," never "ran and found nothing." **This
-    applies to the evidence layer too**: an unreadable graveyard is not an empty
+11. NOT_TESTED means "could not run," never "ran and found nothing." This
+    applies to the evidence layer too: an unreadable graveyard is not an empty
     one (D-255, the judge.py bug).
 12. A toll/cost RATE can legitimately be `inf` when an instrument cannot be
     afforded at the configured capital. Correct answer, not a bug to paper over.
-13. **Edits during a long run do not reach it.** Python snapshots source at
-    import. Before editing anything a running sweep imports, check whether a
-    sweep is running and note what it will and will not have (D-253).
-14. **Run python as `env -u PYTHONPATH python3` from agent-spawned sessions.**
+13. Edits during a long run do not reach it. Python snapshots source at import.
+    Before editing anything a running sweep imports, check whether a sweep is
+    running and note what it will and will not have (D-253).
+14. Run python as `env -u PYTHONPATH python3` from agent-spawned sessions.
     Hermes leaks its 3.11 venv onto PYTHONPATH; numpy then fails to import in a
     way that looks like a broken install. The machine is fine (D-257).
+15. A number written into a decision BEFORE the run is an estimate. When the run
+    finishes, correct the entry against the log (D-261 said 12,936, actual
+    23,595). Correct in place, note it, do not bump the version. This applies to
+    factual corrections only (row counts, durations, entry counts). It does not
+    apply to changes in reasoning or conclusions, which require a new decision or
+    a version bump.
 
 ## Open results question
 
 The constraint sweep finished. Its own DIAGNOSTIC claims tightening the gate
-"is selecting for something real." **It is not supported** (D-256): the effect
-is non-monotonic (AGGRESSIVE -0.1793 beats BASE -0.4543 before CONSERVATIVE
+"is selecting for something real." It is NOT supported (D-256): the effect is
+non-monotonic (AGGRESSIVE -0.1793 beats BASE -0.4543 before CONSERVATIVE
 +1.5380), and 78.5% of CONSERVATIVE's profit comes from two DCA variants on 282
 trades. Recorded as underpowered, not disproven. Full read in
 `docs/handoffs/sweep-results.md`.
 
 ## What's next (priority order)
 
-1. Wait for PID 63767 to exit, let the chain finish dispersion/horizon/PLR.
-2. `purge_stale_futures.py` dry run -> `--apply` (confirm with Aym first).
-3. `run_incremental_graveyard.py` - rebuilds futures AND backfills v4/v5 in one
-   pass, under current code.
-4. Re-run `agents/judge.py` for a real evidence pack.
-   `research/judge_evidence_pack.json` on disk now is the **pre-fix empty pack**
-   - ignore it, do not read it as a result.
-5. Then read all five outputs together, as designed.
-6. Point Forge (not built - needs `.claude/agents/forge.md` per D-245) at the
+1. Read the five graveyard outputs together, as designed, now that the pack is
+   real. This is the backtesting work D-264 actually asked for.
+2. A real key audit, not a scan. The earlier pass was a scan. Do not treat the
+   repo as cleared. BLOCKED: do not start until Aym authorizes it. Raven is
+   surfacing it to him.
+3. The graveyard JSON diffs need Raven's review before they can be committed.
+4. Decide what to do about the 4 failing silent assertions. The duplicate
+   strategies finding (C2 == C5/D1/D2/S1/S2) is the one that most affects how
+   many distinct findings the pack really has.
+5. Point Forge (not built - needs `.claude/agents/forge.md` per D-245) at the
    surviving v3/v4/v5 proposals once judge can evaluate what it writes.
-7. Defer the 5-agent split until something survives the graveyard with real edge.
+6. Defer the 5-agent split until something survives the graveyard with real edge.
 
 ## Aym's owed items (not blocking)
 
-- Rotate Alpaca key (open since v1 audit)
-- First supervised paper run + kill-switch drill (needs Aym present)
-- Live Binance.US fee verification (D-236)
+- Rotate the Alpaca key again (D-262, he said he will)
+- First supervised paper run + kill-switch drill (needs Aym present, deferred
+  by D-264)
 - Ratify D-217's 11 SOUL rules (D-244)
-- Confirm the purge-all-contract-rows call (D-254) before `--apply` runs
+- Authorize the key audit (repo is already public; the audit is still owed)
 
 ## How to talk to Raven
 

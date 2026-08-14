@@ -1,5 +1,51 @@
 # Decisions Log
 
+## v9 - 2026-08-14 (Aym decisions: purge confirmed, fee model, Alpaca, paper run)
+
+### D-261. Aym confirms the FUTURES purge (AYM RULING)
+Aym confirmed: purge all contract rows. `run_post_sweep_repair.sh --confirm`
+launched 2026-08-14. Drops 23,595 FUTURES/OPTIONS rows (including 51
+PASS/PASS_BENCHMARK), rebuilds under current code (D-249 fix), emits judge pack.
+EQUITY/ETF/CRYPTO untouched.
+
+Actual: 23,595 rows dropped (51 PASS/PASS_BENCHMARK), per
+`logs/post_sweep_repair.log`. The 12,936 written here before the run was an
+estimate taken from an earlier, smaller graveyard; the live file was 535,425
+entries and went to 511,830. Factual correction only, no version bump. Earlier
+entries (D-259, D-254, D-249) still say 12,936 and are left as written - they
+record what was believed at the time.
+
+### D-262. Alpaca key rotation: Aym already rotated, will rotate again (AYM RULING)
+Aym states he already rotated the Alpaca key since D-110 was logged. He will
+rotate again. The .env file lives at `~/aym/projects/05-trading-bot/.env` and
+is gitignored. Keys to store there:
+- `ALPACA_API_KEY` (paper trading API key from Alpaca dashboard)
+- `ALPACA_API_SECRET` (paper trading API secret)
+- `ALPACA_ENDPOINT=https://paper-api.alpaca.markets/v2`
+These are paper-mode market data keys only. No live trading keys exist.
+D-110 closed.
+
+### D-263. Binance.US live fee verification is RETIRED as a checklist item (AYM RULING)
+The cost model now sources from `references/broker-fee-reference-2026.md`, the
+verified fee reference Aym supplied. That file replaces the old "verify
+Binance.US live fee page" checklist item. The cost model's `verified: False`
+flag on crypto should be updated to reflect the broker-fee-reference as the
+source of truth. D-236's framing still holds: backtesting measures edge outside
+brokerage constraints; venue-specific verification matters for shadow testing,
+not backtest cost modeling.
+
+### D-264. Paper run and kill-switch drill deferred; focus on backtesting (AYM RULING)
+Aym's directive: focus on backtesting all strategies and getting judge up to
+speed. The supervised paper run and kill-switch drill are deferred until the
+graveyard analysis is complete and judge is producing evidence packs regularly.
+Not blocking. Not forgotten. Just not now.
+
+### D-265. Broker fee reference is the single source of truth for costs (AYM RULING)
+`references/broker-fee-reference-2026.md` is the canonical cost model input.
+Any cost model code that references a different source or assumption should be
+updated to read from this file. The four cost regimes (crypto percentage,
+equity spread, options per-contract, futures stacked fixed) are the model.
+
 ## v8 - 2026-08-13 late evening (sweep triage, judge.py honesty fix)
 
 ### D-258. judge.py's sub-sections report their own failure too (CC)
