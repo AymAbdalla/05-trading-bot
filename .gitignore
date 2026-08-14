@@ -1,5 +1,6 @@
 # Secrets
-.env
+.env*
+!.env.example
 
 # Database
 db/trading.db
@@ -23,7 +24,10 @@ __pycache__/
 
 # Large graveyard JSON files (>100MB, GitHub limit)
 research/graveyard/v0_graveyard_full.json
-research/graveyard/archive/v0_graveyard_full*.json
+research/graveyard/archive/
+
+# Superseded by silent_assertions block in judge_evidence_pack.json
+research/graveyard/assertions.json
 
 # Pytest cache
 .pytest_cache/
