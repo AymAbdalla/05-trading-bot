@@ -31,3 +31,10 @@ research/graveyard/assertions.json
 
 # Pytest cache
 .pytest_cache/
+
+# Internal agent files - never public
+CLAUDE.md
+HANDOVER.md
+**/SOUL.md
+docs/handoffs/from-raven/
+docs/handoffs/from-cody/
