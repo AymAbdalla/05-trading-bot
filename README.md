@@ -1,26 +1,33 @@
 # Trading Bot v1
 
-Multi-asset backtesting engine with 55 strategies across equities, ETFs, crypto, futures, and options. Tests for real edge after transaction costs using a dual-harness validation system and strategy graveyard.
-
-**Status:** Paper/backtest only. No live trading until Aym explicitly approves.
-**Repo:** Private (github.com/AymAbdalla/05-trading-bot)
+Multi-asset backtesting engine. 55 strategies across equities, ETFs, crypto, futures, and options, tested for real edge after transaction costs.
 
 ---
 
-## What This Is
+## The result
 
-A multi-strategy backtesting engine that tests 55 strategies across 180+ tickers, 4 timeframes, and 11 exit configurations, then evaluates which (if any) have real edge after transaction costs. Covers equities, ETFs, crypto, futures, and options with venue-accurate cost modeling for each asset class.
+I tested 55 strategies across 535,425 backtest runs and 1.9 million trade records, and found no edge that survives transaction costs.
 
-The core finding from v0: **33 of 35 original strategies have zero gross edge.** The measurement apparatus (backtest harness, validation suite, graveyard analysis) is the asset. Strategies are fungible.
+Pooled across tickers, every measurable strategy lands within a few cents of the round-trip cost floor. On a $100 position that floor is $0.30, and the strategies come in between -$0.25 and -$0.35 per trade. That is not a spread of outcomes, it is one number. They are not predicting direction badly. They are not predicting anything, and the loss is the toll.
 
-Designed, instructed, and managed by Aym Abdalla. AI agents (Claude Code, Hermes) deployed and constructed the project under his supervision using the AI-DLC workflow.
+The measurement apparatus is the asset. Strategies are fungible.
+
+Full writeup: [`research/2026-08-13-v0-verdict.md`](research/2026-08-13-v0-verdict.md).
+
+**Status:** Paper and backtest only. Live trading is not enabled.
+
+---
+
+## How this was built
+
+I design the system, write the spec, and direct AI coding agents to implement it. I set the verification bar, and nothing counts as a result until it clears it: `validate_harness.py` has to exit 0 or every downstream number is marked provisional. Every decision is logged in [`docs/DECISIONS.md`](docs/DECISIONS.md) with a number, an owner, and a reason, including the ones where the project was wrong. SPEC approved 2026-08-11, T1 through T9 complete 2026-08-13. Four days for 559 tests, three harnesses, a 21 check validation suite, and a 535,000 row graveyard.
 
 ---
 
 ## Architecture
 
 ```
-engine/          Core engine: collector, scanner, executor, risk, adapters (paper+live), main
+engine/          Collector, scanner, executor, risk, adapters (paper+live), main
 backtest/        Vectorized + event + cross-sectional harnesses, cost model, graveyard builder
 strategies/      55 strategies in 6 families (expanded, lab v1-v5)
 indicators/      ATR, RSI, EMA, MACD/Stochastic, patterns, volume, support/resistance
@@ -31,130 +38,154 @@ docs/            SPEC, DECISIONS, ROADMAP, handoffs, strategy graveyard package,
 research/        Graveyard outputs, cross-sectional analysis, judge evidence packs
 ```
 
-### Strategy Families
+### Strategy families
 
 | Family | Count | Description |
 |--------|-------|-------------|
 | expanded.py | 28 | Core candlestick + momentum patterns |
 | strategy_lab.py | 7 | Lab v1 experiments |
 | strategy_lab_v2.py | 9 | RSI divergence + confirmation overlays |
-| strategy_lab_v3.py | 5 | Microstructure + volume profiles |
+| strategy_lab_v3.py | 6 | Microstructure + volume profiles |
 | strategy_lab_v4.py | 3 | Ignition patterns |
 | strategy_lab_v5.py | 2 | Forced flow divergence |
 | **Total** | **55** | |
 
-### Agent Org Chart
+### Backtest harness
 
-Per SPEC 5.7, the Quant splits into a 5-agent org chart when the strategy library reaches 5+ live strategies. Currently zero live strategies, so only Quant is active.
+Two independent harnesses cross-validate, plus a third external engine as referee:
+
+1. **Vectorized harness** for batch processing across all tickers and timeframes
+2. **Event harness** for bar-by-bar simulation, used for verification
+3. **backtesting.py** (external) as an independent check, wired in as assertion A5
+
+`validate_harness.py` runs 21 oracle-through-harness checks: delayed-oracle lookahead detection, fee application, cross-engine agreement, buy-hold accounting reproduced to the cent, and result-quality silent assertions. Every control runs *through* the harness rather than computing its own answer alongside it. Current status: 21/21, DURABLE.
+
+### Cost model
+
+Four venue regimes sourced from `references/broker-fee-reference-2026.md`: crypto percentage, equity spread, options per contract, futures stacked fixed. Contract instruments are sized against the configured notional cap rather than assumed to be one contract (D-249). Results are stamped with `cost_model_version` and never pooled across versions.
+
+### Agent org chart
+
+Per SPEC 5.7, the Quant splits into five agents once the library reaches 5+ live strategies. There are currently zero live strategies, so only Quant and Judge are active.
 
 | Agent | Role | Status |
 |-------|------|--------|
 | Quant | Skeptical analyst (diagnosis, research, authoring, backtesting) | Active (LLM) |
 | Judge | Evidence pack evaluator (pure Python, no LLM) | Active (judge.py) |
-| Scout | Market watcher, research briefs | Designed (not loaded) |
-| Forge | Strategy author from diagnosis/research | Designed (not loaded) |
-| Coach | Promote/demote/retire recommendations | Designed (not loaded) |
-| Echo | Notion journal, briefings, Telegram alerts | Designed (not loaded) |
+| Scout | Market watcher, research briefs | Designed, not loaded |
+| Forge | Strategy author from diagnosis/research | Designed, not loaded |
+| Coach | Promote/demote/retire recommendations | Designed, not loaded |
+| Echo | Journal, briefings, alerts | Designed, not loaded |
 
 The separation principle: the agent that writes strategies is not the agent that evaluates them, and the agent that evaluates is not the agent that decides.
 
 ---
 
-## Backtest Harness
+## Current evidence pack
 
-Two independent harnesses that cross-validate:
+`agents/judge.py` builds the evidence pack from the graveyard. Last run 2026-08-14 after the D-261 repair:
 
-1. **Vectorized harness** - fast, batch processing across all tickers/timeframes
-2. **Event harness** - bar-by-bar simulation, used for verification
+| | |
+|---|---|
+| Status | DURABLE (harness validated) |
+| Graveyard entries | 535,425 |
+| Strategies | 55 |
+| Tests completed | 509,080 |
+| PASS rows | 381 (plus 52 PASS_BENCHMARK) |
+| Distinct findings | 155 (strategy x ticker x timeframe) |
+| Expected best under the null | ~5.1 sigma |
 
-### Validation (21 checks, all DURABLE)
+That last row is the point. With 509,080 tests, chance alone is expected to produce a best result near 5.1 sigma, so a single impressive row is the base rate, not evidence. Raw PASS counts are never cited; `distinct_findings` is.
 
-`validate_harness.py` runs 21 oracle-through-harness checks including:
-- Delayed-oracle lookahead detection
-- Fee application verification
-- Cross-engine agreement
-- Result-quality silent assertions
-
-No result is durable unless `validate_harness.py` exits 0.
-
-### v0 Verdict (2026-08-13)
-
-- **1,390,451 pooled trades** across 218,295 result rows
-- **Implied gross edge: +$0.0011/trade** (effectively zero)
-- **12 PASS rows** out of 14,688 tests completed
-- **3 distinct findings** (strategy x ticker x timeframe) after multiple comparisons correction
-- Expected false positive rate at this test count: best result ~4.4 sigma by chance alone
-
-The verdict: the strategies are dead. The harness is the asset.
+Four of the pack's eight silent assertions currently flag on this graveyard (quarantine canary, trade count sanity, duplicate strategies, timeframe coherence). They are surfaced in the pack rather than suppressed, and they are open work.
 
 ---
 
-## Key Decisions
+## What I learned
 
-Full decision log in `docs/DECISIONS.md` (v8, D-247 through D-260). Highlights:
+**Refusing free code can be the statistically correct move.** I turned down bulk import of external strategy libraries, because more tests inflate multiple-comparisons false positives faster than they add information, and allowed the library documentation in as research input instead (D-203).
 
-- **D-247**: Judge is pure Python, no LLM. Composed from validate_harness + assertions + pooled_analysis + asset_class_analysis + summarize_graveyard
-- **D-249**: Contract sizing fix (futures sizing was wrong, affecting 12,936 of 287,826 rows)
-- **D-253**: Let stale-code graveyard sweep finish rather than killing it (96% of rows unaffected)
-- **D-254**: Purge all contract rows (BLOCKED on Aym confirmation - drops 51 PASS rows)
-- **D-256**: Constraint sweep "selecting for something real" claim is NOT supported (non-monotonic, underpowered)
-- **D-257**: Run python as `env -u PYTHONPATH python3` from agent-spawned sessions (Hermes venv leak fix)
-- **D-259**: Purge tool tested (15 tests) before pointing at real data
-- **D-260**: Post-sweep repair script exists but is NOT armed (requires Aym's --confirm)
+**My own idea did not survive its own test.** I asked to slice results by sector and asset class and keep the subsets where the patterns win. That is textbook selection bias, so it was done the only valid way: select winning cells on half the underlyings, judge those exact cells on the other half, 20 random splits. Survival came back at 53.5% to 58.7%, a coin flip, and cells that won on the selection half averaged -$0.302 per trade on unseen instruments against a -$0.30 cost floor. Selecting winners bought exactly zero (D-233).
+
+**Predict before you test.** Conditions are stated as falsifiable predictions before a run, never discovered by scanning results afterward. The constraint sweep pre-registered the shape of the curve as the finding, independent of which level won (D-234). One strategy was killed by its own pre-registered kill condition on the day it was built, before any P&L was read (D-237).
+
+**An unreadable file is not an empty one.** `judge.py` reported `status: DURABLE, entries: 0` against a 287,000 entry graveyard. A read landing mid-write was being caught and laundered into a confident empty result. Caught by running it, not by reading it. The fix raises `GraveyardUnreadable` instead of returning `[]`, and no green harness can upgrade that to DURABLE (D-255).
+
+**Deleting your own positive results.** I authorized a destructive purge of 23,595 graveyard rows, 51 of which were PASS or PASS_BENCHMARK, because they had been computed under a sizing bug. The tool got 15 tests pinning its destructive edges first, then a dry run, then explicit confirmation, then `--apply` (D-259, D-261).
+
+**Skepticism has to run in both directions.** A FAIL on 200,000 trades is a verdict and a FAIL on 1,700 is a shrug, and a PASS on 87 trades is also a shrug. A script in this repo printed its own diagnostic claiming a result was real; the decision log records NOT SUPPORTED against it, with the arithmetic (D-256).
 
 ---
 
-## Conventions (Learned the Hard Way)
+## Decisions made on this project
+
+Full log in [`docs/DECISIONS.md`](docs/DECISIONS.md), v9, D-101 through D-265. Rulings marked AYM are mine; CC are the build agent's, made under the conventions below.
+
+| ID | Decision | Who |
+|----|----------|-----|
+| D-101 | Builder is not verifier. Whoever writes it does not sign off on it | AYM |
+| D-202 | Three backtest engines must agree before a result counts | AYM |
+| D-203 | No bulk import of strategy libraries, on multiple-comparisons grounds | AYM |
+| D-236 | Live fee verification demoted from blocker to shadow-test gate | AYM |
+| D-261 | Confirmed the destructive purge of stale contract rows | AYM |
+| D-264 | Deferred paper trading to finish the backtesting work first | AYM |
+| D-102 | Nothing is durable until `validate_harness.py` exits 0 | CC, approved |
+| D-109 | NOT_TESTED is a verdict, distinct from tested-and-failed | CC |
+| D-249 | Contract sizing fix. The test had encoded the bug as correct behaviour | CC |
+| D-255 | Judge must not report unreadable evidence as no evidence | CC |
+| D-256 | The constraint sweep's own "selectivity is real" claim is NOT SUPPORTED | CC |
+| D-259 | Destructive tools are tested before they touch real data | CC |
+
+---
+
+## Conventions
 
 1. No result is durable unless `validate_harness.py` exits 0
 2. Cite `distinct_findings` from summary.json, never raw pass counts
-3. Verify a strategy FIRES on real data before interpreting results
+3. Verify a strategy fires on real data before interpreting its results
 4. Conditions must be predicted before testing, never discovered by scanning
-5. Estimate gross edge in bps before writing code; under 30bps = dead on arrival
-6. Every proposal states a kill condition
-7. A FAIL on a 200k-trade strategy is a verdict; a FAIL on 1,700 trades is a shrug
-8. Every entry needs stop strictly below entry
-9. Write a handoff note after every build session (not optional)
-10. Write decisions to DECISIONS.md with D-number, who decided, why, where
-11. NOT_TESTED means "could not run," never "ran and found nothing"
-12. Edits during a long run do not reach it (Python snapshots source at import)
-13. Run python as `env -u PYTHONPATH python3` from agent-spawned sessions
+5. Estimate gross edge in bps before writing code. Under 30bps is dead on arrival
+6. Every proposal states a kill condition before it is built
+7. A FAIL on 200k trades is a verdict, a FAIL on 1,700 is a shrug, and a PASS on 87 is also a shrug
+8. Every entry needs a stop strictly below entry. The harness rejects inverted stops
+9. Write a handoff note after every build session. Not optional
+10. Every decision goes to DECISIONS.md with a number, an owner, and a reason
+11. NOT_TESTED means "could not run", never "ran and found nothing". This applies to the evidence layer too
+12. A cost rate can legitimately be `inf` when an instrument cannot be afforded at the configured capital
+13. Edits during a long run do not reach it. Python snapshots source at import
 
 ---
 
 ## Setup
 
 ```bash
-# Clone
 git clone https://github.com/AymAbdalla/05-trading-bot.git
 cd 05-trading-bot
 
-# Virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt  # or see .env.example for dependencies
+pip install -r requirements.txt
 
-# Configure
 cp .env.example .env
-# Edit .env with your API keys (Alpaca for market data, see .env.example)
+# Add your Alpaca paper-trading keys. See .env.example.
 
-# Run tests
 python -m pytest -q
-
-# Validate harness
 python backtest/validate_harness.py
 ```
+
+If you are running from an agent-spawned shell, invoke python as `env -u PYTHONPATH python3`. A leaked parent venv puts the wrong numpy first on the path and the failure looks like a broken install (D-257).
 
 ---
 
 ## Roadmap
 
-Full roadmap in `docs/ROADMAP.md`. Current priorities:
+Full roadmap in [`docs/ROADMAP.md`](docs/ROADMAP.md), P0 through P6. Current priorities:
 
-- **P0.1**: Cost model sourcing from `references/broker-fee-reference-2026.md` (done, D-265)
-- **Post-sweep repair**: Purge stale futures rows, rebuild under fixed sizing (RUNNING, D-261 confirmed)
-- **Read all 5 outputs together**: graveyard, constraint sweep, dispersion, horizon, PLR
-- **First supervised paper run + kill-switch drill** (deferred per D-264, focus on backtesting)
+- Read the five graveyard outputs together: graveyard, constraint sweep, dispersion, horizon, PLR
+- Clear the four flagged silent assertions in the judge pack
+- Point Forge at the surviving v3/v4/v5 proposals once Judge can evaluate what it writes
+- First supervised paper run and kill-switch drill (deferred per D-264)
+- The 5-agent split waits until something survives the graveyard with real edge
 
 ---
 
@@ -163,39 +194,32 @@ Full roadmap in `docs/ROADMAP.md`. Current priorities:
 | File | Purpose |
 |------|---------|
 | `SPEC.md` | Full specification (957 lines) |
-| `docs/DECISIONS.md` | Decision log (v8, D-247 through D-260) |
-| `docs/ROADMAP.md` | Roadmap with P0-P6 priorities |
+| `docs/DECISIONS.md` | Decision log (v9, D-101 through D-265) |
+| `docs/ROADMAP.md` | Roadmap, P0 through P6 |
 | `docs/STRATEGY-GRAVEYARD-PACKAGE.md` | Handoff for strategy hypothesis generation |
-| `CLAUDE.md` | Cody wake-up file (session briefing) |
-| `HANDOVER.md` | Inter-agent handover protocol |
-| `agents/README.md` | Agent org chart and SOUL.md index |
+| `research/2026-08-13-v0-verdict.md` | The null result, in full |
+| `agents/README.md` | Agent org chart and judge.py runbook |
 | `docs/handoffs/` | Build session handoff notes |
-
----
-
-## Author
-
-**Aym Abdalla** - Designed, instructed, and managed the project. Created and deployed AI agents (Claude Code, Hermes) to construct the system under his supervision using the AI-DLC workflow. All architecture, strategy, and product decisions are his.
 
 ---
 
 ## Changelog
 
 ### 2026-08-14
-- Repo created, initial commit, README written
-- All T1-T9 code, tests, docs committed as baseline
+- D-261 repair complete: purged 23,595 stale contract rows, rebuilt under fixed sizing, graveyard back to 535,425 entries
+- Judge evidence pack rebuilt: DURABLE, 55 strategies, 155 distinct findings
+- Cost model source of truth fixed to `references/broker-fee-reference-2026.md` (D-265)
+- Repo created, T1-T9 committed as baseline
 
 ### 2026-08-13
-- T1-T9 complete: 559 tests passing, 1 skipped
-- validate_harness 21/21 DURABLE
-- v0 verdict: 33/35 strategies zero gross edge
-- Graveyard sweep + 5-output chain complete
-- Post-sweep repair script built (not armed, BLOCKED on D-254)
+- T1-T9 complete: 559 tests passing, 1 skipped, validate_harness 21/21 DURABLE
+- v0 verdict: 33 of 35 measured strategies at zero gross edge
+- Graveyard sweep and 5-output analysis chain complete
+- Conditional edge, inversion, asset-class and constraint sensitivity studies run
 
 ### 2026-08-12
 - T7-T9 built: backtest harness, sandbox, execution layer
-- Claude Code audit completed, fixes applied
-- Test suite rewritten
+- Audit completed, fixes applied, test suite rewritten
 
 ### 2026-08-11
 - Project created, SPEC approved
