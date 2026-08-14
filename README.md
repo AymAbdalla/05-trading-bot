@@ -1,6 +1,6 @@
 # Trading Bot v1
 
-Multi-asset backtesting engine with 55 strategies across equities, ETFs, crypto, and futures. Tests for real edge after transaction costs using a dual-harness validation system and strategy graveyard.
+Multi-asset backtesting engine with 55 strategies across equities, ETFs, crypto, futures, and options. Tests for real edge after transaction costs using a dual-harness validation system and strategy graveyard.
 
 **Status:** Paper/backtest only. No live trading until Aym explicitly approves.
 **Repo:** Private (github.com/AymAbdalla/05-trading-bot)
@@ -9,11 +9,11 @@ Multi-asset backtesting engine with 55 strategies across equities, ETFs, crypto,
 
 ## What This Is
 
-A multi-strategy backtesting engine that tests 55 strategies across 180+ tickers, 4 timeframes, and 11 exit configurations, then evaluates which (if any) have real edge after transaction costs. Covers equities, ETFs, crypto, and futures with venue-accurate cost modeling for each asset class.
+A multi-strategy backtesting engine that tests 55 strategies across 180+ tickers, 4 timeframes, and 11 exit configurations, then evaluates which (if any) have real edge after transaction costs. Covers equities, ETFs, crypto, futures, and options with venue-accurate cost modeling for each asset class.
 
 The core finding from v0: **33 of 35 original strategies have zero gross edge.** The measurement apparatus (backtest harness, validation suite, graveyard analysis) is the asset. Strategies are fungible.
 
-Designed and directed by Aym Abdalla. Built with AI coding agents (Claude Code, Hermes) using the AI-DLC workflow.
+Designed, instructed, and managed by Aym Abdalla. AI agents (Claude Code, Hermes) deployed and constructed the project under his supervision using the AI-DLC workflow.
 
 ---
 
@@ -175,7 +175,7 @@ Full roadmap in `docs/ROADMAP.md`. Current priorities:
 
 ## Author
 
-**Aym Abdalla** - System design, architecture decisions, product direction, and all technical calls. Built using AI coding agents (Claude Code for implementation, Hermes for orchestration and review) under the AI-DLC workflow.
+**Aym Abdalla** - Designed, instructed, and managed the project. Created and deployed AI agents (Claude Code, Hermes) to construct the system under his supervision using the AI-DLC workflow. All architecture, strategy, and product decisions are his.
 
 ---
 
