@@ -1,33 +1,46 @@
 {
   "graveyard": "v0_graveyard_full.json",
-  "entries_total": 15120,
+  "entries_total": 535425,
   "verdict_counts": {
-    "FAIL": 14676,
-    "NOT_TESTED": 432,
-    "PASS": 12
+    "FAIL": 508647,
+    "NOT_TESTED": 26345,
+    "PASS": 381,
+    "PASS_BENCHMARK": 52
   },
-  "raw_pass_rows": 12,
-  "benchmark_pass_rows": 0,
+  "raw_pass_rows": 381,
+  "benchmark_pass_rows": 52,
   "distinct_findings": {
-    "strategy_x_ticker_x_timeframe": 3,
-    "strategy_family_x_ticker_x_timeframe": 2,
-    "strategy_x_ticker": 3,
-    "tickers_with_any_pass": 2
+    "strategy_x_ticker_x_timeframe": 155,
+    "strategy_family_x_ticker_x_timeframe": 143,
+    "strategy_x_ticker": 137,
+    "tickers_with_any_pass": 62
   },
   "pass_concentration_top5": [
     {
-      "ticker_timeframe": "ADBE 1h",
-      "pass_rows": 11
+      "ticker_timeframe": "SLB 1h",
+      "pass_rows": 24
     },
     {
-      "ticker_timeframe": "ETH/USDT 15m",
-      "pass_rows": 1
+      "ticker_timeframe": "SOFI 15m",
+      "pass_rows": 17
+    },
+    {
+      "ticker_timeframe": "TSLA 15m",
+      "pass_rows": 16
+    },
+    {
+      "ticker_timeframe": "CAT 15m",
+      "pass_rows": 15
+    },
+    {
+      "ticker_timeframe": "TSLA 5m",
+      "pass_rows": 15
     }
   ],
   "multiple_comparisons": {
-    "tests_completed": 14688,
-    "expected_max_z_under_null": 4.38,
-    "note": "With 14688 tests, chance alone is expected to produce a best result around 4.4 sigma. A single impressive row is the base rate, not evidence. Judge must correct on hypotheses GENERATED, and use effective test count (correlated tickers/timeframes are not independent), not raw row count."
+    "tests_completed": 509080,
+    "expected_max_z_under_null": 5.13,
+    "note": "With 509080 tests, chance alone is expected to produce a best result around 5.1 sigma. A single impressive row is the base rate, not evidence. Judge must correct on hypotheses GENERATED, and use effective test count (correlated tickers/timeframes are not independent), not raw row count."
   },
   "reading_guide": "raw_pass_rows counts (strategy, ticker, timeframe, exit_config) rows. One strategy that works on one ticker across 9 exit configs produces 9 rows and ONE finding. Always cite distinct_findings."
 }
