@@ -93,7 +93,7 @@ Four non-blocking findings, all hygiene:
   `git add -A` makes a commit that cannot be pushed and needs a rewrite to undo.
   Fix: `research/graveyard/archive/*.json`. This is why I staged by explicit path
   today and never used `-A`.
-- **F3** Telegram chat ID `8017725309` is public in `CLAUDE.md` (lines 31, 174)
+- **F3** Telegram chat ID `TELEGRAM_CHAT_ID` is public in `CLAUDE.md` (lines 31, 174)
   and `docs/handoffs/2026-08-13-cody-session-1.md` line 6. Not a credential, it
   is useless without the bot token and the bot token is not in the repo. Stable
   personal identifier on a public repo. Aym's call, I am not recommending action.

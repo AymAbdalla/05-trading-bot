@@ -3,7 +3,7 @@
 **Written:** 2026-08-13 evening
 **For:** Raven, check-in log for this session
 **Trigger:** Raven's go-ahead, working autonomously, checking in at decision
-points and batch completions via Hermes (telegram:8017725309).
+points and batch completions via Hermes (telegram:TELEGRAM_CHAT_ID).
 
 Background: two heavy sweeps (`run_incremental_graveyard.py`,
 `constraint_sweep.py`, PIDs 63767/63797) are still running from before this
