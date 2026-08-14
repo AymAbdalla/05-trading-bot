@@ -1,6 +1,6 @@
 # Trading Bot v1
 
-Autonomous crypto paper trading engine with multi-strategy backtest harness, strategy graveyard, and quant agent org chart.
+Multi-asset backtesting engine with 55 strategies across equities, ETFs, crypto, and futures. Tests for real edge after transaction costs using a dual-harness validation system and strategy graveyard.
 
 **Status:** Paper/backtest only. No live trading until Aym explicitly approves.
 **Repo:** Private (github.com/AymAbdalla/05-trading-bot)
@@ -9,11 +9,11 @@ Autonomous crypto paper trading engine with multi-strategy backtest harness, str
 
 ## What This Is
 
-A multi-strategy trading bot that tests 54 strategies across 180+ tickers, 4 timeframes, and 9 exit configurations, then evaluates which (if any) have real edge after transaction costs.
+A multi-strategy backtesting engine that tests 55 strategies across 180+ tickers, 4 timeframes, and 11 exit configurations, then evaluates which (if any) have real edge after transaction costs. Covers equities, ETFs, crypto, and futures with venue-accurate cost modeling for each asset class.
 
 The core finding from v0: **33 of 35 original strategies have zero gross edge.** The measurement apparatus (backtest harness, validation suite, graveyard analysis) is the asset. Strategies are fungible.
 
-Built by Cody (Claude Code), spec'd by Raven (Hermes) and Aym Abdalla, using the AI-DLC workflow.
+Designed and directed by Aym Abdalla. Built with AI coding agents (Claude Code, Hermes) using the AI-DLC workflow.
 
 ---
 
@@ -22,7 +22,7 @@ Built by Cody (Claude Code), spec'd by Raven (Hermes) and Aym Abdalla, using the
 ```
 engine/          Core engine: collector, scanner, executor, risk, adapters (paper+live), main
 backtest/        Vectorized + event + cross-sectional harnesses, cost model, graveyard builder
-strategies/      54 strategies in 6 families (expanded, lab v1-v5)
+strategies/      55 strategies in 6 families (expanded, lab v1-v5)
 indicators/      ATR, RSI, EMA, MACD/Stochastic, patterns, volume, support/resistance
 sandbox/         AST allowlist validator, subprocess runner, hash pinning
 agents/          Quant SOUL.md (active), judge.py (active), Scout/Forge/Coach/Echo (designed, not active)
@@ -41,7 +41,7 @@ research/        Graveyard outputs, cross-sectional analysis, judge evidence pac
 | strategy_lab_v3.py | 5 | Microstructure + volume profiles |
 | strategy_lab_v4.py | 3 | Ignition patterns |
 | strategy_lab_v5.py | 2 | Forced flow divergence |
-| **Total** | **54** | |
+| **Total** | **55** | |
 
 ### Agent Org Chart
 
@@ -136,7 +136,7 @@ pip install -r requirements.txt  # or see .env.example for dependencies
 
 # Configure
 cp .env.example .env
-# Edit .env with your API keys (Binance.US, Alpaca)
+# Edit .env with your API keys (Alpaca for market data, see .env.example)
 
 # Run tests
 python -m pytest -q
@@ -151,10 +151,10 @@ python backtest/validate_harness.py
 
 Full roadmap in `docs/ROADMAP.md`. Current priorities:
 
-- **P0.1**: Verify actual Binance.US fee schedule (may be 0% maker / 0.02% taker, not 0.10%)
-- **Post-sweep repair**: Purge stale futures rows, rebuild under fixed sizing (BLOCKED on Aym D-254)
+- **P0.1**: Cost model sourcing from `references/broker-fee-reference-2026.md` (done, D-265)
+- **Post-sweep repair**: Purge stale futures rows, rebuild under fixed sizing (RUNNING, D-261 confirmed)
 - **Read all 5 outputs together**: graveyard, constraint sweep, dispersion, horizon, PLR
-- **First supervised paper run + kill-switch drill** (requires Aym)
+- **First supervised paper run + kill-switch drill** (deferred per D-264, focus on backtesting)
 
 ---
 
@@ -173,11 +173,9 @@ Full roadmap in `docs/ROADMAP.md`. Current priorities:
 
 ---
 
-## Owners
+## Author
 
-- **Aym Abdalla** - decision maker, final say on everything
-- **Raven (Hermes)** - spec, review, context, communication
-- **Cody (Claude Code)** - all code writing, testing, debugging
+**Aym Abdalla** - System design, architecture decisions, product direction, and all technical calls. Built using AI coding agents (Claude Code for implementation, Hermes for orchestration and review) under the AI-DLC workflow.
 
 ---
 
