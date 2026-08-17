@@ -164,6 +164,17 @@ CONTROL_STRATEGIES = {'dca_7'}
 # 8 tickers spanning EQUITY / ETF / CRYPTO / FUTURES for the smoke run.
 SMOKE_TICKERS = ['AAPL', 'MSFT', 'SPY', 'QQQ', 'GLD', 'BTC_USD', 'ETH_USD', 'ES_F']
 
+# Attached to any output entry whose c (or derived threshold) is infinite, so
+# the null below is never misread as a missing measurement. Standing rule 11:
+# "could not run" is not "ran and found nothing", and the same discipline
+# applies to serialization.
+INF_NOTE = ('null here means POSITIVE INFINITY, not a missing value: the '
+            'instrument cannot be sized at the configured notional_cap_usd '
+            '(size_for() returns 0), so cost per unit of exposure is '
+            'unbounded and no entry can ever clear the gate. Convention 12 - '
+            'a correct answer, not a bug. Serialized as null because strict '
+            'JSON (RFC 8259) has no Infinity literal.')
+
 
 def build_strategies():
     """Fresh instances (DCA keeps no state, but cheap insurance)."""
@@ -189,6 +200,19 @@ def series_cost_fraction(coster) -> float:
         return float('inf')
     fee = coster.round_trip_fee(px, px, qty)
     return (fee + 2.0 * coster.slip_rate * exposure) / exposure
+
+
+def json_num(x: float, ndigits: int) -> Optional[float]:
+    """Round for output, mapping non-finite values to None.
+
+    Python's json module emits a bare `Infinity` token. json.loads accepts it,
+    but strict JSON (RFC 8259) has no such literal, so JSON.parse and most
+    non-Python parsers reject the whole file. An infinite c is a CORRECT
+    result (convention 12), so it has to survive the round trip as a
+    documented null rather than be papered over or silently zeroed. Callers
+    attach INF_NOTE to the affected entry.
+    """
+    return round(x, ndigits) if math.isfinite(x) else None
 
 
 def gate_threshold_frac(cost_frac: float, kappa: float = KAPPA) -> float:
@@ -365,11 +389,14 @@ def run(series_limit: Optional[int] = None, smoke: bool = False,
         c_frac = series_cost_fraction(coster)
         thr = gate_threshold_frac(c_frac)
         class_c_bps[cls].append(c_frac * 10_000)
-        per_series_thresholds.append({
+        row = {
             'ticker': ticker, 'timeframe': tf, 'asset_class': cls,
-            'c_bps': round(c_frac * 10_000, 3),
-            'atr_hold_threshold_pct': round(thr * 100, 4),
-        })
+            'c_bps': json_num(c_frac * 10_000, 3),
+            'atr_hold_threshold_pct': json_num(thr * 100, 4),
+        }
+        if not math.isfinite(c_frac):
+            row['_note'] = INF_NOTE
+        per_series_thresholds.append(row)
 
         deciles = expanding_vol_deciles(ind.atr14, ind.closes)
         mid_ts = calendar_midpoint_ts(ind.timestamps)
@@ -429,15 +456,23 @@ def run(series_limit: Optional[int] = None, smoke: bool = False,
         vals = class_c_bps[cls]
         class_c_summary[cls] = {
             'series': len(vals),
-            'c_bps_min': round(min(vals), 3), 'c_bps_max': round(max(vals), 3),
-            'c_bps_mean': round(sum(vals) / len(vals), 3),
-            'atr_hold_threshold_pct_min': round(min(vals) / 10_000 / KAPPA * 100, 4),
-            'atr_hold_threshold_pct_max': round(max(vals) / 10_000 / KAPPA * 100, 4),
+            'c_bps_min': json_num(min(vals), 3),
+            'c_bps_max': json_num(max(vals), 3),
+            'c_bps_mean': json_num(sum(vals) / len(vals), 3),
+            'atr_hold_threshold_pct_min': json_num(min(vals) / 10_000 / KAPPA * 100, 4),
+            'atr_hold_threshold_pct_max': json_num(max(vals) / 10_000 / KAPPA * 100, 4),
         }
+        if not all(math.isfinite(v) for v in vals):
+            class_c_summary[cls]['_note'] = INF_NOTE
         cc = class_c_summary[cls]
-        print(f"{cls:<10s}{cc['c_bps_min']:>10.2f}{cc['c_bps_max']:>10.2f}"
-              f"{cc['atr_hold_threshold_pct_min']:>10.3f}"
-              f"{cc['atr_hold_threshold_pct_max']:>10.3f}{cc['series']:>8d}")
+        # Console keeps saying "inf" - it is the true value and a human reads
+        # this. Only the JSON needs the portable null.
+        def _p(key, default=float('inf')):
+            v = cc.get(key)
+            return default if v is None else v
+        print(f"{cls:<10s}{_p('c_bps_min'):>10.2f}{_p('c_bps_max'):>10.2f}"
+              f"{_p('atr_hold_threshold_pct_min'):>10.3f}"
+              f"{_p('atr_hold_threshold_pct_max'):>10.3f}{cc['series']:>8d}")
 
     print('\nFIRES-CHECK (before P&L, v5 work order 4 / graveyard SS3.2)')
     print(f"{'strategy':<20s}{'exit':<10s}{'class':<9s}{'candidates':>11s}"
@@ -628,7 +663,9 @@ def run(series_limit: Optional[int] = None, smoke: bool = False,
     path = out_path or (SMOKE_OUT if smoke else DEFAULT_OUT)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w') as f:
-        json.dump(out, f, indent=1)
+        # allow_nan=False turns a stray Infinity/NaN into a ValueError at
+        # write time instead of a file that no strict parser can read.
+        json.dump(out, f, indent=1, allow_nan=False)
     print(f'\nsaved: {path}')
     return out
 

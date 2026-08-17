@@ -1,5 +1,5 @@
 # SPEC.md — Trading Bot v1
-## Autonomous Crypto Paper Trading Engine + Hermes Quant Agent
+## Autonomous Multi-Asset Paper Trading Engine + Hermes Quant Agent
 
 **Project:** 05-trading-bot
 **Status:** SPEC — approved, ready for Claude Code build
@@ -11,9 +11,16 @@
 
 ## 1. Purpose
 
-A hybrid trading system: a Python engine that autonomously executes trades on Binance.US, and a dedicated Hermes agent profile ("Quant") that writes briefings to a Notion trading journal, researches new strategies, and learns from performance.
+A hybrid trading system: a Python engine that autonomously executes trades across multiple asset classes, and a dedicated Hermes agent profile ("Quant") that writes briefings to a Notion trading journal, researches new strategies, and learns from performance.
 
-v1 is crypto-only, long-only, paper trading first. The goal is process integrity and measurement quality, not profit. If the system proves itself on paper, it goes live with $2k.
+v1 is paper trading first, across every asset class in scope. The goal is process integrity and measurement quality, not profit. If the system proves itself on paper, it goes live with $2k.
+
+**SCOPE EXPANSION (D-267, Aym directive 2026-08-17).** v1 was originally specified as crypto-only, long-only on Binance.US. That is superseded: "we are no longer binance.us only or crypto only, we are making a trading bot." The bot is a multi-asset trading engine covering crypto, equities, ETFs, futures, options, and prediction markets (Polymarket).
+
+Three things that expansion does NOT change:
+- Binance.US spot crypto is unchanged and remains the reference execution path. Polymarket and the rest are ADDED alongside it, never in place of it.
+- Long-only still binds SPOT execution, because you cannot short spot without borrowing. Short exposure comes from futures and options, exactly as Section 2 already specified. Polymarket needs neither: buying the No side IS the short.
+- Paper mode first, always. No asset class goes live without Aym's explicit approval, and every strategy passes the graveyard first.
 
 **Success criteria for v1:** a correctly instrumented loop (data to signal to execution to log to briefing to learning) that runs reliably and honestly measures whether this edge exists.
 
@@ -23,6 +30,7 @@ v1 is crypto-only, long-only, paper trading first. The goal is process integrity
 
 ### In scope (v1)
 - Binance.US spot crypto (BTC/USDT, ETH/USDT, SOL/USDT)
+- Polymarket prediction markets, PAPER MODE ONLY (see 2.1 below)
 - Long-only entries, bearish patterns as exit signals
 - 15m signal timeframe, 1h regime filter
 - 7 candlestick patterns with confirmation stack
@@ -41,6 +49,7 @@ v1 is crypto-only, long-only, paper trading first. The goal is process integrity
 
 ### In scope (backtest expansion - now)
 - Test all v0 strategies across ALL asset classes in backtest:
+  - Prediction markets (Polymarket): binary outcome markets, resolution-based PnL
   - Crypto: BTC, ETH, SOL (15m, 1h, 4h, daily, weekly)
   - Equities: large cap (AAPL, MSFT, NVDA, AMZN), mid cap, small cap, penny stocks, OTCs
   - Sector ETFs: XLK (tech), XLF (finance), XLE (energy), XLV (health), XLY (consumer discretionary)
@@ -71,6 +80,25 @@ v1 is crypto-only, long-only, paper trading first. The goal is process integrity
 - v4: Options (Greeks, multi-leg, put options for short exposure)
 - v1.5: 24/7 operation (Raspberry Pi or VPS)
 - Future: Apply the org chart management pattern to non-trading domains (GTM outreach, content optimization, any multi-strategy optimization). The management framework and governance protocol are domain-agnostic and designed to be portable.
+
+### 2.1 Polymarket (prediction markets) — new asset class, D-267
+
+Polymarket is a decentralized prediction market on Polygon. Binary outcome markets (Yes/No) priced between $0.00 and $1.00, settled in USDC. Winning shares redeem at $1.00, losers at $0.00.
+
+**Why it is a different animal from every other class in this SPEC.** The price IS the market's probability estimate, so "edge" means a calibration disagreement, not a price forecast. That changes what the harness must measure: PnL is resolution-based (you hold to settlement and collect $1.00 or $0.00), not path-based, so profit factor and stop distance — which the whole existing gate stack is built on — do not transfer unmodified. Payoff is bounded on both sides, which caps loss per contract at the premium paid but also caps the upside, so a strategy that is right 60% of the time at 55c is profitable while one right 60% of the time at 65c is not. Entry price and win rate must always be read together.
+
+**Data (all public, read-only, zero auth).**
+- Gamma API (`gamma-api.polymarket.com`): market discovery, search, metadata. 4,000 req/10s.
+- CLOB API (`clob.polymarket.com`): live prices, orderbooks, price history. 9,000 req/10s.
+- Data API (`data-api.polymarket.com`): trades, open interest. 1,000 req/10s.
+
+**Execution.** Paper mode via simulated taker fills against the live CLOB orderbook. Live trading would need the CLOB SDK V2 (`py_clob_client_v2`) with wallet-based EIP-712 signing, and is explicitly OUT of scope until paper mode proves a strategy through the graveyard AND Aym approves.
+
+**Strategy families in scope:** BTC Up/Down 5-minute directional binaries; event markets (elections, sports, crypto events); cross-market arbitrage on correlated pairs.
+
+**Risk model.** Same shape as crypto, denominated in USDC: fixed notional cap per trade, max concurrent Polymarket positions, daily loss circuit breaker, and a cap on exposure per market type so one 5m BTC series cannot absorb the whole book.
+
+**Sourcing note.** Reference strategies come from moondevonyt's public Polymarket repo. His win rates and EV figures are from his logs on his setup and are NOT verified by us — every one is a hypothesis until our graveyard says otherwise (convention 3). We take the strategy logic and take no dependency on his MoonDev API: liquidation and whale data come from public Binance/Bybit/OKX and Hyperliquid endpoints directly.
 
 ---
 

@@ -53,6 +53,14 @@ def main():
         config=config,
     )
     print(f"\nEligible after F2 gate: {report['candidates_eligible']}")
+    cap = report.get('cap_info', {})
+    if cap.get('capped'):
+        print(f"CAP: {cap['eligible']} eligible candidates, "
+              f"max_candidates={cap['max_candidates']}, testing first "
+              f"{cap['max_candidates']} ({cap['dropped_by_cap']} dropped)")
+    for reason, count in sorted(cap.get('skipped_within_cap_by_reason', {}).items(),
+                                key=lambda kv: -kv[1]):
+        print(f"  skipped within cap ({count}): {reason}")
     print(f"Tested: {report['tested']}, beat buy-and-hold: {report['beat_buy_hold']}")
     for r in report['results'][:10]:
         print(f"  {r['strategy']:<28s} {r['ticker']:<10s} {r['timeframe']:<4s} "

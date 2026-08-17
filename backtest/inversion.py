@@ -191,24 +191,43 @@ def test_inversions(graveyard_path: str, data_loader_fn, strategy_lookup: Dict,
     for reason, count in sorted(rejected.items(), key=lambda kv: -kv[1])[:5]:
         logger.info(f'  rejected ({count}): {reason}')
 
+    dropped_by_cap = max(0, len(eligible) - max_candidates)
+    if dropped_by_cap:
+        logger.info(f'CAP: {len(eligible)} eligible candidates, '
+                    f'max_candidates={max_candidates}, testing first '
+                    f'{max_candidates} ({dropped_by_cap} dropped)')
+
+    # Not every candidate inside the cap reaches the fade test either. Those
+    # skips were silent too, which is how 200 considered became 196 tested
+    # with nothing in the output saying why.
+    skipped = {}
+
+    def skip(reason):
+        skipped[reason] = skipped.get(reason, 0) + 1
+
     results = []
-    for e in eligible[:max_candidates]:
+    considered = eligible[:max_candidates]
+    for e in considered:
         strategy = strategy_lookup.get(e['strategy'])
         if strategy is None:
+            skip('strategy_not_in_lookup')
             continue
         candles = data_loader_fn(e['ticker'], e['timeframe'])
         if not candles or len(candles) < 300:
+            skip('insufficient_candles_lt_300')
             continue
         # Out-of-sample: the fade is measured on the LAST 20% - the same
         # holdout the original verdict used, never the fitting window.
         test_candles = candles[int(len(candles) * 0.8):]
         if len(test_candles) < 150:
+            skip('holdout_lt_150_bars')
             continue
         ind = precompute_indicators(test_candles)
         try:
             res = run_fade_test(harness, strategy, ind, e['ticker'], e['timeframe'])
         except Exception as exc:
             logger.error(f"fade test failed for {e['strategy']} {e['ticker']}: {exc}")
+            skip('fade_test_raised')
             continue
         results.append(res.to_dict())
 
@@ -224,6 +243,20 @@ def test_inversions(graveyard_path: str, data_loader_fn, strategy_lookup: Dict,
         },
         'candidates_eligible': len(eligible),
         'candidates_rejected_by_reason': rejected,
+        'cap_info': {
+            'max_candidates': max_candidates,
+            'eligible': len(eligible),
+            'considered': len(considered),
+            'dropped_by_cap': dropped_by_cap,
+            'capped': dropped_by_cap > 0,
+            'skipped_within_cap_by_reason': skipped,
+            'note': ('`tested` counts only candidates that reached the fade '
+                     'test. eligible - dropped_by_cap - '
+                     'sum(skipped_within_cap_by_reason) = tested. An untested '
+                     'candidate is NOT a candidate that was tested and found '
+                     'nothing (standing rule 11); the cap is arbitrary '
+                     'ordering, not a verdict.'),
+        },
         'tested': len(results),
         'beat_buy_hold': len(winners),
         'multiple_comparison_note':
@@ -235,5 +268,8 @@ def test_inversions(graveyard_path: str, data_loader_fn, strategy_lookup: Dict,
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, 'w') as f:
         json.dump(report, f, indent=2)
-    logger.info(f'wrote {output_path}: {len(results)} tested, {len(winners)} beat buy-and-hold')
+    cap_msg = (f' (CAPPED: {dropped_by_cap} of {len(eligible)} eligible never '
+               f'tested)' if dropped_by_cap else '')
+    logger.info(f'wrote {output_path}: {len(results)} tested, '
+                f'{len(winners)} beat buy-and-hold{cap_msg}')
     return report

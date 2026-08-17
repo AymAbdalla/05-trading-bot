@@ -32,11 +32,12 @@
   },
   "FUTURES": {
    "series": 2,
-   "c_bps_min": 1.422,
-   "c_bps_max": 1.498,
-   "c_bps_mean": 1.46,
-   "atr_hold_threshold_pct_min": 0.1422,
-   "atr_hold_threshold_pct_max": 0.1498
+   "c_bps_min": null,
+   "c_bps_max": null,
+   "c_bps_mean": null,
+   "atr_hold_threshold_pct_min": null,
+   "atr_hold_threshold_pct_max": null,
+   "_note": "null here means POSITIVE INFINITY, not a missing value: the instrument cannot be sized at the configured notional_cap_usd (size_for() returns 0), so cost per unit of exposure is unbounded and no entry can ever clear the gate. Convention 12 - a correct answer, not a bug. Serialized as null because strict JSON (RFC 8259) has no Infinity literal."
   }
  },
  "strategy_mapping": {
@@ -175,15 +176,17 @@
    "ticker": "ES_F",
    "timeframe": "1d",
    "asset_class": "FUTURES",
-   "c_bps": 1.422,
-   "atr_hold_threshold_pct": 0.1422
+   "c_bps": null,
+   "atr_hold_threshold_pct": null,
+   "_note": "null here means POSITIVE INFINITY, not a missing value: the instrument cannot be sized at the configured notional_cap_usd (size_for() returns 0), so cost per unit of exposure is unbounded and no entry can ever clear the gate. Convention 12 - a correct answer, not a bug. Serialized as null because strict JSON (RFC 8259) has no Infinity literal."
   },
   {
    "ticker": "ES_F",
    "timeframe": "1h",
    "asset_class": "FUTURES",
-   "c_bps": 1.498,
-   "atr_hold_threshold_pct": 0.1498
+   "c_bps": null,
+   "atr_hold_threshold_pct": null,
+   "_note": "null here means POSITIVE INFINITY, not a missing value: the instrument cannot be sized at the configured notional_cap_usd (size_for() returns 0), so cost per unit of exposure is unbounded and no entry can ever clear the gate. Convention 12 - a correct answer, not a bug. Serialized as null because strict JSON (RFC 8259) has no Infinity literal."
   }
  ],
  "fires_check": [
@@ -219,9 +222,9 @@
    "exit": "time_16c",
    "asset_class": "FUTURES",
    "candidate_entries": 2004,
-   "gated_out": 0,
-   "gated_out_pct": 0.0,
-   "surviving_gated_trades": 785
+   "gated_out": 2004,
+   "gated_out_pct": 100.0,
+   "surviving_gated_trades": 0
   },
   {
    "strategy": "dca_7",
@@ -255,9 +258,9 @@
    "exit": "time_4c",
    "asset_class": "FUTURES",
    "candidate_entries": 2004,
-   "gated_out": 1,
-   "gated_out_pct": 0.05,
-   "surviving_gated_trades": 1983
+   "gated_out": 2004,
+   "gated_out_pct": 100.0,
+   "surviving_gated_trades": 0
   },
   {
    "strategy": "dca_7",
@@ -291,9 +294,9 @@
    "exit": "time_8c",
    "asset_class": "FUTURES",
    "candidate_entries": 2004,
-   "gated_out": 0,
-   "gated_out_pct": 0.0,
-   "surviving_gated_trades": 1089
+   "gated_out": 2004,
+   "gated_out_pct": 100.0,
+   "surviving_gated_trades": 0
   },
   {
    "strategy": "grid_2.0atr",
@@ -327,9 +330,9 @@
    "exit": "time_16c",
    "asset_class": "FUTURES",
    "candidate_entries": 6095,
-   "gated_out": 0,
-   "gated_out_pct": 0.0,
-   "surviving_gated_trades": 823
+   "gated_out": 6095,
+   "gated_out_pct": 100.0,
+   "surviving_gated_trades": 0
   },
   {
    "strategy": "grid_2.0atr",
@@ -363,9 +366,9 @@
    "exit": "time_4c",
    "asset_class": "FUTURES",
    "candidate_entries": 6095,
-   "gated_out": 0,
-   "gated_out_pct": 0.0,
-   "surviving_gated_trades": 1609
+   "gated_out": 6095,
+   "gated_out_pct": 100.0,
+   "surviving_gated_trades": 0
   },
   {
    "strategy": "grid_2.0atr",
@@ -399,9 +402,9 @@
    "exit": "time_8c",
    "asset_class": "FUTURES",
    "candidate_entries": 6095,
-   "gated_out": 0,
-   "gated_out_pct": 0.0,
-   "surviving_gated_trades": 1139
+   "gated_out": 6095,
+   "gated_out_pct": 100.0,
+   "surviving_gated_trades": 0
   },
   {
    "strategy": "stoch_rsi_oversold",
@@ -435,9 +438,9 @@
    "exit": "time_16c",
    "asset_class": "FUTURES",
    "candidate_entries": 1751,
-   "gated_out": 0,
-   "gated_out_pct": 0.0,
-   "surviving_gated_trades": 518
+   "gated_out": 1751,
+   "gated_out_pct": 100.0,
+   "surviving_gated_trades": 0
   },
   {
    "strategy": "stoch_rsi_oversold",
@@ -471,9 +474,9 @@
    "exit": "time_4c",
    "asset_class": "FUTURES",
    "candidate_entries": 1751,
-   "gated_out": 0,
-   "gated_out_pct": 0.0,
-   "surviving_gated_trades": 720
+   "gated_out": 1751,
+   "gated_out_pct": 100.0,
+   "surviving_gated_trades": 0
   },
   {
    "strategy": "stoch_rsi_oversold",
@@ -507,9 +510,9 @@
    "exit": "time_8c",
    "asset_class": "FUTURES",
    "candidate_entries": 1751,
-   "gated_out": 0,
-   "gated_out_pct": 0.0,
-   "surviving_gated_trades": 613
+   "gated_out": 1751,
+   "gated_out_pct": 100.0,
+   "surviving_gated_trades": 0
   }
  ],
  "decile_excluded_trades": 0,
@@ -912,36 +915,6 @@
     "trades": 6202,
     "pnl_usd": -774.3949,
     "pnl_per_trade": -0.124862
-   },
-   "grid_2.0atr|ungated|FUTURES": {
-    "trades": 3571,
-    "pnl_usd": 34104.1406,
-    "pnl_per_trade": 9.550305
-   },
-   "grid_2.0atr|gated|FUTURES": {
-    "trades": 3571,
-    "pnl_usd": 34104.1406,
-    "pnl_per_trade": 9.550305
-   },
-   "stoch_rsi_oversold|ungated|FUTURES": {
-    "trades": 1851,
-    "pnl_usd": 3492.9651,
-    "pnl_per_trade": 1.887069
-   },
-   "stoch_rsi_oversold|gated|FUTURES": {
-    "trades": 1851,
-    "pnl_usd": 3492.9651,
-    "pnl_per_trade": 1.887069
-   },
-   "dca_7|ungated|FUTURES": {
-    "trades": 3858,
-    "pnl_usd": 27712.1567,
-    "pnl_per_trade": 7.183037
-   },
-   "dca_7|gated|FUTURES": {
-    "trades": 3857,
-    "pnl_usd": 27699.0331,
-    "pnl_per_trade": 7.181497
    }
   },
   "vol_deciles_ungated": {
