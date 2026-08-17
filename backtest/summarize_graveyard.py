@@ -54,12 +54,38 @@ def summarize(path: str) -> dict:
     concentration = collections.Counter(
         (e['ticker'], e['timeframe']) for e in passes).most_common(5)
 
+    # WHY A ROW WAS NOT TESTED (R-002). Two structurally different reasons,
+    # kept apart because collapsing them hides the one that is a config
+    # choice rather than a data limitation: `unsizable_at_cap` rows would
+    # become testable tomorrow by raising notional_cap, whereas a series that
+    # is too short stays too short.
+    def not_tested_code(e: dict) -> str:
+        reason = e.get('not_tested_reason') or ''
+        if reason == 'unsizable_at_cap':
+            return 'unsizable_at_cap'
+        if 'bars' in reason:
+            return 'insufficient_bars'
+        return 'unspecified'
+
+    nt_counts = collections.Counter(
+        not_tested_code(e) for e in entries if e.get('verdict') == 'NOT_TESTED')
+
+    # A zero-trade FAIL is a real verdict by the harness's rule (the strategy
+    # was runnable and never signalled), but it is NOT a tested configuration
+    # in the sense most readers assume. Publish both numbers so nobody has to
+    # guess which one a headline count means.
+    tested_with_trades = sum(1 for e in tested if e.get('trades'))
+
     return {
         'graveyard': os.path.basename(path),
         'entries_total': len(entries),
         'verdict_counts': dict(verdicts),
         'raw_pass_rows': len(passes),
         'benchmark_pass_rows': len(bench_passes),
+        'not_tested_breakdown': dict(nt_counts),
+        'unsizable_at_cap': nt_counts.get('unsizable_at_cap', 0),
+        'tested_rows': len(tested),
+        'tested_rows_with_trades': tested_with_trades,
         'distinct_findings': {
             'strategy_x_ticker_x_timeframe': len(by_combo),
             'strategy_family_x_ticker_x_timeframe': len(by_family_ticker),
@@ -104,6 +130,9 @@ def main():
 
     print(f"Graveyard: {s['graveyard']}  ({s['entries_total']} entries)")
     print(f"Verdicts: {s['verdict_counts']}")
+    print(f"NOT_TESTED breakdown: {s['not_tested_breakdown']}")
+    print(f"Tested rows: {s['tested_rows']}  "
+          f"(of which {s['tested_rows_with_trades']} actually placed trades)")
     print(f"\nRaw PASS rows:        {s['raw_pass_rows']}")
     print(f"Benchmark PASS rows:  {s['benchmark_pass_rows']} (not discoveries)")
     print("\nDISTINCT FINDINGS (what you should actually cite):")

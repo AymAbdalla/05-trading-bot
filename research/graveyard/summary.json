@@ -2,13 +2,20 @@
   "graveyard": "v0_graveyard_full.json",
   "entries_total": 535425,
   "verdict_counts": {
-    "FAIL": 508647,
-    "NOT_TESTED": 26345,
+    "FAIL": 486350,
+    "NOT_TESTED": 48642,
     "PASS": 381,
     "PASS_BENCHMARK": 52
   },
   "raw_pass_rows": 381,
   "benchmark_pass_rows": 52,
+  "not_tested_breakdown": {
+    "insufficient_bars": 26345,
+    "unsizable_at_cap": 22297
+  },
+  "unsizable_at_cap": 22297,
+  "tested_rows": 486783,
+  "tested_rows_with_trades": 139667,
   "distinct_findings": {
     "strategy_x_ticker_x_timeframe": 155,
     "strategy_family_x_ticker_x_timeframe": 143,
@@ -38,9 +45,9 @@
     }
   ],
   "multiple_comparisons": {
-    "tests_completed": 509080,
-    "expected_max_z_under_null": 5.13,
-    "note": "With 509080 tests, chance alone is expected to produce a best result around 5.1 sigma. A single impressive row is the base rate, not evidence. Judge must correct on hypotheses GENERATED, and use effective test count (correlated tickers/timeframes are not independent), not raw row count."
+    "tests_completed": 486783,
+    "expected_max_z_under_null": 5.12,
+    "note": "With 486783 tests, chance alone is expected to produce a best result around 5.1 sigma. A single impressive row is the base rate, not evidence. Judge must correct on hypotheses GENERATED, and use effective test count (correlated tickers/timeframes are not independent), not raw row count."
   },
   "reading_guide": "raw_pass_rows counts (strategy, ticker, timeframe, exit_config) rows. One strategy that works on one ticker across 9 exit configs produces 9 rows and ONE finding. Always cite distinct_findings."
 }

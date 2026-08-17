@@ -173,6 +173,11 @@ class VResult:
     cost_model_version: str = 'flat:unstamped'
     asset_class: str = 'FLAT'
     instrument: str = ''
+    # Signals that reached sizing and were rejected for lack of capital
+    # (`coster.size()` returned 0). Never silently dropped: when this is the
+    # whole reason a series produced no trades, the row is NOT_TESTED rather
+    # than FAIL (R-002, convention 20).
+    zero_size_rejects: int = 0
 
     @property
     def trade_count(self) -> int:
@@ -307,6 +312,7 @@ class VResult:
             'avg_capital_at_risk_usd': round(self.avg_capital_at_risk, 2),
             'beats_buy_hold': self.beats_buy_hold(),
             'beats_twin': self.beats_random_twin(),
+            'zero_size_rejects': self.zero_size_rejects,
         }
 
 
@@ -743,6 +749,7 @@ class VectorizedBacktestHarness:
         n = ind.n
         min_idx = min(SCAN_WINDOW, 100)  # warmup: covers EMA-50/RSI-14/ATR-14/support-100
         trades: List[VTrade] = []
+        zero_size_rejects = 0   # signals killed by affordability, not by edge
         # Bearish-pattern exit bars, only computed for signal exit configs.
         exit_bars = (self.exit_signal_bars(ind)
                      if exit_cfg['type'] == 'signal' else None)
@@ -813,6 +820,10 @@ class VectorizedBacktestHarness:
 
             qty = coster.size(entry_px)
             if qty <= 0:
+                # Rejected for lack of capital, not lack of edge. Counted so
+                # the difference is visible downstream instead of arriving as
+                # an indistinguishable zero-trade FAIL (convention 20).
+                zero_size_rejects += 1
                 i += 1
                 continue
             exit_idx, exit_px, reason = _simulate_exit(
@@ -859,6 +870,7 @@ class VectorizedBacktestHarness:
             random_twin_pf=_median(twin_pfs), twin_pfs=twin_pfs,
             cost_model_version=coster.version,
             asset_class=coster.asset_class, instrument=coster.instrument,
+            zero_size_rejects=zero_size_rejects,
         )
 
     @staticmethod
@@ -1039,6 +1051,25 @@ class VectorizedBacktestHarness:
         # so the version-uniformity assertion sees one dataset either way.
         sweep_coster = self._coster(ticker, ind, sector=sector)
 
+        # STRUCTURAL AFFORDABILITY GATE (Raven ruling R-002).
+        # `coster.size()` returns a fixed contract count for contract
+        # instruments, so when the account cannot afford one contract the
+        # answer is 0 at every price on every bar. No signal from any strategy
+        # could ever become a position on this series. That is "the harness
+        # could not run this", which is NOT_TESTED - not a FAIL, which would
+        # claim we tested an idea and it lost money (convention 11).
+        # Read once per series because it is a property of the instrument and
+        # the notional cap, never of the strategy.
+        unsizable = not sweep_coster.can_size
+        if unsizable:
+            per_unit = (getattr(sweep_coster.spec, 'initial_margin', None)
+                        or sweep_coster.reference_price * sweep_coster.multiplier)
+            unsizable_detail = (
+                f'one {sweep_coster.instrument} needs ${per_unit:,.0f}, '
+                f'notional cap is ${sweep_coster.notional_cap:,.0f}')
+            logger.info(f'{ticker} {timeframe}: UNSIZABLE at cap '
+                        f'({unsizable_detail}) - all rows NOT_TESTED')
+
         reports = []
         # Loop order: strategy OUTER so each strategy is scanned exactly once
         # (scan_all_bars) and replayed across every exit config. Signals are
@@ -1073,6 +1104,27 @@ class VectorizedBacktestHarness:
                         'inversion_flagged': False,
                     })
                 continue
+
+            # Bar-count gate first, so its rows keep exactly the labels and
+            # prose they had before this gate existed. A series that is BOTH
+            # too short and unaffordable is reported as too short; either
+            # reason is sufficient and neither is more true than the other.
+            if unsizable:
+                for exit_config in exit_configs:
+                    reports.append({
+                        'strategy': strategy.name, 'ticker': ticker,
+                        'timeframe': timeframe, 'exit_config': exit_config,
+                        'trades': 0, 'verdict': 'NOT_TESTED',
+                        'not_tested_reason': 'unsizable_at_cap',
+                        'not_tested_detail': unsizable_detail,
+                        'gate_version': GATE_VERSION,
+                        'cost_model_version': sweep_coster.version,
+                        'asset_class': sweep_coster.asset_class,
+                        'instrument': sweep_coster.instrument,
+                        'inversion_flagged': False,
+                    })
+                continue
+
             sig_cache = self.scan_all_bars(strategy, ind, liquidity_filter)
             for exit_config in exit_configs:
                 result = self.run_strategy(

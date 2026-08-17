@@ -297,6 +297,24 @@ class TradeCoster:
         return self.asset_class in ('FUTURES', 'OPTIONS')
 
     @property
+    def can_size(self) -> bool:
+        """Can this instrument produce a non-zero position AT ALL?
+
+        For contracts, `size()` returns `self.contracts`, fixed at
+        construction from `notional_cap`. When that is 0 - a $100 cap against
+        an $1,800 initial margin - EVERY signal on this series is rejected for
+        lack of capital, at every price, on every bar. Nothing the strategy
+        does can change it.
+
+        That makes it a STRUCTURAL fact about the run rather than an outcome
+        of it, which is why the harness reads it before the loop instead of
+        inferring it from zero trades afterwards. A strategy whose every
+        signal was rejected for lack of capital did not run and fail; it did
+        not run (convention 11, Raven ruling R-002).
+        """
+        return (not self.is_contract) or self.contracts > 0
+
+    @property
     def multiplier(self) -> float:
         """Dollars of PnL per unit of qty per point of price move."""
         return self.spec.multiplier
@@ -410,6 +428,7 @@ class FlatCoster:
 
     multiplier = 1.0
     is_contract = False
+    can_size = True          # spot sizing is fractional; never unaffordable
     asset_class = 'FLAT'
     instrument = 'FLAT'
 
