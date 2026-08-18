@@ -2269,7 +2269,7 @@ re-run leaves the file list unchanged.
 
 **Where:** `agents/forge.py` (`next_free_index`), `strategies/proposals/`.
 
-### D-310. `vault_writer.skip_model`, formerly and dangerously `dry_run` (CODY, needs ratifying)
+### D-310. `vault_writer.skip_model`, formerly and dangerously `dry_run` (RATIFIED by Raven, 2026-08-18)
 
 The flag means "skip the model, still write the deterministic fallback". It was
 called `dry_run`, which every reader takes to mean "write nothing". In the two
@@ -2290,7 +2290,7 @@ that fails if any public writer regrows a `dry_run` parameter or loses its
 **Where:** `agents/vault_writer.py`, `scripts/vault_refresh.py`,
 `agents/critic.py`, `tests/test_llm_reasoning_layer.py`.
 
-### D-311. Weather markets get a daily-extreme model, a discovery cycle, and their own counters (AYM + CODY, needs ratifying)
+### D-311. Weather markets get a daily-extreme model, a discovery cycle, and their own counters (AYM + CODY, RATIFIED by Raven, 2026-08-18)
 
 **Decided:** 2026-08-18. Aym approved `allow_daily_extreme_markets = true`.
 Cody built the model, the discovery cycle and the tests.
@@ -2397,7 +2397,7 @@ FIT the sigma, not to lower the floor.
 `tests/test_weather_shadow_wiring.py` (24 tests),
 `tests/test_weather_arb.py` (extended to 169).
 
-### D-312. A strategy joins a market universe by DECLARATION, not by a flag (CODY, needs ratifying)
+### D-312. A strategy joins a market universe by DECLARATION, not by a flag (RATIFIED by Raven, 2026-08-18)
 
 **Decided:** 2026-08-18. Cited in eight places across `shadow_loop.py`,
 `base.py` and `weather_arb.py` since the afternoon session. The body was never
@@ -2443,7 +2443,7 @@ is now the crypto-routed subset, derived rather than hardcoded.
 
 ---
 
-### D-313. Event, sports and political markets get one cycle, three records (CODY, needs ratifying)
+### D-313. Event, sports and political markets get one cycle, three records (RATIFIED by Raven, 2026-08-18)
 
 **Decided:** 2026-08-18. The `MarketSpace` record, the `SPACE_*` constants and
 this D-number were written by the afternoon session; the cycle that uses them
@@ -2516,7 +2516,7 @@ and it is Aym's, not a side effect of wiring the transport.
 
 ---
 
-### D-314. The corridor family never traded the complementary-pair identity, so proposal 026 phase one measures a structure it does not use (CODY, needs ratifying)
+### D-314. The corridor family never traded the complementary-pair identity, so proposal 026 phase one measures a structure it does not use (RATIFIED by Raven, 2026-08-18)
 
 **Decided:** 2026-08-18. Proposal 026 asks for this code read explicitly and
 says it would rather be made redundant by it than build an instrument to
@@ -2568,7 +2568,7 @@ and are the part worth keeping.
 
 ---
 
-### D-315. Proposals 024, 025 and 026 are three different KINDS of thing and only 024 is a strategy (CODY, needs ratifying)
+### D-315. Proposals 024, 025 and 026 are three different KINDS of thing and only 024 is a strategy (RATIFIED by Raven, 2026-08-18)
 
 **Decided:** 2026-08-18. Raven's task file asks for all three to be
 "implemented as a Python strategy file in `strategies/polymarket/`, registered
