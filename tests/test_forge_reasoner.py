@@ -39,6 +39,7 @@ from agents import forge  # noqa: E402
 from agents import forge_reasoner as fr  # noqa: E402
 from agents import hypothesis_graph as hg  # noqa: E402
 from agents import llm_client  # noqa: E402
+from agents import vault_digest  # noqa: E402
 from agents import vault_reader  # noqa: E402
 
 
@@ -663,6 +664,111 @@ def test_a_missing_vault_is_reported_not_silently_empty(monkeypatch, tmp_path):
 
     rendered = vault_reader.render_context(vault_reader.load_context())
     assert 'directory does not exist yet' in rendered
+
+
+# ---------------------------------------------------------------------------
+# The vault digest (Task 2 of the 2026-08-18 vault-digest work): forge_reasoner
+# reads `_DIGEST.md` first instead of the full note tree.
+# ---------------------------------------------------------------------------
+
+def _write_digest(root, entries):
+    """`entries` is `[(date, filename, verdict, evidence, relevance), ...]`."""
+    text = ''.join(vault_digest.format_entry(*e) for e in entries)
+    (root / vault_digest.DIGEST_FILENAME).write_text(text)
+
+
+def test_load_vault_with_a_fresh_digest_reads_the_digest_not_the_full_tree(
+        temp_vault):
+    _write_digest(temp_vault, [
+        ('2026-08-18', 'strike-proxy-floor-direction.md',
+         'A bigger floor rejects more windows.', '18,937 evaluations',
+         'Do not loosen the floor to buy frequency.'),
+    ])
+    out = fr.load_vault()
+    assert out['status'] == 'ok'
+    assert out['digest_status'] == 'ok'
+    assert 'A bigger floor rejects more windows.' in out['text']
+    assert 'OBSIDIAN VAULT DIGEST' in out['text']
+    # The digested note's own RAW BODY (the fixture's LESSON_TEXT, distinct
+    # from the digest's own summarised verdict above) must not be re-read in
+    # full: that is the entire point of the digest existing. Its filename
+    # legitimately appears once, in the digest entry's own heading.
+    assert 'A bigger noise floor rejects more windows, never fewer.' \
+        not in out['text']
+
+
+def test_load_vault_surfaces_a_note_the_digest_has_not_absorbed_yet(
+        temp_vault):
+    # The digest covers only ONE of the two notes the fixture wrote to disk.
+    _write_digest(temp_vault, [
+        ('2026-08-18', 'strike-proxy-floor-direction.md', 'v', 'e', 'r'),
+    ])
+    out = fr.load_vault()
+    assert out['digest_status'] == 'ok'
+    assert 'RECENT NOTES NOT YET IN THE DIGEST' in out['text']
+    assert 'fair-value-arb-card.md' in out['text']
+    assert out['recent_notes'] == 1
+
+
+def test_load_vault_with_no_digest_file_falls_back_to_the_full_tree(
+        temp_vault):
+    """Task 2.4: an absent digest must never fail a Forge cycle."""
+    out = fr.load_vault()
+    assert out['status'] == 'ok'
+    assert out['digest_status'] == 'missing'
+    assert 'DIGEST MISSING' in out['text']
+    # The pre-digest behaviour: everything is still there.
+    assert 'strike-proxy-floor-direction.md' in out['text']
+    assert 'A bigger noise floor rejects more windows' in out['text']
+
+
+def test_load_vault_with_a_stale_digest_falls_back_to_the_full_tree(
+        temp_vault):
+    _write_digest(temp_vault, [
+        ('2020-01-01', 'strike-proxy-floor-direction.md', 'v', 'e', 'r'),
+    ])
+    out = fr.load_vault()
+    assert out['digest_status'] == 'stale'
+    assert 'DIGEST STALE' in out['text']
+    assert 'fair-value-arb-card.md' in out['text']
+
+
+def test_load_vault_with_a_recent_digest_is_not_stale(temp_vault):
+    _write_digest(temp_vault, [
+        (vault_digest.today(), 'strike-proxy-floor-direction.md', 'v', 'e', 'r'),
+    ])
+    out = fr.load_vault()
+    assert out['digest_status'] == 'ok'
+
+
+def test_vault_ctx_line_reports_digest_size_and_graph_count(temp_vault,
+                                                             temp_graph):
+    _write_digest(temp_vault, [
+        ('2026-08-18', 'strike-proxy-floor-direction.md', 'v', 'e', 'r'),
+    ])
+    brief = _brief(temp_graph)
+    assert brief['vault_ctx_line'].startswith('vault_ctx: digest=')
+    assert 'recent=' in brief['vault_ctx_line']
+    assert 'graph=%d' % brief['hypothesis_graph']['n_failed_total'] in \
+        brief['vault_ctx_line']
+
+
+def test_vault_ctx_line_names_the_fallback_when_the_digest_is_missing(
+        temp_vault, temp_graph):
+    brief = _brief(temp_graph)
+    assert 'vault_ctx: digest=MISSING' in brief['vault_ctx_line']
+
+
+def test_render_brief_carries_the_vault_ctx_line_as_visible_proof(temp_vault,
+                                                                   temp_graph):
+    """Task 2.5: the line has to be IN the artifact the model reads, not just
+    logged on the side, or it proves nothing about what THIS cycle read."""
+    _write_digest(temp_vault, [
+        ('2026-08-18', 'strike-proxy-floor-direction.md', 'v', 'e', 'r'),
+    ])
+    brief = _brief(temp_graph)
+    rendered = fr.render_brief(brief)
+    assert rendered.startswith('vault_ctx: digest=')
 
 
 def test_sqlite_row_reading_is_read_only(temp_graph):

@@ -63,6 +63,7 @@ wrote prose where JSON was asked for" are different mistakes.
 import json
 import os
 import sqlite3
+import sys
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -70,6 +71,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 from agents import forge  # noqa: E402
 from agents import hypothesis_graph as hg  # noqa: E402
 from agents import llm_client  # noqa: E402
+from agents import vault_digest  # noqa: E402
 from agents import vault_reader  # noqa: E402
 
 # The task name routes to Opus in `llm_client.MODEL_FOR_TASK`. Callers name a
@@ -104,6 +106,13 @@ VAULT_RENDER_CAP_CHARS = 40000                           # the rendered block
 GRAVEYARD_CAP_CHARS = 8000
 HYPOTHESIS_CAP_CHARS = 20000
 SHADOW_CAP_CHARS = 8000
+
+# Task 2 of the vault-digest work: the digest is read in full (it is capped
+# at vault_digest.DIGEST_CAP_CHARS, ~10K, so this is bounded by construction).
+# What is NOT bounded by construction is the delta of notes the digest has
+# not absorbed yet, so that gets its own budget.
+RECENT_NOTES_BUDGET_CHARS = 20000
+DIGEST_STALE_DAYS = 30
 
 # Per-row caps inside the hypothesis-graph block. A hypothesis text is one
 # sentence by construction; the notes field is where the derivation lives and
@@ -250,29 +259,109 @@ def load_failed_hypotheses(db_path: str = DEFAULT_DB,
     return out
 
 
-def load_vault(budget_chars: int = VAULT_BUDGET_CHARS) -> Dict[str, Any]:
+def _full_tree_vault(budget_chars: int, warning: str) -> Dict[str, Any]:
+    """The pre-digest behaviour: read everything. Used by every fallback path."""
+    context = vault_reader.load_context(budget_chars=budget_chars)
+    return {
+        'text': warning + '\n\n' + vault_reader.render_context(context),
+        'total_notes': context['total_notes'],
+        'total_chars': context['total_chars'],
+        'total_dropped': context['total_dropped'],
+        'known_failure_modes': vault_reader.known_failure_modes(context),
+    }
+
+
+def load_vault(budget_chars: int = VAULT_BUDGET_CHARS,
+               recent_budget_chars: int = RECENT_NOTES_BUDGET_CHARS
+               ) -> Dict[str, Any]:
     """The Obsidian vault, rendered for a prompt, plus its own accounting.
 
-    Task 4's read side. `agents/vault_reader.py` already reports what it
-    dropped per section; this adds the summary Forge logs and degrades to
-    status='unreadable' rather than raising if the vault is not there.
+    Task 2 of the vault-digest work: the PRIMARY input is now
+    `agents/vault_digest.py`'s rolling `_DIGEST.md` (capped, so bounded by
+    construction), not the full note tree. Three explicit fallbacks, all of
+    them degrading to the pre-digest full-tree read rather than silently
+    returning less than before:
+
+      * the digest file does not exist -> full tree, `digest_status='missing'`
+      * the digest exists but its newest entry is over
+        `DIGEST_STALE_DAYS` old -> full tree, `digest_status='stale'`
+      * a section directory is unreadable -> `status='unreadable'`, same as
+        the pre-digest behaviour
+
+    When the digest is fresh, "recent notes" (Task 2.2) are the delta: any
+    note on disk whose filename is not yet a digest entry heading, read in
+    full and budgeted separately so a burst of `skip_model` fallback notes
+    cannot starve the digest itself.
     """
     out: Dict[str, Any] = {
         'status': 'ok', 'error': None, 'text': '',
         'vault_root': vault_reader.VAULT_ROOT,
         'total_notes': 0, 'total_chars': 0, 'total_dropped': 0,
         'known_failure_modes': {},
+        'digest_status': 'ok', 'digest_chars': 0, 'recent_notes': 0,
     }
     try:
-        context = vault_reader.load_context(budget_chars=budget_chars)
-        out['text'] = vault_reader.render_context(context)
-        out['total_notes'] = context['total_notes']
-        out['total_chars'] = context['total_chars']
-        out['total_dropped'] = context['total_dropped']
-        out['known_failure_modes'] = vault_reader.known_failure_modes(context)
+        digest_text = vault_digest.read_digest()
     except OSError as exc:
         out['status'] = 'unreadable'
         out['error'] = '%s: %s' % (type(exc).__name__, exc)
+        return out
+
+    if not digest_text.strip():
+        out.update(_full_tree_vault(
+            budget_chars,
+            '# OBSIDIAN VAULT (DIGEST MISSING)\n\n'
+            'WARNING: %s does not exist yet. Falling back to the full vault '
+            'tree exactly as before the digest existed. This is expected '
+            'once, before the first note write after this feature landed.'
+            % vault_digest.digest_path()))
+        out['digest_status'] = 'missing'
+        return out
+
+    newest = vault_digest.newest_entry_date(digest_text)
+    if vault_digest.is_stale(newest, max_age_days=DIGEST_STALE_DAYS):
+        out.update(_full_tree_vault(
+            budget_chars,
+            '# OBSIDIAN VAULT (DIGEST STALE)\n\n'
+            'WARNING: the digest at %s has not gained an entry since %s, '
+            'more than %d days ago. Falling back to the full vault tree.'
+            % (vault_digest.digest_path(), newest or '(never)',
+               DIGEST_STALE_DAYS)))
+        out['digest_status'] = 'stale'
+        return out
+
+    covered = vault_digest.digested_names(digest_text)
+    recent = vault_reader.read_uncovered(covered, budget_chars=recent_budget_chars)
+
+    parts = ['# OBSIDIAN VAULT DIGEST (rolling conclusions, newest entry %s)'
+             % newest, '', digest_text.strip(), '']
+    if recent['notes']:
+        parts.append('# RECENT NOTES NOT YET IN THE DIGEST (%d)'
+                     % len(recent['notes']))
+        parts.append('')
+        parts.append('These exist on disk but have no digest entry yet - '
+                     'most often a `skip_model` fallback note, which carries '
+                     'no judgement to digest (Convention 11).')
+        parts.append('')
+        for note in recent['notes']:
+            parts.append('### %s' % note['name'])
+            parts.append(note['text'].strip())
+            parts.append('')
+    if recent['dropped']:
+        parts.append('_NOTE: %d recent note(s) NOT included (%s). Do not '
+                     'read their absence as "there is nothing there"._'
+                     % (len(recent['dropped']),
+                        ', '.join(sorted({d['reason']
+                                          for d in recent['dropped']}))))
+        parts.append('')
+
+    out['text'] = '\n'.join(parts)
+    out['digest_status'] = 'ok'
+    out['digest_chars'] = len(digest_text)
+    out['recent_notes'] = len(recent['notes'])
+    out['total_notes'] = len(recent['notes'])
+    out['total_chars'] = len(digest_text) + recent['chars']
+    out['total_dropped'] = len(recent['dropped'])
     return out
 
 
@@ -336,13 +425,16 @@ def gather_evidence(db_path: str = DEFAULT_DB,
                 'note': 'NOT_TESTED, not empty. Convention 11.',
             }
 
+    hypothesis_graph = load_failed_hypotheses(db_path, limit=max_failed_hypotheses)
+    vault = load_vault(budget_chars=vault_budget_chars)
+
     return {
         'gaps': gaps,
         'graveyard_errors': gaps.get('evidence_errors', {}),
         'shadow': shadow_summary,
-        'hypothesis_graph': load_failed_hypotheses(
-            db_path, limit=max_failed_hypotheses),
-        'vault': load_vault(budget_chars=vault_budget_chars),
+        'hypothesis_graph': hypothesis_graph,
+        'vault': vault,
+        'vault_ctx_line': render_vault_ctx_line(vault, hypothesis_graph),
         'truncations': truncations,
         'budget': {
             'vault_per_section_chars': vault_budget_chars,
@@ -353,6 +445,25 @@ def gather_evidence(db_path: str = DEFAULT_DB,
             'max_failed_hypotheses': max_failed_hypotheses,
         },
     }
+
+
+def render_vault_ctx_line(vault: Dict[str, Any],
+                          hypothesis_graph: Dict[str, Any]) -> str:
+    """Task 2.5: the one-line audit trail for what this cycle actually read.
+
+    Printed with every Forge run so a human scanning logs can see, without
+    opening the brief, whether the digest was used or the run fell all the
+    way back to a full-tree read.
+    """
+    graph_n = hypothesis_graph.get('n_failed_total', 0)
+    status = vault.get('digest_status', 'ok')
+    if status == 'ok':
+        return ('vault_ctx: digest=%.1fK recent=%d notes graph=%d'
+                % (vault.get('digest_chars', 0) / 1000.0,
+                   vault.get('recent_notes', 0), graph_n))
+    return ('vault_ctx: digest=%s full_tree=%.1fK notes=%d graph=%d'
+            % (status.upper(), vault.get('total_chars', 0) / 1000.0,
+               vault.get('total_notes', 0), graph_n))
 
 
 # ---------------------------------------------------------------------------
@@ -439,7 +550,12 @@ def render_brief(brief: Dict[str, Any]) -> str:
     else:
         vault_text = vault_block['text']
 
+    vault_ctx_line = render_vault_ctx_line(vault_block, brief['hypothesis_graph'])
+    brief['vault_ctx_line'] = vault_ctx_line
+
     parts = [
+        vault_ctx_line,
+        '',
         '# GRAVEYARD AND GAP ANALYSIS (backtest)',
         '',
         'Computed by `agents/forge.py: analyse_gaps()`. `distinct_findings` is '
@@ -880,6 +996,11 @@ def main(argv: Optional[List[str]] = None) -> int:  # pragma: no cover - CLI
     args = parser.parse_args(argv)
 
     brief = gather_evidence(db_path=args.db, paper_log=args.paper_log)
+    # Task 2.5: printed on every run, in every --show mode, so a human
+    # scanning logs sees what THIS cycle actually read without opening the
+    # brief. Always stderr so it never lands inside a --show=summary reader's
+    # json.loads(stdout).
+    print(brief['vault_ctx_line'], file=sys.stderr)
     if args.show == 'brief':
         print(render_brief(brief))
     elif args.show == 'prompt':
@@ -891,6 +1012,7 @@ def main(argv: Optional[List[str]] = None) -> int:  # pragma: no cover - CLI
                 k: v for k, v in brief['hypothesis_graph'].items()
                 if k != 'shown'},
             'vault': {k: v for k, v in brief['vault'].items() if k != 'text'},
+            'vault_ctx_line': brief['vault_ctx_line'],
             'shadow_status': brief['shadow'].get('status'),
             'prompt_chars': len(build_prompt(brief, n_proposals=args.n)),
         }))

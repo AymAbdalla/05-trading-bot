@@ -18,7 +18,7 @@ before it.
 """
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 VAULT_ROOT = os.path.expanduser('~/aym/vault/Trading')
 
@@ -159,6 +159,63 @@ def read_dir(path: str, budget_chars: int = DEFAULT_BUDGET_CHARS
             continue
         out['notes'].append(VaultNote(full, text, mtime))
         used += len(text)
+    out['chars'] = used
+    return out
+
+
+def list_notes(path: str) -> List[Tuple[str, float]]:
+    """`[(filename, mtime), ...]` for one section, newest first.
+
+    Deliberately does not read file content. `agents/vault_digest.py`'s
+    delta read (Task 2) needs to know WHICH notes exist without paying the
+    full-tree read cost the digest exists to avoid; content is only read for
+    the notes that come back from that comparison.
+    """
+    if not os.path.isdir(path):
+        return []
+    entries = []
+    for name in os.listdir(path):
+        if not name.endswith('.md'):
+            continue
+        full = os.path.join(path, name)
+        if os.path.isfile(full):
+            entries.append((name, os.path.getmtime(full)))
+    entries.sort(key=lambda pair: pair[1], reverse=True)
+    return entries
+
+
+def read_uncovered(covered_names: Set[str],
+                   budget_chars: int = DEFAULT_BUDGET_CHARS
+                   ) -> Dict[str, Any]:
+    """Full text of every Trading note NOT in `covered_names`, budgeted.
+
+    `covered_names` is normally `vault_digest.digested_names(digest_text)`:
+    notes whose conclusion is already in the digest are skipped entirely, so
+    in steady state (every note write updates the digest) this reads nothing.
+    A note only shows up here when something wrote it without going through
+    the digest hook - a `skip_model` fallback, or a hand-written Obsidian
+    note - which is exactly what a Forge brief needs to be told about.
+    """
+    out: Dict[str, Any] = {'notes': [], 'dropped': [], 'chars': 0}
+    used = 0
+    for key, section_path in SECTIONS:
+        for name, _mtime in list_notes(section_path):
+            if name in covered_names:
+                continue
+            full = os.path.join(section_path, name)
+            try:
+                with open(full, 'r', encoding='utf-8') as handle:
+                    text = handle.read()
+            except OSError as exc:
+                out['dropped'].append({'name': name,
+                                       'reason': 'unreadable: %s' % exc})
+                continue
+            if used + len(text) > budget_chars and out['notes']:
+                out['dropped'].append({'name': name,
+                                       'reason': 'over budget_chars'})
+                continue
+            out['notes'].append({'section': key, 'name': name, 'text': text})
+            used += len(text)
     out['chars'] = used
     return out
 

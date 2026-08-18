@@ -57,9 +57,9 @@ import re
 import tempfile
 import time
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 
-from agents import llm_client
+from agents import llm_client, vault_digest
 from agents.vault_reader import (  # noqa: F401  (re-exported for callers)
     BLOWUP_DIR, CARDS_DIR, CYCLES_DIR, LESSONS_DIR, VAULT_ROOT,
 )
@@ -69,6 +69,19 @@ DAILY_DIR = os.path.join(VAULT_ROOT, 'Daily-Summaries')
 # A real report is long. A one-line "I could not do that" is not. This is the
 # floor below which we treat the turn as having produced nothing usable.
 MIN_USEFUL_CHARS = 200
+
+# Task 3 of the vault-digest work: a note over this cap gets its detailed
+# evidence moved to an appendix, keeping thesis/verdict/pointer in the main
+# note. Applies to new writes only; existing oversized notes are untouched.
+NOTE_SIZE_CAP_CHARS = 10000
+
+# The five "judgement" tasks - the ones write_* composes with Opus, not the
+# mechanical `daily_summary` - are the ones eligible for a digest entry and
+# for the size cap. Named here once so `compose_note` and `_prompt` agree.
+DIGEST_ELIGIBLE_TASKS = frozenset({
+    'blowup_root_cause', 'strategy_lesson', 'strategy_card',
+    'forge_cycle_takeaway', 'critic_post_mortem',
+})
 
 # Phrases that mean the turn ran but declined. Written as a refusal check, not
 # a quality check: we are not grading the prose, only catching a non-answer.
@@ -82,13 +95,22 @@ class VaultWrite(object):
 
     def __init__(self, path: str, written: bool, used_model: bool,
                  task: str, llm: Optional[llm_client.LLMResult] = None,
-                 error: Optional[str] = None) -> None:
+                 error: Optional[str] = None,
+                 appendix_path: Optional[str] = None,
+                 digest_updated: bool = False,
+                 digest_skip_reason: Optional[str] = None) -> None:
         self.path = path
         self.written = written
         self.used_model = used_model
         self.task = task
         self.llm = llm
         self.error = error
+        # Task 3: set when the note was over NOTE_SIZE_CAP_CHARS and its
+        # detail was split into an appendix file.
+        self.appendix_path = appendix_path
+        # Task 1: whether this write appended a conclusion to _DIGEST.md.
+        self.digest_updated = digest_updated
+        self.digest_skip_reason = digest_skip_reason
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return ('VaultWrite(path=%r, written=%r, used_model=%r, error=%r)'
@@ -98,7 +120,9 @@ class VaultWrite(object):
         out: Dict[str, Any] = {
             'path': self.path, 'written': self.written,
             'used_model': self.used_model, 'task': self.task,
-            'error': self.error,
+            'error': self.error, 'appendix_path': self.appendix_path,
+            'digest_updated': self.digest_updated,
+            'digest_skip_reason': self.digest_skip_reason,
         }
         if self.llm is not None:
             out['llm'] = self.llm.to_dict()
@@ -178,6 +202,102 @@ def _usable(text: str) -> bool:
     return True
 
 
+_SECTION_HEADING_RE = re.compile(r'^## ', re.MULTILINE)
+
+_KNOWN_OUT_DIRS = (BLOWUP_DIR, CARDS_DIR, CYCLES_DIR, LESSONS_DIR)
+
+
+def _title_of(body: str) -> str:
+    for line in body.splitlines():
+        if line.startswith('# '):
+            return line[2:].strip()
+    return 'Untitled'
+
+
+def _appendix_dir(out_dir: str) -> str:
+    """Where a split note's appendix lands.
+
+    In production `out_dir` is one of the four `VAULT_ROOT/<Section>`
+    constants, so this resolves to the single shared `VAULT_ROOT/Appendices`
+    the task spec names. A test that points `out_dir` at a throwaway tmp path
+    (as `tests/test_vault_refresh.py` already does, to keep a synthetic note
+    out of the real vault) gets a sibling `Appendices` under that same tmp
+    path instead, never the real vault.
+    """
+    parent = os.path.dirname(os.path.normpath(out_dir))
+    known_parents = {os.path.dirname(d) for d in _KNOWN_OUT_DIRS}
+    if parent in known_parents:
+        return os.path.join(parent, 'Appendices')
+    return os.path.join(out_dir, 'Appendices')
+
+
+def split_oversized_note(body: str, cap_chars: int = NOTE_SIZE_CAP_CHARS
+                         ) -> Tuple[str, Optional[str]]:
+    """Split `body` at a `## ` boundary once it exceeds `cap_chars`.
+
+    Returns `(head, detail)`. `detail` is None when no split happened: the
+    body fit, or it had no `## ` heading to cut on cleanly (nothing here
+    ever cuts mid-section). The opening title and key-value block, which
+    precedes the first `## `, always stays in `head`.
+    """
+    if len(body) <= cap_chars:
+        return body, None
+    starts = [m.start() for m in _SECTION_HEADING_RE.finditer(body)]
+    cut = next((s for s in starts if s > cap_chars), None)
+    if cut is None:
+        return body, None
+    return body[:cut].rstrip() + '\n', body[cut:].rstrip() + '\n'
+
+
+def _write_appendix_if_oversized(body: str, out_path: str
+                                 ) -> Tuple[str, Optional[str]]:
+    """Apply Task 3's cap. Returns `(possibly-shortened body, appendix_path)`."""
+    head, detail = split_oversized_note(body)
+    if detail is None:
+        return body, None
+    note_stem = os.path.splitext(os.path.basename(out_path))[0]
+    appendix_dir = _appendix_dir(os.path.dirname(out_path))
+    appendix_path = os.path.join(appendix_dir, '%s-appendix.md' % note_stem)
+    title = _title_of(body)
+    appendix_body = (
+        '# Appendix: %s\n\n'
+        'Full evidence for the note `%s.md`, split out because the parent '
+        'exceeded the %d-char cap.\n\n%s'
+        % (title, note_stem, NOTE_SIZE_CAP_CHARS, detail))
+    atomic_write(appendix_path, appendix_body)
+    pointer = ('\n\n> **Full evidence:** the detailed evidence for this note '
+              'was split out at the %d-char cap. See '
+              '`Trading/Appendices/%s-appendix.md`.\n'
+              % (NOTE_SIZE_CAP_CHARS, note_stem))
+    return head.rstrip() + pointer, appendix_path
+
+
+def _update_digest(task: str, out_path: str, body: str,
+                   appendix_path: Optional[str]) -> Tuple[bool, Optional[str]]:
+    """Task 1's write-time hook. Returns `(digest_updated, skip_reason)`.
+
+    Best-effort by design: a digest entry that could not be extracted or
+    written must never fail the note write that already succeeded.
+    """
+    if task not in DIGEST_ELIGIBLE_TASKS:
+        return False, 'task %r is not a judgement note' % task
+    fields = vault_digest.extract_fields(body)
+    if fields is None:
+        return False, 'no ## Digest Entry block in the composed text'
+    relevance = fields['relevance']
+    if appendix_path is not None:
+        relevance = ('%s Full evidence: `Trading/Appendices/%s`.'
+                     % (relevance, os.path.basename(appendix_path)))
+    try:
+        vault_digest.add_conclusion(
+            source_name=os.path.basename(out_path),
+            verdict=fields['verdict'], evidence=fields['evidence'],
+            relevance=relevance)
+    except OSError as exc:
+        return False, 'digest write failed: %s' % exc
+    return True, None
+
+
 def compose_note(task: str, prompt: str, out_path: str,
                  fallback: str,
                  timeout_s: int = llm_client.DEFAULT_TIMEOUT_S,
@@ -196,15 +316,27 @@ def compose_note(task: str, prompt: str, out_path: str,
         header = _provenance(task, None, fell_back=True)
         atomic_write(out_path, header + body)
         return VaultWrite(out_path, True, False, task,
-                          error='skip_model: no model turn was attempted')
+                          error='skip_model: no model turn was attempted',
+                          digest_skip_reason='skip_model: digest not touched')
 
     result = llm_client.run_task(task, prompt, timeout_s=timeout_s,
                                  allowed_tools=('Read',))
 
     if result.ok and _usable(result.text):
         header = _provenance(task, result, fell_back=False)
-        atomic_write(out_path, header + result.text.strip() + '\n')
-        return VaultWrite(out_path, True, True, task, llm=result)
+        body = result.text.strip()
+        # Task 1: extract the digest conclusion BEFORE any split, so a note
+        # whose "## Digest Entry" block happens to land late is still found.
+        digest_updated, digest_skip_reason = False, None
+        digest_fields_body = body
+        body, appendix_path = _write_appendix_if_oversized(body, out_path)
+        atomic_write(out_path, header + body + '\n')
+        digest_updated, digest_skip_reason = _update_digest(
+            task, out_path, digest_fields_body, appendix_path)
+        return VaultWrite(out_path, True, True, task, llm=result,
+                          appendix_path=appendix_path,
+                          digest_updated=digest_updated,
+                          digest_skip_reason=digest_skip_reason)
 
     error = result.error or (
         'model turn returned %d chars, below the %d-char floor, or was a '
@@ -215,8 +347,12 @@ def compose_note(task: str, prompt: str, out_path: str,
     except OSError as exc:
         return VaultWrite(out_path, False, False, task, llm=result,
                           error='%s; and the fallback write failed: %s'
-                                % (error, exc))
-    return VaultWrite(out_path, True, False, task, llm=result, error=error)
+                                % (error, exc),
+                          digest_skip_reason='fallback write: digest not '
+                                             'touched')
+    return VaultWrite(out_path, True, False, task, llm=result, error=error,
+                      digest_skip_reason='fallback note: NOT_TESTED reasoning '
+                                         'is not a conclusion')
 
 
 # --------------------------------------------------------------------------
@@ -477,6 +613,7 @@ def write_daily_summary(day: str, evidence: str,
             'Copy every number exactly. Do not round differently, do not '
             'recompute, do not fill a gap.',
         ],
+        require_digest_entry=False,
     )
     fallback = '# Daily Summary: %s\n\n```\n%s\n```\n' % (day, evidence)
     return compose_note('daily_summary', prompt, path, fallback,
@@ -487,8 +624,17 @@ def write_daily_summary(day: str, evidence: str,
 # Prompt construction
 # --------------------------------------------------------------------------
 
-def _prompt(role: str, task: str, body, instructions) -> str:
-    """Assemble a prompt with one shape, so every note is asked for the same way."""
+def _prompt(role: str, task: str, body, instructions,
+           require_digest_entry: bool = True) -> str:
+    """Assemble a prompt with one shape, so every note is asked for the same way.
+
+    `require_digest_entry` adds the one instruction every judgement note
+    (not the mechanical `daily_summary`) needs: a small structured section
+    `agents/vault_digest.py` can extract without a second model call. It goes
+    right after the opening title/key-value block, ahead of every other
+    heading, so a note later split by Task 3's size cap always keeps it in
+    the head half.
+    """
     parts = [role, '', task, '']
     for heading, text in body:
         parts.append('=' * 70)
@@ -499,7 +645,19 @@ def _prompt(role: str, task: str, body, instructions) -> str:
     parts.append('=' * 70)
     parts.append('# HOW TO WRITE IT')
     parts.append('=' * 70)
-    for i, line in enumerate(instructions, 1):
+    numbered = list(instructions)
+    if require_digest_entry:
+        numbered.append(
+            'Immediately after the opening title and key-value lines, before '
+            'any other `## ` heading, include a `## Digest Entry` section '
+            'with exactly these three bold lines and nothing else in that '
+            'section: `**Verdict:**` one sentence, what was learned or '
+            'decided. `**Evidence:**` the 1 to 3 numbers that carry it. '
+            '`**Relevance to Forge:**` one sentence on why a future proposal '
+            'must know this. This section is read by a program, not just a '
+            'human, so use exactly these three labels and keep each to one '
+            'line.')
+    for i, line in enumerate(numbered, 1):
         parts.append('%d. %s' % (i, line))
     parts.append('')
     parts.append('OUTPUT: the markdown document and nothing else. No preamble, '
