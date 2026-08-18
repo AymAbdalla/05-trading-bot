@@ -366,8 +366,15 @@ from strategies.polymarket.temporal_arbitrage import TemporalArbitrage
 from strategies.polymarket.weather_arb import WeatherArb
 
 
-def build_strategies():
+def build_strategies(dip_arb_tape_db_path=None):
     """Fresh instances of all twenty. Order is stable for reproducible logs.
+
+    `dip_arb_tape_db_path` (proposal 031 phase 1): None by default, which
+    keeps every existing caller - including every test in this repo that
+    calls `build_strategies()` with no arguments - on `DipArb`'s pure
+    in-memory tape, unchanged. `PolymarketShadowLoop` is the one production
+    caller that passes its own resolved `ShadowStore.db_path` here, so the
+    live loop's off-crypto tape survives a restart; nothing else needs to.
 
     New strategies are APPENDED, never inserted. The shadow loop's accounting
     identity is `evaluations == cycles * len(strategies)`, so a reordering
@@ -410,7 +417,7 @@ def build_strategies():
         SmartMoneyCopy(),
         WeatherArb(),
         GridHedge(),
-        DipArb(),
+        DipArb(tape_db_path=dip_arb_tape_db_path),
         # APPENDED, at index 19, which is what keeps the prefix pins valid.
         # Carries per-window resting-quote state like `GridHedge`, so it needs
         # the same fresh-instance isolation as everything above it.

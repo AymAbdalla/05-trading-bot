@@ -652,6 +652,64 @@ class ShadowStore:
         self.conn.execute('PRAGMA busy_timeout=10000;')
         self.ensure_schema()
 
+    #: Forge proposal 030 stage 1 (pm_one_legged_pair_unwind_guard). Added to
+    #: `positions` here rather than only in db/schema.sql, because
+    #: `CREATE TABLE IF NOT EXISTS` is a no-op against a `positions` table
+    #: that already exists on disk - every live and every test database
+    #: predates these columns, and schema.sql's copy of the DDL only helps a
+    #: database that does not exist yet. `(name, sql_type)`; every one is
+    #: nullable, so adding it changes no existing row and no existing reader.
+    _POSITIONS_PAIR_LINKAGE_COLUMNS = (
+        ('pair_id', 'TEXT'),
+        ('leg_index', 'INTEGER'),
+        ('leg_target_px', 'REAL'),
+        ('leg_fill_px', 'REAL'),
+        ('leg_fill_ts', 'INTEGER'),
+        ('leg2_latency_ms', 'REAL'),
+        ('pair_cost_expected', 'REAL'),
+        ('pair_cost_actual', 'REAL'),
+        ('leg_bid_at_signal', 'REAL'),
+        ('leg_ask_at_signal', 'REAL'),
+        ('leg_bid_at_fill', 'REAL'),
+        ('leg_ask_at_fill', 'REAL'),
+    )
+
+    def _migrate_positions_pair_linkage_columns(self) -> None:
+        """`ALTER TABLE ADD COLUMN` for any of the above missing on disk.
+
+        Must run BEFORE `executescript(schema.sql)` below, not after:
+        schema.sql also declares `idx_positions_pair_id`, and
+        `CREATE INDEX ... ON positions(pair_id)` against a `positions` table
+        that predates this column raises `OperationalError: no such column`
+        immediately - `CREATE TABLE IF NOT EXISTS` silently no-ops on an
+        existing table, but the index statement right after it does not.
+        Running the ALTER first means the column already exists by the time
+        that statement runs, on an old db and a fresh one alike.
+
+        A `positions` table that does not exist yet is left alone: schema.sql
+        creates it a moment later WITH these columns already in the
+        `CREATE TABLE`, so there is nothing to migrate.
+
+        SQLite has no `ADD COLUMN IF NOT EXISTS`, so the guard is
+        `PRAGMA table_info` read first. Idempotent and cheap: `positions` is
+        low thousands of rows, not millions, and this runs once per process
+        start.
+        """
+        table_exists = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='positions'").fetchone()
+        if not table_exists:
+            return
+        existing = {row[1] for row in
+                    self.conn.execute('PRAGMA table_info(positions)')}
+        for name, sql_type in self._POSITIONS_PAIR_LINKAGE_COLUMNS:
+            if name in existing:
+                continue
+            self.conn.execute(
+                'ALTER TABLE positions ADD COLUMN {} {}'.format(
+                    name, sql_type))
+        self.conn.commit()
+
     def ensure_schema(self) -> None:
         """Idempotent migration. Replays db/schema.sql verbatim.
 
@@ -662,6 +720,7 @@ class ShadowStore:
             raise RuntimeError(
                 'db/schema.sql not found at {}; refusing to invent a schema'
                 .format(self.SCHEMA_PATH))
+        self._migrate_positions_pair_linkage_columns()
         with open(self.SCHEMA_PATH) as f:
             self.conn.executescript(f.read())
         self.conn.commit()
@@ -720,8 +779,28 @@ class ShadowStore:
         return signal_id
 
     def record_entry(self, position, *, signal_id: str, limit_price: float,
-                     strategy_id: str, stop_px: Optional[float] = None) -> None:
+                     strategy_id: str, stop_px: Optional[float] = None,
+                     pair_id: Optional[str] = None,
+                     leg_index: Optional[int] = None,
+                     leg_target_px: Optional[float] = None,
+                     leg2_latency_ms: Optional[float] = None,
+                     pair_cost_expected: Optional[float] = None,
+                     pair_cost_actual: Optional[float] = None,
+                     leg_bid_at_signal: Optional[float] = None,
+                     leg_ask_at_signal: Optional[float] = None,
+                     leg_bid_at_fill: Optional[float] = None,
+                     leg_ask_at_fill: Optional[float] = None) -> None:
         """orders + fills + positions for one simulated fill, in ONE transaction.
+
+        `pair_id` onward is Forge proposal 030 stage 1
+        (pm_one_legged_pair_unwind_guard), log-only: every argument here is
+        None for every single-leg strategy, which writes NULL into the
+        matching column and changes nothing else about this row.
+        `leg_fill_px` and `leg_fill_ts` are not parameters - they are this
+        position's own `avg_price` and fill timestamp, so they are derived
+        below rather than passed in, and are only written when `pair_id` is
+        given (single-leg strategies leave them NULL rather than duplicate
+        `entry_px`/`opened_ts` for no reason).
 
         A fill row whose order row is missing is a reconciliation problem
         invented by our own bookkeeping, and the dashboard joins fills to orders
@@ -747,6 +826,8 @@ class ShadowStore:
         order_id = str(uuid.uuid4())
         fill_id = str(uuid.uuid4())
         ts_ms = int(position.opened_ts) * 1000
+        leg_fill_px = position.avg_price if pair_id is not None else None
+        leg_fill_ts = ts_ms if pair_id is not None else None
         with self.conn:
             self.conn.execute(
                 'INSERT INTO orders (id, cl_ord_id, ts, pair, side, type, qty, '
@@ -764,7 +845,12 @@ class ShadowStore:
                 'INSERT INTO positions (id, pair, strategy_id, signal_id, '
                 'opened_ts, closed_ts, entry_px, exit_px, qty, stop_px, '
                 'target_px, pnl_gross, pnl_net, fees, r_multiple, exit_reason, '
-                'mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                'mode, pair_id, leg_index, leg_target_px, leg_fill_px, '
+                'leg_fill_ts, leg2_latency_ms, pair_cost_expected, '
+                'pair_cost_actual, leg_bid_at_signal, leg_ask_at_signal, '
+                'leg_bid_at_fill, leg_ask_at_fill) '
+                'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '
+                '?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                 (position.position_id, position.market_slug, strategy_id,
                  signal_id, ts_ms, None, position.avg_price, None,
                  position.shares,
@@ -775,7 +861,11 @@ class ShadowStore:
                  # here quotes a fixed target price, they exit on a rule.
                  (0.0 if stop_px is None else float(stop_px)),
                  WINNING_REDEMPTION,
-                 None, None, position.fee_usdc, None, None, MODE))
+                 None, None, position.fee_usdc, None, None, MODE,
+                 pair_id, leg_index, leg_target_px, leg_fill_px, leg_fill_ts,
+                 leg2_latency_ms, pair_cost_expected, pair_cost_actual,
+                 leg_bid_at_signal, leg_ask_at_signal, leg_bid_at_fill,
+                 leg_ask_at_fill))
 
     def record_resolution(self, position) -> None:
         """Settle a position row to $1.00 or $0.00.
@@ -1143,8 +1233,12 @@ class PolymarketShadowLoop:
         # `evaluations_per_cycle` is computed from the LISTS, never written
         # down, so the identity follows the routing automatically.
         def _registry():
+            # Proposal 031 phase 1: the live loop's own resolved db path
+            # wires DipArb's tape to `market_tape` so it survives a restart.
+            # An injected `strategies` list (every test that builds its own
+            # pool) bypasses `build_strategies()` entirely and is unaffected.
             return list(strategies) if strategies is not None \
-                else build_strategies()
+                else build_strategies(dip_arb_tape_db_path=self.store.db_path)
 
         #: Everything the registry offers, before routing. Kept so `stats()`
         #: can report what was routed OUT of each space and why - a strategy
@@ -2236,7 +2330,25 @@ class PolymarketShadowLoop:
         first_block: Optional[str] = None
         adapter_logged = False
 
-        for leg in decision.legs:
+        # Forge proposal 030 stage 1 (pm_one_legged_pair_unwind_guard),
+        # log-only: a `pair_id` links every leg of a multi-leg decision so a
+        # one-legged fill can finally be COUNTED, not just suspected from a
+        # single unexplained -$4.20 row. None (and every field below) for a
+        # single-leg decision - the vast majority of strategies here never
+        # touch this branch. `pair_cost_expected` is priced from EVERY leg
+        # the strategy asked for, before leg 1 is attempted, exactly as
+        # proposal 030 build order item 1 specifies ("record
+        # pair_cost_expected ... before submitting leg 1"); it is None only
+        # if a leg carries no `expected_price` at all.
+        pair_id = str(uuid.uuid4()) if len(decision.legs) > 1 else None
+        pair_cost_expected = None
+        if pair_id is not None:
+            prices = [leg.expected_price for leg in decision.legs]
+            if all(p is not None for p in prices):
+                pair_cost_expected = round(sum(prices), 4)
+        prev_leg_fill_monotonic: Optional[float] = None
+
+        for leg_index, leg in enumerate(decision.legs, start=1):
             leg_slug = leg.market_slug or slug
             slug_15 = getattr(ctx.market_15m, 'slug', None)
             market = (ctx.market_15m
@@ -2254,6 +2366,19 @@ class PolymarketShadowLoop:
                 first_block = first_block or SKIP_NO_LIQUIDITY
                 self.health['leg_no_book'] += 1
                 continue
+
+            # Proposal 030: snapshot this leg's own book before the fill
+            # attempt. Under the CURRENT synchronous single-tick execution
+            # model every leg fills (or fails to) inside this same for-loop,
+            # off the SAME `ctx` book snapshot the strategy's `evaluate()`
+            # already read - so "at signal" and "at fill" are numerically
+            # identical by construction today, not independently measured.
+            # Recorded as two separate pairs of columns anyway, honestly
+            # duplicated rather than invented, so the schema does not need to
+            # change the day leg submission actually becomes asynchronous
+            # (stage 2/3, not built here).
+            leg_bid = book.best_bid
+            leg_ask = book.best_ask
 
             # 2. The risk gate. Its reason string is carried VERBATIM:
             # re-wording it here would make this log disagree with the gate's
@@ -2286,7 +2411,14 @@ class PolymarketShadowLoop:
                 self.health['adapter_refusals'] += 1
                 continue
 
-            filled.append((position, leg))
+            leg2_latency_ms = None
+            if pair_id is not None and prev_leg_fill_monotonic is not None:
+                leg2_latency_ms = round(
+                    (time.monotonic() - prev_leg_fill_monotonic) * 1000.0, 3)
+            prev_leg_fill_monotonic = time.monotonic()
+
+            filled.append((position, leg, leg_index, leg_bid, leg_ask,
+                           leg2_latency_ms))
 
         if not filled:
             reason = first_block or 'adapter:unreported'
@@ -2297,6 +2429,15 @@ class PolymarketShadowLoop:
         if len(filled) < len(decision.legs):
             self.health['partial_pairs'] += 1
 
+        # Proposal 030: "at completion" (build order item 1) means every leg
+        # in the pair actually filled - a partial pair has no pair cost, it
+        # has an open question, and pair_cost_actual stays None rather than
+        # silently describing a pair that never completed.
+        pair_cost_actual = None
+        if pair_id is not None and len(filled) == len(decision.legs):
+            pair_cost_actual = round(
+                sum(p.avg_price for p, *_ in filled), 4)
+
         # The entry is counted ONCE per evaluation (the identity counts
         # evaluations, not legs) and written once per leg into the DB.
         self._count('entry', counts)
@@ -2305,14 +2446,27 @@ class PolymarketShadowLoop:
             confidence=confidence,
             features=dict(feats, legs_filled=len(filled),
                           legs_requested=len(decision.legs),
-                          outcome_side=filled[0][1].outcome_side),
+                          outcome_side=filled[0][1].outcome_side,
+                          pair_id=pair_id,
+                          pair_cost_expected=pair_cost_expected),
             acted=True, skip_reason=None)
-        for position, leg in filled:
-            self.store.record_entry(position, signal_id=signal_id,
-                                    limit_price=leg.limit_price,
-                                    strategy_id=name,
-                                    stop_px=self._entry_stop_px(strategy,
-                                                                position))
+        for position, leg, leg_index, leg_bid, leg_ask, leg2_latency_ms \
+                in filled:
+            self.store.record_entry(
+                position, signal_id=signal_id, limit_price=leg.limit_price,
+                strategy_id=name,
+                stop_px=self._entry_stop_px(strategy, position),
+                pair_id=pair_id,
+                leg_index=(leg_index if pair_id is not None else None),
+                leg_target_px=(leg.expected_price if pair_id is not None
+                              else None),
+                leg2_latency_ms=leg2_latency_ms,
+                pair_cost_expected=pair_cost_expected,
+                pair_cost_actual=pair_cost_actual,
+                leg_bid_at_signal=(leg_bid if pair_id is not None else None),
+                leg_ask_at_signal=(leg_ask if pair_id is not None else None),
+                leg_bid_at_fill=(leg_bid if pair_id is not None else None),
+                leg_ask_at_fill=(leg_ask if pair_id is not None else None))
             self.store.audit('position_opened', {
                 'position_id': position.position_id,
                 'strategy': name,

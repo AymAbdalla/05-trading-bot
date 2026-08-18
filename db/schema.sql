@@ -62,6 +62,18 @@ CREATE TABLE IF NOT EXISTS fills (
 );
 
 -- Positions: open and closed positions
+--
+-- The twelve columns from pair_id onward are Forge proposal 030 stage 1
+-- (pm_one_legged_pair_unwind_guard), a repair rather than a strategy: they
+-- link the two legs of a multi-leg decision (currently only
+-- PM_corridor_pair_live) so a one-legged fill can finally be COUNTED. All
+-- twelve are NULL for every single-leg strategy and NULL is the correct
+-- value there, not a missing measurement. `ensure_schema` in
+-- engine/polymarket/shadow_loop.py ALTERs an existing table that predates
+-- these columns - `CREATE TABLE IF NOT EXISTS` is a no-op against a table
+-- that already exists, so a fresh db gets them from here and a live db gets
+-- them from that migration; `tests/test_positions_pair_linkage_schema.py`
+-- asserts both paths land on the same columns.
 CREATE TABLE IF NOT EXISTS positions (
     id              TEXT PRIMARY KEY,    -- UUID
     pair            TEXT NOT NULL,
@@ -79,7 +91,19 @@ CREATE TABLE IF NOT EXISTS positions (
     fees            REAL DEFAULT 0,
     r_multiple      REAL,                -- realized R, NULL if still open
     exit_reason     TEXT,                -- 'target' | 'stop' | 'signal_exit' | 'manual_halt' | 'daily_loss_halt'
-    mode            TEXT NOT NULL DEFAULT 'paper'
+    mode            TEXT NOT NULL DEFAULT 'paper',
+    pair_id             TEXT,    -- joins the two leg rows of one multi-leg decision
+    leg_index           INTEGER, -- 1-based position in Decision.legs, in submission order
+    leg_target_px       REAL,    -- the price this leg was priced at when the pair was decided
+    leg_fill_px         REAL,    -- this leg's own realized fill price (mirrors entry_px, named per proposal 030)
+    leg_fill_ts         INTEGER, -- unix ms this leg filled (mirrors opened_ts)
+    leg2_latency_ms     REAL,    -- ms between the PRECEDING leg's fill and this one; NULL on leg 1
+    pair_cost_expected  REAL,    -- sum of every leg's expected_price, priced before leg 1 submits
+    pair_cost_actual    REAL,    -- sum of realized fill prices, written only once every leg in the pair fills
+    leg_bid_at_signal   REAL,    -- this leg's book best_bid at decision time
+    leg_ask_at_signal   REAL,    -- this leg's book best_ask at decision time
+    leg_bid_at_fill     REAL,    -- this leg's book best_bid at fill time
+    leg_ask_at_fill     REAL     -- this leg's book best_ask at fill time
 );
 
 -- Equity snapshots: every 15 min + 00:00 UTC
@@ -130,6 +154,7 @@ CREATE INDEX IF NOT EXISTS idx_orders_ts ON orders(ts);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_positions_pair ON positions(pair);
 CREATE INDEX IF NOT EXISTS idx_positions_open ON positions(closed_ts) WHERE closed_ts IS NULL;
+CREATE INDEX IF NOT EXISTS idx_positions_pair_id ON positions(pair_id) WHERE pair_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_equity_ts ON equity_snapshots(ts);
 CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
 CREATE INDEX IF NOT EXISTS idx_risk_events_ts ON risk_events(ts);
@@ -219,3 +244,32 @@ CREATE INDEX IF NOT EXISTS idx_hyperliquid_positions_ts
     ON hyperliquid_positions(ts);
 CREATE INDEX IF NOT EXISTS idx_hyperliquid_positions_symbol_ts
     ON hyperliquid_positions(symbol, ts);
+
+-- Market tape: persistent per-token price observations, Forge proposal 031
+-- phase 1 (pm_offcrypto_tape_bootstrap_probe). Also declared as SCHEMA_SQL
+-- inside strategies/polymarket/dip_arb.py, which is what lets DipArb's
+-- PriceTapeByToken bootstrap this table against a database that predates
+-- it - same two-copy arrangement as `liquidations` and
+-- `hyperliquid_positions` above, and tests/test_schema_matches_feed_modules.py
+-- asserts the two copies agree.
+--
+-- `market_id` is the per-outcome TOKEN id (see the module docstring: a tape
+-- is kept per token because averaging Up/Down or Yes/No together produces a
+-- meaningless mean), not a market-level id. `ts` is DipArb's own
+-- absolute-second clock (`window_ts + seconds_into_window`), NOT unix
+-- milliseconds like every other `ts` column in this file - do not join it
+-- against `signals.ts` or `positions.opened_ts` expecting the same units.
+-- Currently written only for off-crypto observations (event, sports,
+-- political, weather): a crypto token id is new every window and
+-- TAPE_MAX_AGE_SEC already outlives any realistic restart gap, so persisting
+-- it would multiply this table's volume for no benefit.
+CREATE TABLE IF NOT EXISTS market_tape (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    market_id   TEXT NOT NULL,
+    ts          REAL NOT NULL,
+    mid         REAL,
+    best_bid    REAL,
+    best_ask    REAL,
+    source      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_market_tape_market_ts ON market_tape(market_id, ts);

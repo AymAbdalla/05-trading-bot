@@ -35,6 +35,8 @@ from engine.feeds.hyperliquid_client import \
     SCHEMA_SQL as HYPERLIQUID_SCHEMA_SQL  # noqa: E402
 from engine.feeds.liquidation_recorder import \
     SCHEMA_SQL as LIQUIDATION_SCHEMA_SQL  # noqa: E402
+from strategies.polymarket.dip_arb import \
+    SCHEMA_SQL as MARKET_TAPE_SCHEMA_SQL  # noqa: E402
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCHEMA_PATH = os.path.join(REPO_ROOT, 'db', 'schema.sql')
@@ -47,10 +49,17 @@ SCHEMA_PATH = os.path.join(REPO_ROOT, 'db', 'schema.sql')
 #: table, and both copies are CREATE ... IF NOT EXISTS, so whichever runs first
 #: wins and the second is a SILENT no-op. A drift would surface only on a fresh
 #: checkout, or as a column that quietly reads NULL.
+#: `market_tape` is Forge proposal 031 phase 1
+#: (pm_offcrypto_tape_bootstrap_probe): `PriceTapeByToken` in
+#: strategies/polymarket/dip_arb.py declares its own copy so a restart can
+#: bootstrap the table against a database that predates it. Same hazard as
+#: every row below - a divergence would only surface on a fresh checkout, or
+#: as a column that quietly reads NULL.
 FEED_TABLES = (
     ('liquidations', LIQUIDATION_SCHEMA_SQL),
     ('hyperliquid_positions', HYPERLIQUID_SCHEMA_SQL),
     ('file_coordination', COORDINATION_SCHEMA_SQL),
+    ('market_tape', MARKET_TAPE_SCHEMA_SQL),
 )
 
 

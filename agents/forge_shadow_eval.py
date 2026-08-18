@@ -294,6 +294,14 @@ SKIP_CLASSIFICATION: Dict[str, Tuple[str, str]] = {
 
     # --- dip arb ------------------------------------------------------------
     'insufficient_tape': (DATA_BLOCKER, 'enough price tape to compute a mean'),
+    # 2026-08-18: split out of `insufficient_tape` (proposal 031 phase 1,
+    # convention 20) once every candidate already has a book and an ask -
+    # the only remaining question is whether the tape has started at all.
+    # Same DATA_BLOCKER class as the parent: both are CANNOT MEASURE.
+    'insufficient_tape_building': (
+        DATA_BLOCKER, 'enough price tape to compute a mean'),
+    'insufficient_tape_not_yet_observed': (
+        DATA_BLOCKER, 'enough price tape to compute a mean'),
     'no_outcomes': (DATA_BLOCKER, 'priced outcomes on the market'),
     'mean_outside_tradeable_band': (GENUINE, ''),
     'dip_below_threshold': (GENUINE, ''),

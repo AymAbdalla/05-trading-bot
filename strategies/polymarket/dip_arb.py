@@ -105,7 +105,9 @@ by its most conservative number rather than by its results. Convention 7 cuts
 both ways here: 30 trades is a thin sample, so a FAIL at 30 is a flag to stop
 allocating, not a verdict on mean reversion.
 """
+import logging
 import math
+import sqlite3
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -123,6 +125,8 @@ from strategies.polymarket.fair_value_arb import (URGENT_SELL_LIMIT,
 
 # Never False in this repo. Nothing here has live-trading authority.
 PAPER_MODE = True
+
+logger = logging.getLogger(__name__)
 
 # --- the tape ---------------------------------------------------------------
 
@@ -253,6 +257,39 @@ class Observation:
     source: str
 
 
+#: Proposal 031 phase 1 (pm_offcrypto_tape_bootstrap_probe). Persists what
+#: `PriceTapeByToken` used to keep only in memory, so a loop restart no
+#: longer resets an off-crypto market's tape to empty - see the class
+#: docstring below for why that reset is the actual cause of every
+#: `insufficient_tape` row off-crypto, not a lack of price history.
+#:
+#: Declared here so `PriceTapeByToken` can bootstrap this table against a
+#: database that predates it - the same two-copy arrangement `db/schema.sql`
+#: documents for the other feed tables. `tests/test_schema_matches_feed_modules.py`
+#: asserts the two copies agree.
+#:
+#: `market_id` is the per-outcome TOKEN id, not a market-level id - the tape
+#: itself is keyed that way (see the class docstring: averaging Up and Down,
+#: or Yes and No, together produces a meaningless mean), so the persisted
+#: copy is keyed identically. `ts` is the same absolute-second clock
+#: `DipArb.clock` computes, not unix milliseconds like every other `ts`
+#: column in this repo - named `ts` for consistency with the rest of the
+#: schema, documented here so nobody joins it against `signals.ts` expecting
+#: the same units.
+SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS market_tape (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    market_id   TEXT NOT NULL,
+    ts          REAL NOT NULL,
+    mid         REAL,
+    best_bid    REAL,
+    best_ask    REAL,
+    source      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_market_tape_market_ts ON market_tape(market_id, ts);
+"""
+
+
 class PriceTapeByToken:
     """Per-token rolling record of quoted prices.
 
@@ -267,18 +304,109 @@ class PriceTapeByToken:
     """
 
     def __init__(self, max_len: int = TAPE_LEN,
-                 max_age_sec: float = TAPE_MAX_AGE_SEC):
+                 max_age_sec: float = TAPE_MAX_AGE_SEC,
+                 db_path: Optional[str] = None):
         self.max_len = int(max_len)
         self.max_age_sec = float(max_age_sec)
         self.tapes: Dict[str, List[Observation]] = {}
         self.drops: Dict[str, int] = {}
+        #: Proposal 031 phase 1. None means pure in-memory - the behaviour
+        #: every existing caller and test relies on. A real path makes
+        #: `observe(..., persist=True)` survive a process restart: the tape
+        #: is backfilled from `market_tape` the first time this process sees
+        #: a token, and every accepted observation is written back to the
+        #: same table. The connection opens lazily so constructing a tape
+        #: never touches disk - most callers (every crypto evaluation) never
+        #: persist at all.
+        self.db_path = db_path
+        self._conn = None
+        self._backfilled = set()
+
+    def _ensure_conn(self):
+        if self._conn is not None:
+            return self._conn
+        if not self.db_path:
+            return None
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=5.0)
+            conn.execute('PRAGMA journal_mode=WAL;')
+            conn.execute('PRAGMA busy_timeout=5000;')
+            conn.executescript(SCHEMA_SQL)
+            conn.commit()
+        except sqlite3.Error:
+            logger.warning(
+                'market_tape: could not open %s; persistence disabled for '
+                'this tape', self.db_path, exc_info=True)
+            self.db_path = None
+            return None
+        self._conn = conn
+        return conn
+
+    def _backfill_from_db(self, token_id: str) -> None:
+        """Restore this token's tape from `market_tape`, once per process.
+
+        Runs before the live observation is appended, so a token seen for
+        the first time since a restart starts from its persisted history
+        instead of empty - the exact defect proposal 031 phase 1 exists to
+        fix. A read failure disables nothing beyond this call: instrumentation
+        must never take the evaluation loop down.
+        """
+        if token_id in self._backfilled:
+            return
+        self._backfilled.add(token_id)
+        conn = self._ensure_conn()
+        if conn is None:
+            return
+        try:
+            rows = conn.execute(
+                'SELECT ts, mid, best_ask, source FROM market_tape '
+                'WHERE market_id = ? ORDER BY ts DESC LIMIT ?',
+                (str(token_id), self.max_len)).fetchall()
+        except sqlite3.Error:
+            logger.warning('market_tape: backfill read failed for %s',
+                            token_id, exc_info=True)
+            return
+        restored = []
+        for ts, mid, best_ask, source in reversed(rows):
+            price = mid if mid is not None else best_ask
+            if price is None:
+                continue
+            restored.append(Observation(float(ts), float(price),
+                                         source or 'tape_backfill'))
+        if restored:
+            self.tapes[str(token_id)] = restored
+
+    def _persist_row(self, token_id: str, ts: float, price: float,
+                      best_bid, best_ask, source: str) -> None:
+        conn = self._ensure_conn()
+        if conn is None:
+            return
+        try:
+            with conn:
+                conn.execute(
+                    'INSERT INTO market_tape (market_id, ts, mid, best_bid, '
+                    'best_ask, source) VALUES (?, ?, ?, ?, ?, ?)',
+                    (str(token_id), float(ts), float(price),
+                     None if best_bid is None else float(best_bid),
+                     None if best_ask is None else float(best_ask), source))
+        except sqlite3.Error:
+            logger.warning('market_tape: write failed for %s', token_id,
+                            exc_info=True)
 
     def _drop(self, reason: str) -> bool:
         self.drops[reason] = self.drops.get(reason, 0) + 1
         return False
 
-    def observe(self, token_id: str, ts, price, source: str) -> bool:
-        """Record one observation. Returns False if it was refused."""
+    def observe(self, token_id: str, ts, price, source: str,
+                persist: bool = False, best_bid=None, best_ask=None) -> bool:
+        """Record one observation. Returns False if it was refused.
+
+        `persist` opts this call into `market_tape` (proposal 031 phase 1) -
+        default False keeps every existing caller and test pure in-memory.
+        `best_bid`/`best_ask` are written alongside `price` (the mid, or the
+        ask when the book is one-sided) purely for the persisted row; they
+        are never read back into the in-memory mean.
+        """
         if not token_id:
             return self._drop('no_token_id')
         try:
@@ -294,6 +422,9 @@ class PriceTapeByToken:
             # and it is never a real ask.
             return self._drop('price_out_of_range')
 
+        if persist and self.db_path:
+            self._backfill_from_db(str(token_id))
+
         tape = self.tapes.setdefault(str(token_id), [])
         if tape and ts_f < tape[-1].ts:
             return self._drop('out_of_order')
@@ -305,6 +436,10 @@ class PriceTapeByToken:
         if len(tape) > self.max_len:
             tape = tape[-self.max_len:]
         self.tapes[str(token_id)] = tape
+
+        if persist and self.db_path:
+            self._persist_row(str(token_id), ts_f, price_f, best_bid,
+                               best_ask, source)
         return True
 
     def observations(self, token_id: Optional[str]) -> List[Observation]:
@@ -558,7 +693,8 @@ class DipArb(PolymarketStrategy):
                  min_book_depth_shares: float = MIN_BOOK_DEPTH_SHARES,
                  depth_band: float = DEPTH_BAND,
                  min_mean: float = MIN_TRADEABLE_MEAN,
-                 max_mean: float = MAX_TRADEABLE_MEAN):
+                 max_mean: float = MAX_TRADEABLE_MEAN,
+                 tape_db_path: Optional[str] = None):
         self.dip_threshold = dip_threshold
         self.min_observations = min_observations
         self.min_profit = min_profit
@@ -578,7 +714,8 @@ class DipArb(PolymarketStrategy):
         self.max_mean = max_mean
 
         self.tape = PriceTapeByToken(max_len=tape_len,
-                                     max_age_sec=tape_max_age_sec)
+                                     max_age_sec=tape_max_age_sec,
+                                     db_path=tape_db_path)
         #: window_ts -> entry ATTEMPTS. Not fills: the halt check, the risk gate
         #: and the paper adapter all sit downstream and any of them can refuse.
         self._window_trades: Dict[int, int] = {}
@@ -673,19 +810,31 @@ class DipArb(PolymarketStrategy):
         Returns token_id -> accepted. Called on EVERY cycle including the ones
         that skip: a tape that only fills on tradeable cycles has holes exactly
         where the market was quiet, and quiet is where the mean comes from.
+
+        `persist` is `not ctx.is_crypto_window` (proposal 031 phase 1): a
+        crypto token id is new every window, `TAPE_MAX_AGE_SEC` already
+        outlives any realistic restart gap between crypto polls, and writing
+        it anyway would multiply `market_tape` volume for no benefit. An
+        off-crypto token id lives for days, polls twelve times slower, and is
+        exactly the tape a restart currently resets to empty.
         """
         out: Dict[str, bool] = {}
         now = self.clock(ctx)
         if now is None or ctx.market is None:
             return out
+        persist = not ctx.is_crypto_window
         for outcome in getattr(ctx.market, 'outcomes', ()) or ():
             token = getattr(outcome, 'token_id', None)
             if not token:
                 continue
-            price, source = reference_price(ctx.books.get(token))
+            book = ctx.books.get(token)
+            price, source = reference_price(book)
             if price is None:
                 continue
-            out[token] = self.tape.observe(token, now, price, source)
+            out[token] = self.tape.observe(
+                token, now, price, source, persist=persist,
+                best_bid=(None if book is None else book.best_bid),
+                best_ask=(None if book is None else book.best_ask))
         return out
 
     def mean_for(self, token_id: Optional[str]) -> Optional[float]:
@@ -880,9 +1029,20 @@ class DipArb(PolymarketStrategy):
             return decide('SKIP', 'no_asks', **feats)
 
         with_mean = [c for c in priced if c['mean'] is not None]
+        # Proposal 031 phase 1, convention 20: "not enough rows yet" and
+        # "this market is not tapeable" used to share one bucket
+        # (`insufficient_tape`). By the time this line runs every candidate
+        # already has a book and an ask (the two checks above would have
+        # returned first otherwise), so the only remaining distinction is
+        # whether the tape has started at all.
+        feats['tape_rows_available'] = max(
+            (c['observations'] for c in priced), default=0)
         if not with_mean:
             # CANNOT MEASURE, not "no dip found" (convention 11).
-            return decide('SKIP', 'insufficient_tape', **feats)
+            reason = ('insufficient_tape_building'
+                      if feats['tape_rows_available'] > 0
+                      else 'insufficient_tape_not_yet_observed')
+            return decide('SKIP', reason, **feats)
 
         in_band = [c for c in with_mean
                    if self.min_mean <= c['mean'] <= self.max_mean]

@@ -1202,3 +1202,184 @@ def test_a_real_estimate_failure_is_still_caught_and_counted(tmp_path,
     # And it did NOT leak into the wiring gauge.
     assert (broken[0].strategy_name
             not in {name for _asset, name in loop.exit_no_fair_value_protocol})
+
+OLD_POSITIONS_SCHEMA = """
+CREATE TABLE positions (
+    id TEXT PRIMARY KEY, pair TEXT NOT NULL, strategy_id TEXT NOT NULL,
+    signal_id TEXT, opened_ts INTEGER NOT NULL, closed_ts INTEGER,
+    entry_px REAL NOT NULL, exit_px REAL, qty REAL NOT NULL,
+    stop_px REAL NOT NULL, target_px REAL NOT NULL, pnl_gross REAL,
+    pnl_net REAL, fees REAL DEFAULT 0, r_multiple REAL,
+    exit_reason TEXT, mode TEXT NOT NULL DEFAULT 'paper'
+);
+"""
+
+
+
+# ---------------------------------------------------------------------------
+# Pair linkage (Forge proposal 030 stage 1, pm_one_legged_pair_unwind_guard)
+# ---------------------------------------------------------------------------
+
+class FakeTwoLegStrategy:
+    """Always enters both sides of the SAME 5m market.
+
+    The minimal shape that exercises `_attempt_entry`'s pair-linkage wiring
+    without depending on `PM_corridor_pair_live`'s own clock gates, lead
+    computation, or binned-fair-value table - those are a separate concern
+    from whether the two legs get linked once a strategy decides to enter
+    both.
+    """
+
+    strategy_name = 'PM_test_two_leg'
+
+    def evaluate(self, ctx):
+        from strategies.polymarket.base import Decision, Leg
+        slug = getattr(ctx.market, 'slug', None)
+        legs = [
+            Leg('Up', 0.55, order_type='taker', shares=5,
+               expected_price=0.50),
+            Leg('Down', 0.55, order_type='taker', shares=5,
+               expected_price=0.40),
+        ]
+        return Decision(action='ENTER', reason='',
+                        strategy=self.strategy_name, window_ts=ctx.window_ts,
+                        market_slug=slug, legs=legs, features={})
+
+
+def test_pair_linkage_writes_shared_pair_id_and_leg_fields(tmp_path,
+                                                            entry_time):
+    """A multi-leg decision links its legs by `pair_id`, log-only.
+
+    Every other test in this file uses a single-leg strategy; this is the one
+    that exercises the pair-linkage columns end to end, through the REAL
+    `_attempt_entry` path rather than by calling `record_entry` directly.
+    """
+    client = FakeClient(gamma_ok(), books_ok)
+    loop = build_loop(tmp_path, client, candles=streak_candles(entry_time),
+                      strategies=[FakeTwoLegStrategy()])
+
+    loop.run_cycle(now=entry_time)
+
+    positions = rows(loop, "SELECT * FROM positions WHERE strategy_id = "
+                          "'PM_test_two_leg' ORDER BY leg_index")
+    assert len(positions) == 2, dict(loop.counts)
+    leg1, leg2 = positions
+    assert leg1['pair_id'] == leg2['pair_id']
+    assert leg1['pair_id'] is not None
+    assert leg1['leg_index'] == 1
+    assert leg2['leg_index'] == 2
+    assert leg1['leg_target_px'] == pytest.approx(0.50)
+    assert leg2['leg_target_px'] == pytest.approx(0.40)
+    assert leg1['leg_fill_px'] == leg1['entry_px']
+    assert leg2['leg_fill_px'] == leg2['entry_px']
+    assert leg1['leg_fill_ts'] == leg1['opened_ts']
+    # Leg 1 has no preceding leg in the pair to measure latency against.
+    assert leg1['leg2_latency_ms'] is None
+    assert leg2['leg2_latency_ms'] is not None
+    assert leg2['leg2_latency_ms'] >= 0.0
+    expected_cost = pytest.approx(0.50 + 0.40)
+    assert leg1['pair_cost_expected'] == expected_cost
+    assert leg2['pair_cost_expected'] == expected_cost
+    actual = pytest.approx(leg1['entry_px'] + leg2['entry_px'])
+    assert leg1['pair_cost_actual'] == actual
+    assert leg2['pair_cost_actual'] == actual
+    for row in positions:
+        assert row['leg_bid_at_signal'] is not None
+        assert row['leg_ask_at_signal'] is not None
+        # Synchronous single-tick execution: "at signal" and "at fill" read
+        # off the same book snapshot today. See the docstring in
+        # `_attempt_entry` for why that is honest rather than a bug.
+        assert row['leg_bid_at_fill'] == row['leg_bid_at_signal']
+        assert row['leg_ask_at_fill'] == row['leg_ask_at_signal']
+
+    signals = rows(loop, "SELECT features_json FROM signals WHERE "
+                        "strategy_id = 'PM_test_two_leg' AND acted = 1")
+    assert len(signals) == 1
+    feats = json.loads(signals[0]['features_json'])
+    assert feats['pair_id'] == leg1['pair_id']
+    assert feats['pair_cost_expected'] == pytest.approx(0.90)
+
+
+def test_single_leg_strategies_leave_pair_columns_null(tmp_path, entry_time):
+    """The control: every existing single-leg strategy is untouched by 030."""
+    client = FakeClient(gamma_ok(), books_ok)
+    loop = build_loop(tmp_path, client, candles=streak_candles(entry_time))
+
+    loop.run_cycle(now=entry_time)
+
+    positions = rows(loop, 'SELECT * FROM positions')
+    assert positions, 'no entry at all; this test would be vacuous'
+    for row in positions:
+        assert row['pair_id'] is None
+        assert row['leg_index'] is None
+        assert row['pair_cost_expected'] is None
+        assert row['pair_cost_actual'] is None
+
+
+def test_a_partial_pair_leaves_pair_cost_actual_null(tmp_path, entry_time):
+    """`pair_cost_actual` is written only "at completion" (proposal 030
+    build order item 1): a leg that never fills must not leave a number
+    that looks like a real, completed pair cost.
+    """
+    class FakeUnfillableSecondLegStrategy:
+        strategy_name = 'PM_test_partial_pair'
+
+        def evaluate(self, ctx):
+            from strategies.polymarket.base import Decision, Leg
+            slug = getattr(ctx.market, 'slug', None)
+            legs = [
+                Leg('Up', 0.55, order_type='taker', shares=5,
+                   expected_price=0.50),
+                # No such outcome on this market: token_id() returns None and
+                # this leg is skipped (SKIP_UNKNOWN_TOKEN), never reaching
+                # the adapter at all. Leg 1 still fills.
+                Leg('Sideways', 0.55, order_type='taker', shares=5,
+                   expected_price=0.40),
+            ]
+            return Decision(action='ENTER', reason='',
+                            strategy=self.strategy_name,
+                            window_ts=ctx.window_ts, market_slug=slug,
+                            legs=legs, features={})
+
+    client = FakeClient(gamma_ok(), books_ok)
+    loop = build_loop(tmp_path, client, candles=streak_candles(entry_time),
+                      strategies=[FakeUnfillableSecondLegStrategy()])
+
+    loop.run_cycle(now=entry_time)
+
+    positions = rows(loop, "SELECT * FROM positions WHERE strategy_id = "
+                          "'PM_test_partial_pair'")
+    assert len(positions) == 1, dict(loop.counts)
+    assert positions[0]['pair_id'] is not None
+    assert positions[0]['leg_index'] == 1
+    assert positions[0]['pair_cost_expected'] == pytest.approx(0.90)
+    assert positions[0]['pair_cost_actual'] is None
+    assert loop.health['partial_pairs'] == 1
+
+
+def test_positions_migration_adds_pair_linkage_columns_to_an_old_db(tmp_path):
+    """`ensure_schema` ALTERs a `positions` table that predates proposal 030.
+
+    `CREATE TABLE IF NOT EXISTS` is a no-op against a table that already
+    exists, so a database built before these columns existed would otherwise
+    never gain them. This builds exactly that: the OLD seventeen-column
+    `positions` table, then constructs a `ShadowStore` against it and checks
+    the migration actually runs.
+    """
+    db_path = str(tmp_path / 'old.db')
+    conn = sqlite3.connect(db_path)
+    conn.executescript(OLD_POSITIONS_SCHEMA)
+    conn.close()
+
+    store = ShadowStore(db_path)
+    cols = {row[1] for row in
+            store.conn.execute('PRAGMA table_info(positions)')}
+    for name in ('pair_id', 'leg_index', 'leg_target_px', 'leg_fill_px',
+                'leg_fill_ts', 'leg2_latency_ms', 'pair_cost_expected',
+                'pair_cost_actual', 'leg_bid_at_signal', 'leg_ask_at_signal',
+                'leg_bid_at_fill', 'leg_ask_at_fill'):
+        assert name in cols, '%s missing after migration' % name
+
+    # Idempotent: constructing a second store against the now-migrated db
+    # must not raise "duplicate column".
+    ShadowStore(db_path)

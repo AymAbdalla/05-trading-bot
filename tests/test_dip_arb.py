@@ -44,7 +44,8 @@ import engine.polymarket.shadow_loop as shadow_mod  # noqa: E402
 from engine.polymarket.paper_adapter import PaperPosition  # noqa: E402
 from engine.polymarket.types import (Market, Orderbook, Outcome,  # noqa: E402
                                      PriceLevel)
-from strategies.polymarket.base import MarketContext, Window  # noqa: E402
+from strategies.polymarket.base import (MARKET_TYPE_EVENT,  # noqa: E402
+                                        MarketContext, Window)
 import strategies.polymarket.dip_arb as dip_mod  # noqa: E402
 from strategies.polymarket.dip_arb import (DipArb,  # noqa: E402
                                            PriceTapeByToken, SOURCE_ASK,
@@ -401,9 +402,29 @@ class TestSkipReasons:
         _warm(s, n=dip_mod.MIN_OBSERVATIONS - 2)
         d = s.evaluate(_ctx(seconds_into_window=200.0,
                             up_asks=((0.50, 200.0),)))
-        # CANNOT MEASURE, not "no dip found" (convention 11).
-        assert d.reason == 'insufficient_tape'
+        # CANNOT MEASURE, not "no dip found" (convention 11). Proposal 031
+        # phase 1 splits this reason in two (convention 20): some rows exist
+        # below the threshold, so this is the tape BUILDING, not never
+        # observed - see test_insufficient_tape_not_yet_observed below for
+        # the other half of the split.
+        assert d.reason == 'insufficient_tape_building'
         assert d.features['tape_observations']['Up'] < dip_mod.MIN_OBSERVATIONS
+        assert (d.features['tape_rows_available']
+               == d.features['tape_observations']['Up'])
+
+    def test_insufficient_tape_not_yet_observed(self):
+        # A 0.0 ask is `price_out_of_range` to `tape.observe` (convention 8's
+        # binary floor), so THIS cycle's own observation is refused and the
+        # tape genuinely has zero rows - unlike every warmed fixture in this
+        # file, where the tape always holds at least the current cycle's own
+        # accepted observation. That is the other half of the convention 20
+        # split: "never observed" is distinct from "building below threshold".
+        s = DipArb()
+        d = s.evaluate(_ctx(seconds_into_window=200.0,
+                            up_asks=((0.0, 200.0),), up_bids=(),
+                            down_asks=((0.0, 200.0),), down_bids=()))
+        assert d.reason == 'insufficient_tape_not_yet_observed'
+        assert d.features['tape_rows_available'] == 0
 
     def test_dip_below_threshold(self):
         s = DipArb()
@@ -801,3 +822,66 @@ class TestEstimate:
             pytest.approx(s.mean_for(UP_TOK))
         assert sum(loop.exit_counts.values()) == 3
         assert list(loop.exit_counts) == ['hold:waiting_for_mean_reversion']
+
+
+
+class TestMarketTapePersistence:
+    """Proposal 031 phase 1 (pm_offcrypto_tape_bootstrap_probe).
+
+    `PriceTapeByToken` used to be pure in-memory, so a loop restart reset an
+    off-crypto tape to empty and `insufficient_tape` never cleared no matter
+    how long the loop ran. These pin down the fix: an off-crypto observation
+    survives a fresh instance (the restart case), a crypto observation is
+    never persisted at all (the volume argument in `DipArb.observe`'s
+    docstring), and `tape_rows_available` reaches every decision's features.
+    """
+
+    @staticmethod
+    def _event_ctx(seconds_into_window=10.0):
+        market = Market(id='m2', question='Will it happen?',
+                        slug='event-slug', condition_id='cond-2',
+                        outcomes=(Outcome('Yes', 'tok-yes'),
+                                  Outcome('No', 'tok-no')))
+        books = {'tok-yes': _book('tok-yes', ((0.60, 200.0),),
+                                  ((0.59, 200.0),)),
+                 'tok-no': _book('tok-no', ((0.42, 200.0),),
+                                 ((0.40, 200.0),))}
+        return MarketContext(window_ts=WINDOW_TS, market=market, books=books,
+                             seconds_into_window=seconds_into_window,
+                             market_type=MARKET_TYPE_EVENT)
+
+    def test_off_crypto_observation_survives_a_fresh_instance(self, tmp_path):
+        db_path = str(tmp_path / 'tape.db')
+        s1 = DipArb(tape_db_path=db_path)
+        s1.observe(self._event_ctx())
+        assert s1.tape.count('tok-yes') == 1
+
+        # A fresh instance, as after a process restart: starts empty in
+        # memory, backfills from `market_tape` on first sight of the token.
+        s2 = DipArb(tape_db_path=db_path)
+        assert s2.tape.count('tok-yes') == 0
+        s2.observe(self._event_ctx(seconds_into_window=70.0))
+        assert s2.tape.count('tok-yes') == 2
+
+    def test_crypto_observations_are_never_persisted(self, tmp_path):
+        db_path = str(tmp_path / 'tape.db')
+        s1 = DipArb(tape_db_path=db_path)
+        s1.observe(_ctx())  # default market_type is crypto_updown
+        s2 = DipArb(tape_db_path=db_path)
+        s2.observe(_ctx(seconds_into_window=110.0))
+        # No backfill: nothing was ever written, because a crypto ctx is
+        # never persisted regardless of `tape_db_path` being set.
+        assert s2.tape.count(UP_TOK) == 1
+
+    def test_a_missing_db_path_keeps_the_tape_pure_in_memory(self):
+        # The default for every existing caller, including every other test
+        # in this file: db_path=None must not attempt to touch a database.
+        s = DipArb()
+        d = s.observe(self._event_ctx())
+        assert d == {'tok-yes': True, 'tok-no': True}
+        assert s.tape.db_path is None
+
+    def test_tape_rows_available_matches_the_richest_candidate(self):
+        s = DipArb()
+        d = _warm(s, n=dip_mod.MIN_OBSERVATIONS - 2)
+        assert d.features['tape_rows_available'] == dip_mod.MIN_OBSERVATIONS - 2
