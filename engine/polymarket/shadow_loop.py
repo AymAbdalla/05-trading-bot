@@ -3787,6 +3787,41 @@ class PolymarketShadowLoop:
             'client_stats': dict(getattr(self.client, 'stats', {}) or {}),
         }
 
+    def space_reason_lines(self, stats: Optional[dict] = None) -> List[str]:
+        """One preformatted stats line per off-crypto space (D-317).
+
+        `flush_stats` logs `stats['counts']`, which is the CRYPTO identity's
+        counter and nothing else. Every weather, event, sports and political
+        disposition lands in that space's OWN counter and in the `signals`
+        table, and none of it reached stdout: grepping the log for a space skip
+        reason returns 0 BY CONSTRUCTION, which reads exactly like 'that space
+        evaluated nothing' and on 2026-08-18 was read that way. Convention 30.
+
+        One line per space and deliberately no pooled total: summing four
+        universes running on three different cadences produces a number that
+        describes none of them (convention 20). Weather is included because it
+        is an off-crypto space with the same blind spot, even though it keeps
+        its counters on the loop rather than in a `MarketSpace`.
+
+        Returns the lines rather than logging them so a test can assert the
+        content without capturing log output.
+        """
+        stats = self.stats() if stats is None else stats
+        records = [('weather', stats.get('weather') or dict())]
+        records.extend(sorted((stats.get('spaces') or dict()).items()))
+        lines = []
+        for name, record in records:
+            lines.append(
+                'PM SHADOW space %s enabled=%s cycles=%s evals=%s '
+                'identity_ok=%s strategies=%d reasons %s' % (
+                    name, record.get('enabled'), record.get('cycles'),
+                    record.get('evaluations'),
+                    record.get('identity_ok'),
+                    len(record.get('strategies') or ()),
+                    json.dumps(record.get('counts') or dict(),
+                               sort_keys=True)))
+        return lines
+
     def flush_stats(self) -> dict:
         stats = self.stats()
         self.check_identity()
@@ -3799,6 +3834,16 @@ class PolymarketShadowLoop:
                     stats['identity_ok'])
         logger.info('PM SHADOW reasons %s',
                     json.dumps(stats['counts'], sort_keys=True))
+        # D-317. Both lines above are the crypto identity and nothing else.
+        # Without these an operator cannot see weather, event, sports or
+        # political health without opening the database, which is how 2,470
+        # rows of `fair_value_model_needs_crypto_spot` got reported as zero.
+        # Guarded: instrumentation may never take the run loop down.
+        try:
+            for line in self.space_reason_lines(stats):
+                logger.info('%s', line)
+        except Exception as exc:                          # noqa: BLE001
+            logger.warning('could not log per-space counters: %s', exc)
         try:
             self.store.audit('shadow_stats', stats)
         except sqlite3.Error as exc:

@@ -2167,7 +2167,7 @@ correctness mistake.
 
 **Where:** `agents/llm_client.py`, `tests/test_llm_reasoning_layer.py`.
 
-### D-306. The model composes, Python holds the pen (CODY, needs ratifying)
+### D-306. The model composes, Python holds the pen (RATIFIED by Raven, 2026-08-18)
 
 Raven's file says "Opus writes the proposals to `strategies/proposals/`" and
 "spawn Opus to write the report to the vault". Implemented as: Opus composes,
@@ -2191,7 +2191,7 @@ Same artifacts, same locations. The model's tool allowlist on these calls is
 **Where:** `agents/forge_reasoner.py`, `agents/vault_writer.py`,
 `agents/forge.py`.
 
-### D-307. A failed model turn is NOT_TESTED, and says so in the artifact (CODY, needs ratifying)
+### D-307. A failed model turn is NOT_TESTED, and says so in the artifact (RATIFIED by Raven, 2026-08-18)
 
 Convention 11 applied to the reasoning layer. Four outcomes are tracked
 separately and never collapsed to a boolean (convention 20):
@@ -2214,7 +2214,7 @@ the blowup path, which is exactly when a stack trace is least welcome.
 **Where:** `agents/llm_client.py` (`LLMResult.ok`), `agents/vault_writer.py`
 (`_provenance`), `agents/forge.py` (`REASONER_FALLBACK_REASONS`).
 
-### D-308. Vault notes are the OUTPUT of a script, not hand-written artifacts (CODY, needs ratifying)
+### D-308. Vault notes are the OUTPUT of a script, not hand-written artifacts (RATIFIED by Raven, 2026-08-18)
 
 Raven hand-wrote the first five Trading notes on 2026-08-18. They were accurate
 when written and stale within hours, because the shadow loop never stops. At
@@ -2232,7 +2232,7 @@ in the prompt, not a fact.
 
 **Where:** `scripts/vault_refresh.py`, `tests/test_vault_refresh.py`.
 
-### D-309. Proposal numbering defaults to the next free number (CODY, needs ratifying)
+### D-309. Proposal numbering defaults to the next free number (RATIFIED by Raven, 2026-08-18)
 
 `forge.py --start-index` defaulted to 1, so any run that forgot to pass it
 restarted the numbering. On 2026-08-18 the first real reasoner run produced a
@@ -2677,3 +2677,41 @@ temperature-and-METAR model with no honest reading on any other space).
 **Where:** `strategies/polymarket/fair_value_arb.py`,
 `strategies/polymarket/dip_arb.py`, `tests/test_polymarket_risk_gate.py`,
 `tests/test_r007_r008_fixes.py`, `CLAUDE.md`.
+
+### D-317. The shadow stats line flushes the per-space counters (RATIFIED by Raven, 2026-08-18)
+
+`flush_stats` logged `stats['counts']` and stopped there. That is the CRYPTO
+identity's counter and nothing else. Every weather, event, sports and political
+disposition lands in that space's own counter (`space.counts`, and
+`weather_counts` for weather), reaches the `signals` table and the
+`shadow_stats` audit row, and never reached stdout.
+
+That is not a missing nicety, it is a trap. Grepping the log for a space skip
+reason returns 0 BY CONSTRUCTION, and 0 reads as 'that space evaluated
+nothing'. On 2026-08-18 it was read exactly that way: 2,470 rows of
+`fair_value_model_needs_crypto_spot` were reported as zero and the off-crypto
+polling was downgraded to an unverified claim, because the log was the surface
+searched and the log never carried it. Convention 30 states the rule; this
+decision removes the trap that produced it.
+
+`flush_stats` now emits one further line per off-crypto space, weather
+included, each carrying that space's enabled flag, cycle count, evaluation
+count, identity flag, strategy count and full counter map. One line per space
+and deliberately no pooled total: summing four universes running on three
+different cadences produces a number that describes none of them (convention
+20). The lines are built by `space_reason_lines`, which RETURNS them instead of
+logging them, so a test asserts the content without capturing log output, and
+the flush call is wrapped because instrumentation may never take the run loop
+down (`flush_stats` runs inside a loop that catches KeyboardInterrupt and
+nothing else).
+
+Instrumentation only. No trading logic, no schema change, no new counter, no
+new number. `space_stats()` and `weather_stats()` already computed all of this
+and the audit row already stored it; this decision only puts it where an
+operator is actually looking.
+
+Not yet observed in a live log. The change reaches the running loop at its next
+natural restart (convention 13), and PID 3108 was deliberately left alone.
+
+**Where:** `engine/polymarket/shadow_loop.py` (`space_reason_lines`,
+`flush_stats`), `tests/test_space_shadow_wiring.py`.

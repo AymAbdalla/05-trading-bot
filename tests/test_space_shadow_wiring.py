@@ -538,3 +538,88 @@ def test_stats_report_every_space_separately():
     assert stats['spaces']['sports']['market_type'] == MARKET_TYPE_SPORTS
     assert stats['spaces']['sports']['identity_ok'] is True
     assert stats['spaces']['sports']['evaluations'] > 0
+
+
+# ===========================================================================
+# 6. THE OFF-CRYPTO SPACES ARE VISIBLE IN THE LOG, NOT ONLY IN THE DATABASE
+# ===========================================================================
+#
+# D-317. The stats flush logged `stats['counts']`, the CRYPTO identity, and
+# nothing else. Space dispositions reached the `signals` table and never
+# stdout, so grepping the log for a space skip reason returned 0 BY
+# CONSTRUCTION and was read as 'that space evaluated nothing'. Convention 30.
+
+
+def test_a_space_disposition_is_absent_from_the_crypto_reasons_line():
+    """The bug this decision is written against, asserted directly.
+
+    The crypto counter is the surface an operator greps. A space skip reason
+    is not in it and never was, which is why a grep returning 0 proves
+    nothing.
+    """
+    space = _space('sports', MARKET_TYPE_SPORTS)
+    loop = _loop(FakeGammaClient(events=[]), spaces=[space])
+    loop.run_space_cycle(space, now=NOW)
+
+    stats = loop.stats()
+
+    assert space.counts, 'the space cycle counted nothing'
+    for reason in space.counts:
+        assert reason.startswith('sports_')
+        assert reason not in stats['counts'], (
+            '%s leaked into the crypto identity' % reason)
+
+
+def test_every_off_crypto_space_gets_its_own_stats_line():
+    """One line per space, weather included, and no pooled total."""
+    spaces = [_space(name, market_type) for name, market_type, _q in SPACES]
+    loop = _loop(FakeGammaClient(events=[]), spaces=spaces)
+    for space in spaces:
+        loop.run_space_cycle(space, now=NOW)
+
+    lines = loop.space_reason_lines()
+
+    assert len(lines) == len(SPACES) + 1, lines
+    named = [line.split()[3] for line in lines]
+    assert named == ['weather', 'event', 'political', 'sports']
+    assert all(line.startswith('PM SHADOW space ') for line in lines)
+    # Convention 20: no line pools the four universes into one number.
+    assert not any('total' in line for line in lines)
+
+
+def test_the_space_line_carries_the_reason_the_log_used_to_hide():
+    """The point of the decision: the counter an operator could only reach by
+    opening the database is now in the line the loop prints."""
+    space = _space('sports', MARKET_TYPE_SPORTS)
+    loop = _loop(FakeGammaClient(events=[]), spaces=[space])
+    loop.run_space_cycle(space, now=NOW)
+
+    line = [ln for ln in loop.space_reason_lines()
+            if ln.startswith('PM SHADOW space sports ')][0]
+
+    for reason, count in space.counts.items():
+        assert reason in line, '%s missing from the sports line' % reason
+        assert str(count) in line
+    assert 'identity_ok=True' in line
+    assert 'evals=%d' % space.evaluations in line
+
+
+def test_the_flush_survives_a_broken_per_space_line():
+    """Instrumentation may never take the run loop down.
+
+    `flush_stats` runs inside the main loop, which catches KeyboardInterrupt
+    and nothing else, so a raise here would stop a live session over a log
+    line. A per-space formatter that blows up must cost the lines, not the
+    loop.
+    """
+    space = _space('sports', MARKET_TYPE_SPORTS)
+    loop = _loop(FakeGammaClient(events=[]), spaces=[space])
+    loop.run_space_cycle(space, now=NOW)
+
+    def boom(_stats=None):
+        raise ValueError('deliberate')
+
+    loop.space_reason_lines = boom
+    stats = loop.flush_stats()
+
+    assert stats['spaces']['sports']['evaluations'] > 0
