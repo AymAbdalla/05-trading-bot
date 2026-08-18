@@ -14,7 +14,9 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from backtest.vectorized_harness import VectorizedBacktestHarness, EXIT_CONFIGS, GATE_VERSION
+from backtest.vectorized_harness import (VectorizedBacktestHarness, EXIT_CONFIGS,
+                                         GATE_VERSION, SCAN_WINDOW,
+                                         SLOW_TIMEFRAMES, SLOW_TF_MIN_SCAN_START)
 from backtest.cost_model import COST_MODEL_VERSION
 from backtest.instruments import resolve_asset_class
 from strategies.builtin.expanded import ENTRY_STRATEGIES_EXPANDED
@@ -35,6 +37,38 @@ GRAVEYARD_FILE = os.path.join(GRAVEYARD_DIR, 'v0_graveyard_full.json')
 ALL_STRATEGIES = (ENTRY_STRATEGIES_EXPANDED + STRATEGY_LAB_STRATEGIES
                   + STRATEGY_LAB_V2_STRATEGIES + STRATEGY_LAB_V3_STRATEGIES
                   + STRATEGY_LAB_V4_STRATEGIES + STRATEGY_LAB_V5_STRATEGIES)
+
+# The SECOND starvation site (R-005 fixed three inside the harness; this is the
+# fourth, in the runner). This gate used to be a bare `< 100`, the same
+# hardcoded constant R-005 removed from `_scan_start`, and it excluded 28 weekly
+# series from every sweep the project has ever run. A series dropped here is
+# dropped for ALL 55 strategies at once, so the gate must be the LOOSEST bar
+# that still leaves something scannable: if even one strategy could scan a bar,
+# run the series and let the harness write per-strategy NOT_TESTED for the rest
+# (convention 11). That loosest bar is the FLOOR of `_scan_start` for the
+# timeframe, plus one bar to actually scan.
+#
+# R-010 (Raven ruling, 2026-08-17): the intraday branch used to return exactly
+# `min(SCAN_WINDOW, 100)`, held there deliberately so the intraday half of the
+# graveyard stayed bit-comparable across the re-sweep (convention 17). That made
+# it the ONE branch that did not honour this function's own contract: a slice of
+# exactly 100 bars cleared the gate, then `_scan_start` began scanning at bar
+# 100, leaving zero scannable bars - the same off-by-one RIVN exposes on the
+# weekly side. Both branches are now floor + 1, so the name means what it says
+# on every timeframe. The ruling deferred this until the re-sweep control was no
+# longer needed; PID 18543's output is not being promoted (R-011), so the next
+# sweep is the first to run with it.
+#
+# Both branches read the harness constants rather than a literal, so they track
+# `_scan_start` instead of drifting from it (convention 23). The two floors are
+# genuinely different numbers, not one constant written twice: slow timeframes
+# floor at SLOW_TF_MIN_SCAN_START, intraday at min(SCAN_WINDOW, 100).
+def min_test_slice_bars(timeframe):
+    """Fewest test-slice bars that leave at least one scannable bar."""
+    if timeframe in SLOW_TIMEFRAMES:
+        return SLOW_TF_MIN_SCAN_START + 1
+    return min(SCAN_WINDOW, 100) + 1
+
 
 BINANCE_PAIRS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']
 BINANCE_TIMEFRAMES = ['15m', '1h']
@@ -98,8 +132,21 @@ def discover_yf_tickers():
     return sorted(tickers)
 
 
-def load_existing_graveyard():
-    """Load existing graveyard entries. Returns set of (ticker, timeframe, strategy, exit_config) already tested."""
+def load_existing_graveyard(force: bool = False):
+    """Load existing graveyard entries. Returns set of (ticker, timeframe, strategy, exit_config) already tested.
+
+    force=True discards them. Resume-by-key is correct when the only change is
+    NEW tickers or NEW strategies, and wrong when the HARNESS changed: a
+    gate-2 row and a gate-3 row answer different questions, and merging them
+    into one file is the silent pooling `assert_gate_version_uniform` exists
+    to catch. R-005 and R-006 both changed gate semantics, so the re-sweep
+    must be a full rebuild, not a resume.
+    """
+    if force:
+        logger.warning('--force: ignoring %s existing entries, full rebuild '
+                       '(gate semantics changed)',
+                       'all' if os.path.exists(GRAVEYARD_FILE) else 'zero')
+        return [], set()
     if not os.path.exists(GRAVEYARD_FILE):
         logger.info("No existing graveyard found. Starting fresh.")
         return [], set()
@@ -118,6 +165,19 @@ def load_existing_graveyard():
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--force', action='store_true',
+                    help='rebuild every row instead of resuming by key. '
+                         'Required after any change to gate semantics.')
+    ap.add_argument('--out', default=None,
+                    help='write to this path instead of v0_graveyard_full.json')
+    args = ap.parse_args()
+    global GRAVEYARD_FILE
+    if args.out:
+        GRAVEYARD_FILE = args.out
+        logger.info('Writing to %s', GRAVEYARD_FILE)
+
     import yaml
     config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config.yaml')
     with open(config_path) as f:
@@ -126,6 +186,12 @@ def main():
     conf['volume_min_ratio'] = 1.2
     conf['location_atr_mult'] = 5.0
     conf['rsi_max_entry'] = 70
+    # R-006. The stack stays ON by default - it is the house gate and the
+    # trend strategies are meant to face it. The mean-reversion cohort opts out
+    # by declaring `mean_reversion = True` on the class, ALL SEVEN of them as
+    # of the D-276 amendment. The runner therefore supplies no name list: the
+    # `COHORT_BRIDGE_EXPANDED_PY` bridge is closed and deleted. Semantic no-op,
+    # same seven strategies resolve out. See strategies/cohorts.py.
 
     # Venue-accurate costs (backtest/cost_model.py), not the flat crypto
     # taker rate. Every entry is stamped with cost_model_version; the
@@ -146,7 +212,7 @@ def main():
             ticker_sector[safe] = sector
 
     # Load existing graveyard
-    existing_entries, existing_keys = load_existing_graveyard()
+    existing_entries, existing_keys = load_existing_graveyard(force=args.force)
 
     # Build all possible test sets
     all_test_sets = []
@@ -226,12 +292,13 @@ def main():
     for ticker, tf, candles, sector in needed_test_sets:
         n = len(candles)
         test_candles = candles[int(n * 0.8):]
-        if len(test_candles) < 100:
+        min_slice = min_test_slice_bars(tf)
+        if len(test_candles) < min_slice:
             # VISIBLE skip, not a silent `continue` (D-223): a bare continue
             # here hid every weekly series for the life of the project. An
             # untestable series must leave a record saying so.
             logger.warning(f'SKIP {ticker} {tf}: test slice {len(test_candles)} bars '
-                           f'< 100 minimum (series has {n} bars)')
+                           f'< {min_slice} minimum (series has {n} bars)')
             for s in ALL_STRATEGIES:
                 for exit_config in exit_configs:
                     key = (ticker, tf, s.name, exit_config)
@@ -243,7 +310,7 @@ def main():
                         'exit_config': exit_config, 'sector': sector,
                         'trades': 0, 'verdict': 'NOT_TESTED',
                         'not_tested_reason': (f'test slice {len(test_candles)} bars '
-                                              f'< 100 minimum'),
+                                              f'< {min_slice} minimum'),
                         'gate_version': GATE_VERSION, 'inversion_flagged': False,
                         'cost_model_version': COST_MODEL_VERSION,
                         'asset_class': resolve_asset_class(ticker, sector),

@@ -85,6 +85,40 @@ failing, and the worst pooled performers. That is the input to the LLM half of
 Forge (`agents/forge/forge.agent.md`), which writes the argument that
 `agents/forge.py` then validates and files.
 
+## A BUILT strategy is not the same as a strategy NAMED AFTER a proposal
+
+`status` is per-proposal, and it is only `BUILT` when the code implements the
+proposal's own hypothesis. Sharing markets, or even sharing a filename, is not
+implementing it.
+
+Current state, so nobody has to re-derive it:
+
+| Proposal | Status | Note |
+|---|---|---|
+| 002 pm_temporal_arbitrage | BUILT | `strategies/polymarket/temporal_arbitrage.py`. Deviations are tightenings, all in the docstring (D-280). |
+| 005 pm_cross_window_relative_value | **PROPOSED, UNBUILT** | See below. |
+
+**Proposal 005 is PROPOSED and unbuilt, and the thing that looks like it is
+not it.** `strategies/polymarket/corridor_pair_live.py` was originally called
+`cross_window_relative_value.py`, which read as an implementation of 005. It is
+not one. 005 is a ONE-LEG relative-value bet with no floor that can lose its
+whole premium; `corridor_pair_live` is a TWO-LEG floored pair that cannot lose
+both legs. Same two markets, opposite risk shape - 005's own
+`related_graveyard_findings` says so and instructs that the two never be pooled.
+
+005 stays unbuilt because its `data_requirements` name a BLOCKER: the score
+needs 30 days of PAIRED 5m/15m history, and the mean and stdev in that score are
+measured quantities, not tunable constants. Until they are measured the proposal
+has no entry rule at all. Freezing a guessed mean and stdev into constants would
+be the `COST_FLOOR = -0.30` mistake (convention 17), so nothing invents them.
+
+The module, the class and the `strategy_name` were all renamed away from 005 -
+to `corridor_pair_live` / `CorridorPairLive` / `PM_corridor_pair` (D-281) -
+precisely so that no graveyard row, dashboard line or handoff can be read as a
+measurement of proposal 005. D-281 rules only the `strategy_name` key; the
+module and class keep the `_live` suffix. **No result from that strategy is
+evidence for or against 005, in either direction.**
+
 ## What a reviewer should check
 
 1. Does the kill condition name a number and a harness that can measure it?

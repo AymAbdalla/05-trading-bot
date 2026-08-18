@@ -101,6 +101,38 @@ SCAN_WINDOW = 260
 # reported NOT_TESTED, honestly, rather than silently eating minutes per run).
 MAX_STRATEGY_WINDOW = 2000
 
+# D-269 (Raven ruling): the flat `min_idx = min(SCAN_WINDOW, 100)` warmup was a
+# harness default that was never validated against slow timeframes. Applied to
+# a last-20% test slice it leaves DAILY series a median of ONE scannable bar
+# (5,100 across 175 series, 5.01% of the daily bars on disk) and weekly series
+# a median of 57. A strategy tested on one bar could not run; convention 11
+# says that is NOT_TESTED, not FAIL. On these timeframes the scan starts at the
+# strategy's own declared warmup instead, floored at SLOW_TF_MIN_SCAN_START.
+#
+# Intraday slices are hundreds to thousands of bars, so 100 costs nothing
+# there and keeps every existing intraday row comparable.
+SLOW_TIMEFRAMES = frozenset({'1d', '1wk', '1mo', 'daily', 'weekly'})
+
+# Weekly labels only, a strict subset of SLOW_TIMEFRAMES. Kept separate because
+# D-279's volume-filter exemption is weekly-only and must NOT leak onto daily
+# or monthly series, which is exactly what reusing SLOW_TIMEFRAMES would do.
+WEEKLY_TIMEFRAMES = frozenset({'1wk', 'weekly'})
+
+# D-277 (Raven ruling, 2026-08-17): 25 -> 50. The floor was set to 25 to buy
+# back scannable bars on slow timeframes, but it bought back bars the harness
+# cannot honestly evaluate. `_ema` seeds the pre-convergence region with
+# closes[0], so every ema50 value before index ~49 is a SEED, not a converged
+# EMA-50, and `regime_uptrend` is False there by construction. Scanning from 25
+# therefore handed the confirmation stack 25 bars on which one of its three
+# conditions could never be true - not "the regime was down", but "the number
+# was not computed yet". A PASS or FAIL earned in that region is an artifact of
+# the seeding, not a result. 50 is where EMA-50 has actually converged.
+#
+# This is convention 17 pointing the other way for once: 25 was a hardcoded
+# threshold that only ADDED data, and the honest response to "more bars" is to
+# ask whether the extra bars mean anything. These did not.
+SLOW_TF_MIN_SCAN_START = 50
+
 # How often (in candles) support/resistance levels are recomputed. Support
 # detection clusters swing lows over a 100-candle lookback -- doing that on
 # every single candle is wasteful since the levels barely move candle to
@@ -113,7 +145,12 @@ SUPPORT_RECOMPUTE_EVERY = 20
 # never be silently pooled (the incremental resume key has no code
 # fingerprint, so this stamp is the detector).
 # 1: original;  2: percentile twin gate + honored entry/stop + gap fills
-GATE_VERSION = 2
+# 3: R-005 timeframe-aware scan start + R-006 confirmation-stack cohort. BOTH
+#    change which bars are scanned and which signals survive, so a gate-2 row
+#    and a gate-3 row are answers to different questions. assert_gate_version_
+#    uniform is what stops them being averaged together; it only works if this
+#    number moves when the semantics move.
+GATE_VERSION = 3
 
 
 def _median(values: List[float]) -> float:
@@ -178,6 +215,12 @@ class VResult:
     # whole reason a series produced no trades, the row is NOT_TESTED rather
     # than FAIL (R-002, convention 20).
     zero_size_rejects: int = 0
+    # Which arm of D-270 this row ran under, and which bar the scan started
+    # from (D-269). Both are recorded per row so the two arms and the two
+    # warmup regimes can never be pooled by accident, and so the cohort list
+    # is auditable from the graveyard itself rather than only from the source.
+    confirmation_stack_applied: bool = True
+    scan_start_idx: int = 0
 
     @property
     def trade_count(self) -> int:
@@ -313,6 +356,8 @@ class VResult:
             'beats_buy_hold': self.beats_buy_hold(),
             'beats_twin': self.beats_random_twin(),
             'zero_size_rejects': self.zero_size_rejects,
+            'confirmation_stack_applied': self.confirmation_stack_applied,
+            'scan_start_idx': self.scan_start_idx,
         }
 
 
@@ -354,6 +399,80 @@ class Indicators:
         if bucket < 0:
             return []
         return self.support_by_bucket[bucket]
+
+
+# Bar size in seconds for every timeframe label the sweep uses. The label is
+# the authoritative statement of what a series is: it is what run_sweep is
+# called with, what the graveyard row is stamped with, and what the data files
+# are organised by.
+#
+# The alternative - deriving the bar size from the timestamp array - was tried
+# and rejected. Timestamp UNITS are detected by magnitude (ms above 1e11,
+# microseconds above 1e14), so a series whose timestamps start near epoch 0
+# reads as seconds and yields a bar size three orders of magnitude wrong. Real
+# feeds always carry real epochs, but a gate that decides NOT_TESTED must not
+# depend on that. Keying on the label also keeps the artifact coherent: a row
+# labelled 15m is gated as 15m, never as something the timestamps implied.
+TIMEFRAME_SECONDS = {
+    '1m': 60.0, '5m': 300.0, '15m': 900.0, '30m': 1800.0,
+    '1h': 3600.0, 'hourly': 3600.0, '2h': 7200.0, '4h': 14400.0,
+    '1d': 86400.0, 'daily': 86400.0,
+    '1wk': 604800.0, 'weekly': 604800.0,
+    '1mo': 2592000.0,
+}
+
+
+def timeframe_seconds(timeframe: Optional[str]) -> Optional[float]:
+    """Bar size in seconds for a timeframe label, or None if not recognised.
+
+    None is a real answer and callers must handle it: an unrecognised label
+    means the harness does not know the bar size, and guessing one is how a
+    strategy silently gets gated against the wrong requirement.
+    """
+    if not timeframe:
+        return None
+    return TIMEFRAME_SECONDS.get(str(timeframe).strip().lower())
+
+
+def resolve_min_bars(strategy, bar_seconds: Optional[float] = None) -> int:
+    """How many bars of history `strategy` needs ON A SERIES OF THIS BAR SIZE.
+
+    The `min_bars` class constant cannot be timeframe-aware: it is read off the
+    class before anyone knows what series is coming. For a strategy whose
+    requirement is expressed in TIME rather than in bars, that constant is only
+    correct on the one timeframe it was written for. C2 WeekendVacuumReversion
+    declares 840, which is five weeks of 1h bars; the same five weeks is 3,360
+    bars on 15m and 10,080 on 5m.
+
+    Reading the constant on a sub-hourly series was a live convention 11
+    violation (D-274). C2 cleared the 840-bar gate, was handed an 840-bar
+    window, failed its OWN in-scan history guard on every single bar because
+    840 < 3,360, produced zero signals, and was written to the graveyard as
+    FAIL - a claim that the idea was tested and lost. It was never run. Both
+    sub-hourly requirements also exceed MAX_STRATEGY_WINDOW, so the honest
+    verdict is NOT_TESTED and the harness can only reach it from here.
+
+    Falls back to the declared constant when the strategy has no
+    `min_bars_for` (which is all but one of them) or when the bar size could
+    not be determined. That fallback is the pre-D-274 behaviour, which is the
+    right default for an unlabelled series: it is the number the strategy
+    itself publishes, not a guess this function invented.
+    """
+    declared = int(getattr(strategy, 'min_bars', 0) or 0)
+    per_timeframe = getattr(strategy, 'min_bars_for', None)
+    if not callable(per_timeframe) or not bar_seconds or bar_seconds <= 0:
+        return declared
+    try:
+        return int(per_timeframe(bar_seconds))
+    except Exception as exc:
+        # Loud, not silent (convention 20). Falling back to `declared` keeps an
+        # 11-hour sweep alive; saying nothing would hide a broken strategy
+        # behind a number that looks deliberate.
+        logger.warning('%s.min_bars_for(%s) raised: %s - falling back to '
+                       'declared min_bars=%d',
+                       getattr(strategy, 'name', strategy), bar_seconds, exc,
+                       declared)
+        return declared
 
 
 # Precomputed indicator arrays are ta-backed (Aym ruling 2026-08-12), with
@@ -609,6 +728,88 @@ class VectorizedBacktestHarness:
         self.volume_min_ratio = conf.get('volume_min_ratio', 1.5)
         self.require_regime_uptrend = conf.get('require_regime_uptrend', True)
         self.apply_confirmation_stack = conf.get('apply_confirmation_stack', True)
+        # D-270: per-strategy exemption from the confirmation stack. The stack
+        # is `close > rising EMA50` plus RSI and volume clauses - a trend
+        # filter. Applying it to a strategy whose thesis is buying a down move
+        # means that strategy was never tested (convention 11). The cohort is
+        # a config value, not a hardcoded set, so the sweep runner owns the
+        # decision and the harness only owns the mechanism.
+        self.no_confirmation_stack_strategies = frozenset(
+            conf.get('no_confirmation_stack_strategies', ()) or ())
+        # Pin the scan start, ignoring R-005's timeframe rule. Exists for ONE
+        # caller: the cross-harness referee, which compares this engine
+        # against the event harness and backtesting.py and can only compare
+        # trade MECHANICS if all three legs start on the same bar. It already
+        # neutralizes the confirmation stack for the same reason. Not for
+        # sweeps - a sweep that sets this is opting out of the ruling.
+        self.scan_start_override = config.get('scan_start_override')
+
+    def _stack_applies(self, strategy) -> bool:
+        """Does the confirmation stack gate THIS strategy's signals? (R-006)
+
+        Two ways a strategy opts out, in priority order:
+
+        1. `mean_reversion = True` declared ON THE STRATEGY. This is the
+           intended mechanism: the declaration travels with the definition, so
+           a new fade strategy cannot be written and then silently swept
+           through a trend filter because someone forgot to edit a list
+           somewhere else.
+        2. The name appears in the runner-supplied cohort. A BRIDGE, for
+           strategies whose definition file could not be edited when R-006
+           was applied. See `strategies/cohorts.py` for which ones and why,
+           and move each to (1) when its file is free.
+
+        A name list on its own is an assumption with an expiry date
+        (convention 17), which is why (1) exists and (2) is labelled
+        temporary in both places.
+        """
+        if not self.apply_confirmation_stack:
+            return False
+        if getattr(strategy, 'mean_reversion', False):
+            return False
+        return getattr(strategy, 'name', None) not in self.no_confirmation_stack_strategies
+
+    def _volume_filter_applies(self, strategy, timeframe: Optional[str] = None) -> bool:
+        """Whether the confirmation stack's `vol_ratio20 >= volume_min_ratio`
+        leg runs for this (strategy, timeframe). D-279.
+
+        The other two legs of the stack (rising EMA-50, RSI ceiling) are
+        unaffected: this narrows ONE condition, it does not exempt a strategy
+        from the stack. A strategy declares `exempt_weekly_volume_filter` on
+        its class and the exemption then applies on weekly series only, so the
+        same strategy on daily bars still faces the full filter.
+
+        Deliberately not generalised into "exempt from any filter on any
+        timeframe". One ruling, one narrow mechanism; a general opt-out would
+        be a way for a strategy to quietly delete whichever gate it keeps
+        failing.
+        """
+        if not getattr(strategy, 'exempt_weekly_volume_filter', False):
+            return True
+        return timeframe not in WEEKLY_TIMEFRAMES
+
+    def _scan_start(self, strategy, timeframe: Optional[str] = None,
+                    bar_seconds: Optional[float] = None) -> int:
+        """First bar index the harness scans, per D-269.
+
+        100 bars of warmup covers EMA-50 / RSI-14 / ATR-14 / support-100 and is
+        cheap on intraday slices. On daily and weekly slices it is most of the
+        slice, so the start becomes the strategy's own declared warmup floored
+        at SLOW_TF_MIN_SCAN_START. Returned as a plain int so callers can use
+        it in the twin cache key unchanged.
+
+        `bar_seconds` is optional and only changes the answer for a strategy
+        that declares `min_bars_for`. EVERY caller must pass the same value it
+        passes to `scan_all_bars`, or a signal gets cached at a bar the replay
+        never visits - the R-005 failure, and the reason the three scan-start
+        sites are kept in lockstep through this one method (convention 23).
+        """
+        if self.scan_start_override is not None:
+            return int(self.scan_start_override)
+        if timeframe in SLOW_TIMEFRAMES:
+            return max(resolve_min_bars(strategy, bar_seconds),
+                       SLOW_TF_MIN_SCAN_START)
+        return min(SCAN_WINDOW, 100)
 
     def _coster(self, ticker: str, ind: Indicators,
                 sector: Optional[str] = None,
@@ -747,18 +948,26 @@ class VectorizedBacktestHarness:
             future_bars = int(getattr(strategy, 'wants_future_bars', 0) or 0)
 
         n = ind.n
-        min_idx = min(SCAN_WINDOW, 100)  # warmup: covers EMA-50/RSI-14/ATR-14/support-100
+        # Warmup start. Timeframe-aware since D-269; the buy-and-hold baseline
+        # and the random twin below both key off the SAME index, so the
+        # benchmark is always measured over exactly the window the strategy
+        # was scanned over.
+        min_idx = self._scan_start(strategy, timeframe, timeframe_seconds(timeframe))
+        stack_applies = self._stack_applies(strategy)
+        volume_filter_applies = self._volume_filter_applies(strategy, timeframe)
         trades: List[VTrade] = []
         zero_size_rejects = 0   # signals killed by affordability, not by edge
         # Bearish-pattern exit bars, only computed for signal exit configs.
-        exit_bars = (self.exit_signal_bars(ind)
+        exit_bars = (self.exit_signal_bars(ind, timeframe)
                      if exit_cfg['type'] == 'signal' else None)
 
         if n <= min_idx + 1:
             return VResult(strategy.name, ticker, timeframe, exit_config,
                            cost_model_version=coster.version,
                            asset_class=coster.asset_class,
-                           instrument=coster.instrument)
+                           instrument=coster.instrument,
+                           confirmation_stack_applied=stack_applies,
+                           scan_start_idx=min_idx)
 
         # Buy-and-hold benchmark over the SAME tradable window, both as a price
         # return % (reporting) and as $ PnL on the SAME position size the
@@ -787,14 +996,14 @@ class VectorizedBacktestHarness:
                 i += 1
                 continue
 
-            if self.apply_confirmation_stack:
+            if stack_applies:
                 if self.require_regime_uptrend and not ind.regime_uptrend[i]:
                     i += 1
                     continue
                 if ind.rsi14[i] > self.rsi_max_entry:
                     i += 1
                     continue
-                if ind.vol_ratio20[i] < self.volume_min_ratio:
+                if volume_filter_applies and ind.vol_ratio20[i] < self.volume_min_ratio:
                     i += 1
                     continue
 
@@ -871,6 +1080,8 @@ class VectorizedBacktestHarness:
             cost_model_version=coster.version,
             asset_class=coster.asset_class, instrument=coster.instrument,
             zero_size_rejects=zero_size_rejects,
+            confirmation_stack_applied=stack_applies,
+            scan_start_idx=min_idx,
         )
 
     @staticmethod
@@ -979,7 +1190,8 @@ class VectorizedBacktestHarness:
 
         return seed_pfs
 
-    def exit_signal_bars(self, ind: Indicators) -> np.ndarray:
+    def exit_signal_bars(self, ind: Indicators,
+                         timeframe: Optional[str] = None) -> np.ndarray:
         """Boolean array: does ANY bearish exit pattern fire on this bar?
 
         Computed once per series and cached, since it depends only on price
@@ -991,7 +1203,14 @@ class VectorizedBacktestHarness:
         from strategies.builtin.expanded import EXIT_STRATEGIES_EXPANDED
         n = ind.n
         out = np.zeros(n, dtype=bool)
-        min_idx = min(SCAN_WINDOW, 100)
+        # THIRD starvation site (R-005). Missed by the first pass, and it
+        # matters: 2 of the 11 exit configs are signal exits, so with this
+        # left at 100 a daily trade entered at bar 30 could not exit on a
+        # bearish pattern until bar 100 - the entry side scanned from 25 and
+        # the exit side did not. Two conventions in one scan path is worse
+        # than either one alone. Strategy-independent, so the floor applies
+        # with no declared min_bars.
+        min_idx = self._scan_start(None, timeframe)
         for i in range(min_idx, n):
             window = self._make_window(ind, i)
             for strat in EXIT_STRATEGIES_EXPANDED:
@@ -1006,7 +1225,8 @@ class VectorizedBacktestHarness:
         return out
 
     def scan_all_bars(self, strategy, ind: Indicators,
-                      liquidity_filter: Optional[dict] = None) -> List:
+                      liquidity_filter: Optional[dict] = None,
+                      timeframe: Optional[str] = None) -> List:
         """One scan pass over the whole series for a stateless strategy.
         Returns per-bar signals for run_strategy(precomputed_signals=...).
         This is the 9x saving that makes sweeps tractable with ta-backed
@@ -1014,12 +1234,22 @@ class VectorizedBacktestHarness:
         once per strategy instead of once per (strategy, exit_config) is
         semantically identical and skips 8 redundant full-series scans."""
         n = ind.n
-        min_idx = min(SCAN_WINDOW, 100)
-        # A strategy that declared min_bars > SCAN_WINDOW (e.g. C2's 840) gets
-        # ITS OWN wider window here; scan() still self-guards on `n < min_bars`
-        # for the early bars where even the widened window is short, so this
-        # never needs a different min_idx.
-        window_size = max(SCAN_WINDOW, getattr(strategy, 'min_bars', 0) or 0)
+        # Must match run_strategy's start exactly, or a signal would be cached
+        # at a bar the replay never visits (or vice versa). D-269. Both sites
+        # derive the bar size from the SAME timeframe label, so they cannot
+        # drift - which is why the label, not the array, is the input.
+        bar_seconds = timeframe_seconds(timeframe)
+        min_idx = self._scan_start(strategy, timeframe, bar_seconds)
+        # A strategy that needs more than SCAN_WINDOW (e.g. C2's five weekends)
+        # gets ITS OWN wider window here; scan() still self-guards on its own
+        # history requirement for the early bars where even the widened window
+        # is short, so this never needs a different min_idx.
+        #
+        # Timeframe-aware since D-274: on a 15m series C2's requirement is
+        # 3,360 bars, not the 840 on its class. run_sweep stops anything above
+        # MAX_STRATEGY_WINDOW before it reaches this line, so the widened
+        # window stays bounded.
+        window_size = max(SCAN_WINDOW, resolve_min_bars(strategy, bar_seconds))
         signals: List = [None] * n
         for i in range(min_idx, n):
             if not self._passes_liquidity_filter(ind, i, liquidity_filter):
@@ -1050,6 +1280,17 @@ class VectorizedBacktestHarness:
         # Stamp NOT_TESTED rows with the same cost identity as tested ones,
         # so the version-uniformity assertion sees one dataset either way.
         sweep_coster = self._coster(ticker, ind, sector=sector)
+
+        # Bar size of THIS series, resolved once and reused by every gate and
+        # scan below. A property of the series, never of the strategy.
+        bar_seconds = timeframe_seconds(timeframe)
+        if bar_seconds is None:
+            # Not fatal - every strategy without `min_bars_for` is unaffected -
+            # but it silently changes which gate C2 faces, so say so out loud
+            # rather than letting an unrecognised label look deliberate.
+            logger.warning('%s %s: unrecognised timeframe label, timeframe-aware '
+                           'min_bars is unavailable and declared min_bars will '
+                           'be used', ticker, timeframe)
 
         # STRUCTURAL AFFORDABILITY GATE (Raven ruling R-002).
         # `coster.size()` returns a fixed contract count for contract
@@ -1086,11 +1327,25 @@ class VectorizedBacktestHarness:
             # both checks but still fires zero signals was genuinely tested
             # and reports FAIL/0-trades like anything else - that is not a
             # NOT_TESTED case.
-            min_bars = getattr(strategy, 'min_bars', 0)
+            #
+            # Timeframe-aware since D-274. `min_bars` is the class constant and
+            # is only right on the timeframe it was written for; C2's 840 is
+            # five weeks of 1h bars and understates the same five weeks by 4x
+            # on 15m and 12x on 5m. Reading the constant here is what let
+            # sub-hourly C2 through this gate and into a FAIL it never earned.
+            min_bars = resolve_min_bars(strategy, bar_seconds)
+            declared_min_bars = int(getattr(strategy, 'min_bars', 0) or 0)
             if min_bars > MAX_STRATEGY_WINDOW or ind.n < min_bars:
-                reason = (f'needs {min_bars} bars, max strategy window is {MAX_STRATEGY_WINDOW}'
+                # Record the class constant too whenever the two differ, so a
+                # graveyard row says WHY the requirement is not the number
+                # sitting on the strategy.
+                need = (f'needs {min_bars} bars at this bar size '
+                        f'(class min_bars is {declared_min_bars})'
+                        if min_bars != declared_min_bars
+                        else f'needs {min_bars} bars')
+                reason = (f'{need}, max strategy window is {MAX_STRATEGY_WINDOW}'
                           if min_bars > MAX_STRATEGY_WINDOW
-                          else f'needs {min_bars} bars, series has {ind.n}')
+                          else f'{need}, series has {ind.n}')
                 for exit_config in exit_configs:
                     reports.append({
                         'strategy': strategy.name, 'ticker': ticker,
@@ -1125,7 +1380,39 @@ class VectorizedBacktestHarness:
                     })
                 continue
 
-            sig_cache = self.scan_all_bars(strategy, ind, liquidity_filter)
+            # A strategy may declare that THIS series cannot exercise it at
+            # all - a trigger window with no bar on this timestamp grid, a
+            # conditioning table that does not cover these dates. That is
+            # "the harness could not run this" (convention 11 / D-255), and
+            # it must leave a labelled row rather than a silent zero that
+            # reads as a verdict (convention 20).
+            untestable = None
+            probe = getattr(strategy, 'not_testable_reason', None)
+            if callable(probe):
+                try:
+                    untestable = probe(ind.timestamps, timeframe)
+                except Exception as exc:      # a broken probe must not pass silently
+                    logger.warning('%s.not_testable_reason raised on %s %s: %s',
+                                   strategy.name, ticker, timeframe, exc)
+                    untestable = f'testability probe raised: {exc}'
+            if untestable:
+                for exit_config in exit_configs:
+                    reports.append({
+                        'strategy': strategy.name, 'ticker': ticker,
+                        'timeframe': timeframe, 'exit_config': exit_config,
+                        'trades': 0, 'verdict': 'NOT_TESTED',
+                        'not_tested_reason': 'untestable_on_series',
+                        'not_tested_detail': untestable,
+                        'gate_version': GATE_VERSION,
+                        'cost_model_version': sweep_coster.version,
+                        'asset_class': sweep_coster.asset_class,
+                        'instrument': sweep_coster.instrument,
+                        'inversion_flagged': False,
+                    })
+                continue
+
+            sig_cache = self.scan_all_bars(strategy, ind, liquidity_filter,
+                                           timeframe=timeframe)
             for exit_config in exit_configs:
                 result = self.run_strategy(
                     strategy, ind, ticker, timeframe, exit_config,

@@ -262,6 +262,22 @@ class TrendReclaim(_V4Strategy):
     name = "V4_trend_reclaim"
     min_bars = 58          # 53 for 12-1 momentum + reclaim window
 
+    # D-279 (Raven ruling, 2026-08-17). The harness's global confirmation
+    # stack requires `vol_ratio20 >= volume_min_ratio` (1.5): this bar's volume
+    # must be 1.5x the trailing 20-bar average. On intraday and daily bars that
+    # is a participation check. On WEEKLY bars it is close to a contradiction
+    # of the thesis. This strategy buys the quiet reclaim of a rising 20-week
+    # MA after a month below it - the doc calls it "the boring signal" - and a
+    # 1.5x weekly volume spike is what a capitulation or a news gap looks like,
+    # not what a boring reclaim looks like. The filter was therefore rejecting
+    # the setup on the grounds that it was the setup.
+    #
+    # Scope is deliberately narrow: this strategy, weekly bars only. It is a
+    # declared property on the class, not a name list in the harness, for the
+    # same reason `mean_reversion` is (convention 17) - the exemption travels
+    # with the definition it describes.
+    exempt_weekly_volume_filter = True
+
     MA_WEEKS = 20
     BELOW_WEEKS = 4
     MOM_SKIP = 4           # skip most recent ~1 month of weeks

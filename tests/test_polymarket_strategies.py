@@ -142,13 +142,21 @@ def _box_ctx(ask_up=0.55, ask_down=0.50, bid_up=0.45, bid_down=0.44,
 # -- corridor contexts -------------------------------------------------------
 
 def _corridor_ctx(lead_bps=12.0, atr14=6.0, ask_15=0.80, ask_5=0.50,
-                  depth=20, seconds_into_window=30.0):
-    m5 = _market('btc-updown-5m-1600')
-    m15 = Market(id='m15', question='m15', slug='btc-updown-15m-1000',
+                  depth=20, seconds_into_window=30.0, window_ts=1500):
+    """D-283: the default window is the FINAL THIRD of its 15m parent.
+
+    1500 // 900 == 1, so the parent opens at 900 and 1500 - 900 == 600. The old
+    default of 1600 is the second third, which the D-283 check now refuses, so
+    every gate below it was unreachable and the fixture measured nothing.
+    """
+    ts15 = (window_ts // 900) * 900
+    m5 = _market('btc-updown-5m-{}'.format(window_ts))
+    m15 = Market(id='m15', question='m15',
+                 slug='btc-updown-15m-{}'.format(ts15),
                  condition_id='c15',
                  outcomes=(Outcome('Up', 'UP15'), Outcome('Down', 'DN15')))
     return MarketContext(
-        window_ts=1600, windows=_windows(_alternating(16)),
+        window_ts=window_ts, windows=_windows(_alternating(16)),
         market=m5, books={'DN': _book('DN', asks=((ask_5, depth),))},
         market_15m=m15, books_15m={'UP15': _book('UP15', asks=((ask_15, depth),))},
         lead_bps=lead_bps, atr14=atr14,
@@ -479,10 +487,10 @@ def test_corridor_collector_fires():
     assert len(decision.legs) == 2
     leader, opposite_leg = decision.legs
     assert leader.outcome_side == 'Up'
-    assert leader.market_slug == 'btc-updown-15m-1000'
+    assert leader.market_slug == 'btc-updown-15m-900'
     assert leader.expected_price == pytest.approx(0.80)
     assert opposite_leg.outcome_side == 'Down'
-    assert opposite_leg.market_slug == 'btc-updown-5m-1600'
+    assert opposite_leg.market_slug == 'btc-updown-5m-1500'
     assert opposite_leg.expected_price == pytest.approx(0.50)
     signal = CorridorCollector().decision_to_signal(decision)
     assert signal.entry == pytest.approx(0.80)        # premium, not the 0.93 cap
@@ -559,6 +567,32 @@ def test_corridor_collector_needs_depth_on_both_legs():
     thin = CorridorCollector().evaluate(_corridor_ctx(depth=4))
     assert thin.action == 'SKIP'
     assert thin.reason == 'insufficient_depth_for_pair'
+
+
+def test_corridor_collector_refuses_the_first_and_second_thirds():
+    """D-283. The $1.00 floor exists ONLY because both markets settle off the
+    same close, which is true only for the FINAL 5m third of a 15m window.
+
+    On the first or second third the two legs settle on DIFFERENT closes and
+    BOTH CAN LOSE - and nothing in the pricing would tell you, because the pair
+    still costs the same and `worst_case_pnl_per_pair` would still report a
+    floor that is not there. moondevonyt's bot omits this check.
+
+    Checked BEFORE lead, price and depth, so a window on the wrong third can
+    never be talked into an entry by an attractive book.
+    """
+    for window_ts, offset in ((900, 0), (1200, 300)):
+        decision = CorridorCollector().evaluate(_corridor_ctx(window_ts=window_ts))
+        assert decision.action == 'SKIP', window_ts
+        assert decision.reason == 'not_final_third_of_15m', window_ts
+        assert decision.features['parent_15m_ts'] == 900
+        assert decision.features['offset_sec'] == offset
+        assert decision.features['required_offset_sec'] == 600
+        assert decision.features['floor_is_structural_not_empirical'] is True
+
+    # Same context on the final third, and every later gate is reachable again.
+    assert CorridorCollector().evaluate(
+        _corridor_ctx(window_ts=1500)).action == 'ENTER'
 
 
 def test_corridor_collector_needs_both_markets():

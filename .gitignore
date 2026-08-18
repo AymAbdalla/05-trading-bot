@@ -25,6 +25,12 @@ __pycache__/
 # Large graveyard JSON files (>100MB, GitHub limit)
 research/graveyard/v0_graveyard_full.json
 research/graveyard/archive/
+# Sweep outputs and their baselines. Same reason, and one more: a sweep in
+# progress is writing its file, so committing it captures a torn artifact.
+# 80M and 371M as of 2026-08-18. Promotion is a deliberate `mv`, not a commit.
+research/graveyard/v0_graveyard_R005_R006.json
+research/graveyard/v0_graveyard_pre_R005.json
+research/graveyard/v0_graveyard_full_fix2.json
 
 # Superseded by silent_assertions block in judge_evidence_pack.json
 research/graveyard/assertions.json

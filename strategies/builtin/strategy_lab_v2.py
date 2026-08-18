@@ -791,6 +791,13 @@ class VWAPMagnetClose(_V2Strategy):
     days. Judge this one on gate-passing days only.
     """
     name = "V2_vwap_magnet"
+    # R-006: the confirmation stack is `close > rising EMA50` plus RSI and
+    # volume clauses - a TREND filter. This strategy buys a preceding down
+    # move expecting reversion, so gating it on an uptrend means it was
+    # never tested (convention 11), not that it was tested and lost.
+    # Declared here rather than in a list the harness owns, so the fact
+    # travels with the definition (convention 17).
+    mean_reversion = True
 
     TRIGGER_START = 930  # 15:30 ET
     TRIGGER_END = 945    # 15:45 ET

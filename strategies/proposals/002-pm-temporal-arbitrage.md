@@ -10,6 +10,7 @@ related_graveyard_findings: "No PREDICTION_MARKET rows exist in the graveyard. b
 kind: edge_hypothesis
 status: PROPOSED
 source: "Dan1ro0 concept 4B (temporal arbitrage)"
+forge_warnings: "none"
 ---
 
 

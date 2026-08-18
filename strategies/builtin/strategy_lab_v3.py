@@ -281,6 +281,21 @@ class IntradayMomentum(_V3Strategy):
         self.crypto = crypto
         if crypto:
             self.name = "V3_intraday_momentum_crypto"
+            # D-276 (Raven, 2026-08-17): NO `mean_reversion = True` here.
+            # R-006 originally named the crypto variant in the confirmation-
+            # stack exemption cohort; the objection raised against that was
+            # upheld. V3's thesis is momentum - the first half hour's return
+            # predicts the last half hour's return - so it is not a strategy
+            # the stack suppresses by construction, and exempting it was
+            # exempting the wrong thing. Both V3 variants now run WITH the
+            # confirmation stack, like every other non-cohort strategy.
+            #
+            # The flag was set here, per-instance, rather than on the class,
+            # because only the crypto variant was named. Deleting the
+            # assignment is what actually changes harness behaviour:
+            # `_stack_applies` reads `strategy.mean_reversion` BEFORE it
+            # consults the name list in strategies/cohorts.py, so removing
+            # the name from R006_COHORT alone would have been inert.
 
     # -- day partition -------------------------------------------------
 

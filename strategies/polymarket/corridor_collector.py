@@ -45,12 +45,28 @@ place: context.py's `lead_bps` is (spot - strike)/strike, the 5m ITM distance,
 NOT the 15m P10-vs-P0 lead this strategy means. Both are engine-side and are
 flagged rather than patched here.
 
+THE FINAL-THIRD PRECONDITION IS LOAD-BEARING AND HIS BOT DOES NOT CHECK IT
+(D-283). Everything above depends on the 5m window being the LAST third of its
+15m parent, because that is the only third that settles off the same close P15.
+Pair the 15m leader with the FIRST or SECOND third and the two markets settle on
+DIFFERENT closes, the arithmetic on line 9 stops holding, and there is an
+outcome where BOTH LEGS LOSE - the 15m lead reverses by the 15m close while the
+5m window closes in the direction we faded. Nothing in the pricing would tell
+you: the pair would still look like a floored pair and would still clear the 8c
+edge gate, and the loss would arrive as an occasional -$1.00 pair that reads
+like variance instead of like a missing precondition. Our port checks the offset
+explicitly and SKIPs `not_final_third_of_15m` on the other two thirds. That is a
+correctness fix, not a tightening. The floor was never a property of the trade,
+it was a property of the trade AT ONE OFFSET.
+
 REAL EXECUTION RISK: a naked leg. Both legs go in as marketable GTCs back to
 back, and if the second fails you are directional, not hedged. Retry once,
 never at a worse price, then flatten and flag UNPAIRED.
 
 KILL CONDITIONS: dies if realized P(corridor) in the zone comes in under 25%
-(the pair price stops clearing), if the unpaired rate exceeds 5% of attempts,
+(the pair price stops clearing), if ANY pair ever resolves with both legs losing
+(that would mean the final-third guard is not doing its job), if the unpaired
+rate exceeds 5% of attempts,
 or if the resolution-PnL harness scores it under 30bps net edge on our own data
 (convention 5, D-268).
 """
@@ -61,6 +77,12 @@ from strategies.polymarket.base import (Decision, Leg, MarketContext,
 
 # Never False in this repo. moondevonyt ships this False ("LIVE FIRE").
 PAPER_MODE = True
+
+WINDOW_5M_SEC = 300
+WINDOW_15M_SEC = 900
+#: Offset of the final 5m third inside its 15m parent, in seconds. The $1.00
+#: floor exists at this offset and at no other one - see D-283 in the docstring.
+FINAL_THIRD_OFFSET_SEC = WINDOW_15M_SEC - WINDOW_5M_SEC
 
 # moondevonyt's constants, unchanged.
 LEAD_BPS_MIN = 5.0        # below this there is no lead to speak of
@@ -102,6 +124,12 @@ def p_corridor_lookup(lead_bps: float,
 class CorridorCollector(PolymarketStrategy):
     """Buy the 15m leader plus the final-5m opposite. Floor is $1.00."""
 
+    # Read by the shadow loop BEFORE evaluate() is called. The strike this
+    # strategy compares against is a measured proxy, so the loop refuses any
+    # lead inside that proxy's measured error rather than letting this class
+    # decide on a number it cannot know is noise.
+    needs_strike = True
+
     strategy_name = 'PM_corridor_collector'
     paper_mode = PAPER_MODE
 
@@ -126,6 +154,11 @@ class CorridorCollector(PolymarketStrategy):
         self.entry_window_sec = entry_window_sec
         self.shares_per_leg = shares_per_leg
 
+    @staticmethod
+    def parent_15m_ts(window_ts: int) -> int:
+        """Open second of the 15m window containing this 5m window."""
+        return (int(window_ts) // WINDOW_15M_SEC) * WINDOW_15M_SEC
+
     def corridor_probability(self, lead_bps: float) -> float:
         if self.p_corridor is not None:
             return self.p_corridor
@@ -148,8 +181,21 @@ class CorridorCollector(PolymarketStrategy):
                           has_5m=ctx.market is not None,
                           has_15m=ctx.market_15m is not None)
 
+        # D-283. Structural, and checked BEFORE anything about price or lead.
+        # Only the final third settles off the same close as its 15m parent, and
+        # only then is the pair floored at $1.00. On the first two thirds the two
+        # markets settle on different closes and BOTH LEGS CAN LOSE. His bot
+        # omits this check; ours refuses the window.
+        ts15 = self.parent_15m_ts(ctx.window_ts)
+        offset = ctx.window_ts - ts15
+        if offset != FINAL_THIRD_OFFSET_SEC:
+            return decide('SKIP', 'not_final_third_of_15m',
+                          parent_15m_ts=ts15, offset_sec=offset,
+                          required_offset_sec=FINAL_THIRD_OFFSET_SEC,
+                          floor_is_structural_not_empirical=True)
+
         if ctx.lead_bps is None or ctx.atr14 is None:
-            return decide('SKIP', 'no_lead_or_atr')
+            return decide('SKIP', 'no_lead_or_atr', parent_15m_ts=ts15)
 
         lead_bps = ctx.lead_bps
         lead_side = 'Up' if lead_bps >= 0 else 'Down'
@@ -158,6 +204,7 @@ class CorridorCollector(PolymarketStrategy):
         p_corridor = self.corridor_probability(abs_lead)
 
         feats = {
+            'parent_15m_ts': ts15,
             'lead_bps': round(lead_bps, 3),
             'abs_lead_bps': round(abs_lead, 3),
             'atr14_bps': round(ctx.atr14, 3),

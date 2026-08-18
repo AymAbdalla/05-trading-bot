@@ -304,6 +304,13 @@ class ForcedFlowCrypto(_V5Strategy):
     date present in FUNDING_STRESS_PCTL at or below STRESS_PCTL.
     """
     name = "V5_forced_flow_crypto"
+    # R-006: the confirmation stack is `close > rising EMA50` plus RSI and
+    # volume clauses - a TREND filter. This strategy buys a preceding down
+    # move expecting reversion, so gating it on an uptrend means it was
+    # never tested (convention 11), not that it was tested and lost.
+    # Declared here rather than in a list the harness owns, so the fact
+    # travels with the definition (convention 17).
+    mean_reversion = True
 
     STRESS_PCTL = 0.25       # DEVIATION 4: fixed before any P&L was read
     CASCADE_MIN = 3          # P5: ">=3 expanding down candles"
@@ -475,6 +482,13 @@ class CapitulationEquity(_V5Strategy):
     kill condition.
     """
     name = "V5_capitulation_equity"
+    # R-006: the confirmation stack is `close > rising EMA50` plus RSI and
+    # volume clauses - a TREND filter. This strategy buys a preceding down
+    # move expecting reversion, so gating it on an uptrend means it was
+    # never tested (convention 11), not that it was tested and lost.
+    # Declared here rather than in a list the harness owns, so the fact
+    # travels with the definition (convention 17).
+    mean_reversion = True
 
     MIN_VOL_Z = 4.0          # P5: "volume z > 4"
     VOL_BASELINE = 60        # trailing bars for the volume mean/std

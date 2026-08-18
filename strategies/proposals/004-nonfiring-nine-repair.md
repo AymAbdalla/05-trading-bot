@@ -2,7 +2,7 @@
 name: "nonfiring_nine_repair"
 thesis: "The nine strategies that never fire are not nine independent bugs: measurement shows two genuine strategy defects and three systemic harness conditions, and seven of the nine were removed by the harness before their logic was ever judged."
 expected_edge_bps: null
-kill_condition: "Per strategy: if after its named fix it still fires on under 1% of rows tested, it is retired from the roster rather than repaired a second time. For the batch: if the two systemic fixes (apply_confirmation_stack=False for the mean-reversion cohort, and min_idx lowered to max(min_bars, 25) for daily and weekly series) do not raise at least 4 of the 9 above the 1% firing rate, the shared-cause theory is wrong and these revert to nine separate problems triaged individually."
+kill_condition: "Per strategy: if after its named fix it still fires on under 1% of rows tested, it is retired from the roster rather than repaired a second time. For the batch: if the two systemic fixes (apply_confirmation_stack=False for the mean-reversion cohort, and min_idx lowered to max(min_bars, 25) for daily and weekly series) do not raise at least 4 of the 9 above the 1% firing rate, the shared-cause theory is wrong and these revert to nine separate problems triaged individually. Both clauses are measured by re-running backtest/run_incremental_graveyard.py (which drives backtest/vectorized_harness.py) and reading the per-strategy trade counts out of research/judge_evidence_pack.json."
 asset_class: "MULTI"
 entry_exit_rules: "Not applicable: this is a repair, not a new entry rule. The per-clause measurements that constitute the diagnosis are already done and are recorded in docs/handoffs/2026-08-17-nonfiring-nine-diagnosis.md. What this proposal asks for is a ruling on the two systemic changes, which move the graveyard headline numbers, followed by the two one-line strategy fixes and the deletion of C2 stale rows."
 data_requirements: "The existing CSVs for everything except V5_forced_flow_crypto, which needs the FUNDING_STRESS_PCTL table extended back to cover the Binance price slices (current overlap is 18 days). Until it is extended, the 3,279 bar evaluations with no funding date are NOT_TESTED, not FAIL (convention 11, D-255)."
@@ -10,6 +10,7 @@ related_graveyard_findings: "These nine ARE the graveyard finding. C2 (0 trades 
 kind: repair
 status: PROPOSED
 source: "docs/handoffs/2026-08-17-nonfiring-nine-diagnosis.md (measured)"
+forge_warnings: "none"
 ---
 
 

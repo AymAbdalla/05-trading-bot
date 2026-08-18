@@ -76,6 +76,12 @@ def shares_for(usd: float, price: float, min_shares: int = MIN_SHARES) -> float:
 class MidPriceContinuation(PolymarketStrategy):
     """Buy the leading side at 40-55c once BTC is decisively through strike."""
 
+    # Read by the shadow loop BEFORE evaluate() is called. The strike this
+    # strategy compares against is a measured proxy, so the loop refuses any
+    # lead inside that proxy's measured error rather than letting this class
+    # decide on a number it cannot know is noise.
+    needs_strike = True
+
     strategy_name = 'PM_mid_price_continuation'
     paper_mode = PAPER_MODE
 

@@ -1,0 +1,192 @@
+diff --git a/backtest/vectorized_harness.py b/backtest/vectorized_harness.py
+index e0aec28..ce6d85d 100644
+--- a/backtest/vectorized_harness.py
++++ b/backtest/vectorized_harness.py
+@@ -101,6 +101,25 @@ SCAN_WINDOW = 260
+ # reported NOT_TESTED, honestly, rather than silently eating minutes per run).
+ MAX_STRATEGY_WINDOW = 2000
+ 
++# D-269 (Raven ruling): the flat `min_idx = min(SCAN_WINDOW, 100)` warmup was a
++# harness default that was never validated against slow timeframes. Applied to
++# a last-20% test slice it leaves DAILY series a median of ONE scannable bar
++# (5,100 across 175 series, 5.01% of the daily bars on disk) and weekly series
++# a median of 57. A strategy tested on one bar could not run; convention 11
++# says that is NOT_TESTED, not FAIL. On these timeframes the scan starts at the
++# strategy's own declared warmup instead, floored at SLOW_TF_MIN_SCAN_START.
++#
++# Intraday slices are hundreds to thousands of bars, so 100 costs nothing
++# there and keeps every existing intraday row comparable.
++SLOW_TIMEFRAMES = frozenset({'1d', '1wk', '1mo', 'daily', 'weekly'})
++SLOW_TF_MIN_SCAN_START = 25
++
++# Caveat recorded where the code is, not only in the handoff: `_ema` seeds the
++# pre-convergence region with closes[0], so on bars before index ~49 the
++# precomputed ema50 is a seed rather than a converged EMA-50, and
++# regime_uptrend is False there by construction. Strategies self-guard on their
++# own `len(closes)` checks; the harness does not pretend otherwise.
++
+ # How often (in candles) support/resistance levels are recomputed. Support
+ # detection clusters swing lows over a 100-candle lookback -- doing that on
+ # every single candle is wasteful since the levels barely move candle to
+@@ -178,6 +197,12 @@ class VResult:
+     # whole reason a series produced no trades, the row is NOT_TESTED rather
+     # than FAIL (R-002, convention 20).
+     zero_size_rejects: int = 0
++    # Which arm of D-270 this row ran under, and which bar the scan started
++    # from (D-269). Both are recorded per row so the two arms and the two
++    # warmup regimes can never be pooled by accident, and so the cohort list
++    # is auditable from the graveyard itself rather than only from the source.
++    confirmation_stack_applied: bool = True
++    scan_start_idx: int = 0
+ 
+     @property
+     def trade_count(self) -> int:
+@@ -313,6 +338,8 @@ class VResult:
+             'beats_buy_hold': self.beats_buy_hold(),
+             'beats_twin': self.beats_random_twin(),
+             'zero_size_rejects': self.zero_size_rejects,
++            'confirmation_stack_applied': self.confirmation_stack_applied,
++            'scan_start_idx': self.scan_start_idx,
+         }
+ 
+ 
+@@ -609,6 +636,34 @@ class VectorizedBacktestHarness:
+         self.volume_min_ratio = conf.get('volume_min_ratio', 1.5)
+         self.require_regime_uptrend = conf.get('require_regime_uptrend', True)
+         self.apply_confirmation_stack = conf.get('apply_confirmation_stack', True)
++        # D-270: per-strategy exemption from the confirmation stack. The stack
++        # is `close > rising EMA50` plus RSI and volume clauses - a trend
++        # filter. Applying it to a strategy whose thesis is buying a down move
++        # means that strategy was never tested (convention 11). The cohort is
++        # a config value, not a hardcoded set, so the sweep runner owns the
++        # decision and the harness only owns the mechanism.
++        self.no_confirmation_stack_strategies = frozenset(
++            conf.get('no_confirmation_stack_strategies', ()) or ())
++
++    def _stack_applies(self, strategy) -> bool:
++        """Does the confirmation stack gate THIS strategy's signals? (D-270)"""
++        if not self.apply_confirmation_stack:
++            return False
++        return getattr(strategy, 'name', None) not in self.no_confirmation_stack_strategies
++
++    def _scan_start(self, strategy, timeframe: Optional[str] = None) -> int:
++        """First bar index the harness scans, per D-269.
++
++        100 bars of warmup covers EMA-50 / RSI-14 / ATR-14 / support-100 and is
++        cheap on intraday slices. On daily and weekly slices it is most of the
++        slice, so the start becomes the strategy's own declared warmup floored
++        at SLOW_TF_MIN_SCAN_START. Returned as a plain int so callers can use
++        it in the twin cache key unchanged.
++        """
++        if timeframe in SLOW_TIMEFRAMES:
++            declared = int(getattr(strategy, 'min_bars', 0) or 0)
++            return max(declared, SLOW_TF_MIN_SCAN_START)
++        return min(SCAN_WINDOW, 100)
+ 
+     def _coster(self, ticker: str, ind: Indicators,
+                 sector: Optional[str] = None,
+@@ -747,7 +802,12 @@ class VectorizedBacktestHarness:
+             future_bars = int(getattr(strategy, 'wants_future_bars', 0) or 0)
+ 
+         n = ind.n
+-        min_idx = min(SCAN_WINDOW, 100)  # warmup: covers EMA-50/RSI-14/ATR-14/support-100
++        # Warmup start. Timeframe-aware since D-269; the buy-and-hold baseline
++        # and the random twin below both key off the SAME index, so the
++        # benchmark is always measured over exactly the window the strategy
++        # was scanned over.
++        min_idx = self._scan_start(strategy, timeframe)
++        stack_applies = self._stack_applies(strategy)
+         trades: List[VTrade] = []
+         zero_size_rejects = 0   # signals killed by affordability, not by edge
+         # Bearish-pattern exit bars, only computed for signal exit configs.
+@@ -758,7 +818,9 @@ class VectorizedBacktestHarness:
+             return VResult(strategy.name, ticker, timeframe, exit_config,
+                            cost_model_version=coster.version,
+                            asset_class=coster.asset_class,
+-                           instrument=coster.instrument)
++                           instrument=coster.instrument,
++                           confirmation_stack_applied=stack_applies,
++                           scan_start_idx=min_idx)
+ 
+         # Buy-and-hold benchmark over the SAME tradable window, both as a price
+         # return % (reporting) and as $ PnL on the SAME position size the
+@@ -787,7 +849,7 @@ class VectorizedBacktestHarness:
+                 i += 1
+                 continue
+ 
+-            if self.apply_confirmation_stack:
++            if stack_applies:
+                 if self.require_regime_uptrend and not ind.regime_uptrend[i]:
+                     i += 1
+                     continue
+@@ -871,6 +933,8 @@ class VectorizedBacktestHarness:
+             cost_model_version=coster.version,
+             asset_class=coster.asset_class, instrument=coster.instrument,
+             zero_size_rejects=zero_size_rejects,
++            confirmation_stack_applied=stack_applies,
++            scan_start_idx=min_idx,
+         )
+ 
+     @staticmethod
+@@ -1006,7 +1070,8 @@ class VectorizedBacktestHarness:
+         return out
+ 
+     def scan_all_bars(self, strategy, ind: Indicators,
+-                      liquidity_filter: Optional[dict] = None) -> List:
++                      liquidity_filter: Optional[dict] = None,
++                      timeframe: Optional[str] = None) -> List:
+         """One scan pass over the whole series for a stateless strategy.
+         Returns per-bar signals for run_strategy(precomputed_signals=...).
+         This is the 9x saving that makes sweeps tractable with ta-backed
+@@ -1014,7 +1079,9 @@ class VectorizedBacktestHarness:
+         once per strategy instead of once per (strategy, exit_config) is
+         semantically identical and skips 8 redundant full-series scans."""
+         n = ind.n
+-        min_idx = min(SCAN_WINDOW, 100)
++        # Must match run_strategy's start exactly, or a signal would be cached
++        # at a bar the replay never visits (or vice versa). D-269.
++        min_idx = self._scan_start(strategy, timeframe)
+         # A strategy that declared min_bars > SCAN_WINDOW (e.g. C2's 840) gets
+         # ITS OWN wider window here; scan() still self-guards on `n < min_bars`
+         # for the early bars where even the widened window is short, so this
+@@ -1125,7 +1192,39 @@ class VectorizedBacktestHarness:
+                     })
+                 continue
+ 
+-            sig_cache = self.scan_all_bars(strategy, ind, liquidity_filter)
++            # A strategy may declare that THIS series cannot exercise it at
++            # all - a trigger window with no bar on this timestamp grid, a
++            # conditioning table that does not cover these dates. That is
++            # "the harness could not run this" (convention 11 / D-255), and
++            # it must leave a labelled row rather than a silent zero that
++            # reads as a verdict (convention 20).
++            untestable = None
++            probe = getattr(strategy, 'not_testable_reason', None)
++            if callable(probe):
++                try:
++                    untestable = probe(ind.timestamps, timeframe)
++                except Exception as exc:      # a broken probe must not pass silently
++                    logger.warning('%s.not_testable_reason raised on %s %s: %s',
++                                   strategy.name, ticker, timeframe, exc)
++                    untestable = f'testability probe raised: {exc}'
++            if untestable:
++                for exit_config in exit_configs:
++                    reports.append({
++                        'strategy': strategy.name, 'ticker': ticker,
++                        'timeframe': timeframe, 'exit_config': exit_config,
++                        'trades': 0, 'verdict': 'NOT_TESTED',
++                        'not_tested_reason': 'untestable_on_series',
++                        'not_tested_detail': untestable,
++                        'gate_version': GATE_VERSION,
++                        'cost_model_version': sweep_coster.version,
++                        'asset_class': sweep_coster.asset_class,
++                        'instrument': sweep_coster.instrument,
++                        'inversion_flagged': False,
++                    })
++                continue
++
++            sig_cache = self.scan_all_bars(strategy, ind, liquidity_filter,
++                                           timeframe=timeframe)
+             for exit_config in exit_configs:
+                 result = self.run_strategy(
+                     strategy, ind, ticker, timeframe, exit_config,

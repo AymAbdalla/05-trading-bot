@@ -74,11 +74,27 @@ class SmaCrossStub(Strategy):
         return None
 
 
+# The referee's three engines each have their own warmup: the event harness
+# uses max(100, support_lookback + 10), backtesting.py uses its own, and since
+# R-005 the vectorized harness starts daily series at 25. Comparing engines
+# that start on different bars compares WINDOWS, not mechanics.
+#
+# Measured, so this is not a guess. BTC_USD_1d, sma_cross referee strategy:
+#   vectorized @ start 100 -> 13 trades / 15% win   (event: 13 / 15%, identical)
+#   vectorized @ start  25 -> 15 trades / 20% win   (6 trades clear of external's 9)
+# The 2 extra trades are real trades on real bars. They are simply bars the
+# other two engines never look at, so the referee's count tolerance reads them
+# as an engine disagreement. Pinning the start restores the like-for-like
+# comparison without asserting anything about R-005 either way.
+REFEREE_SCAN_START = 100
+
+
 def _config(fee: float = 0.001):
     return {
         'risk': {'notional_cap_usd': 100},
         'exchange': {'fees': {'taker': fee}, 'slippage': {'market': 0.0}},
         'strategy': {'confirmation': {'apply_confirmation_stack': False}},
+        'scan_start_override': REFEREE_SCAN_START,
     }
 
 
@@ -106,6 +122,8 @@ def run_vectorized_harness(candles) -> dict:
     from backtest.vectorized_harness import (VectorizedBacktestHarness,
                                              precompute_indicators)
     h = VectorizedBacktestHarness(_config())
+    assert h.scan_start_override == REFEREE_SCAN_START, (
+        'referee legs must share a warmup; see REFEREE_SCAN_START')
     ind = precompute_indicators(candles)
     r = h.run_strategy(SmaCrossStub(), ind, 'REF', '1d', 'fixed_2r')
     return {'trades': r.trade_count, 'win_rate': r.win_rate,

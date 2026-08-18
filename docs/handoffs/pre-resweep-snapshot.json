@@ -1,0 +1,286 @@
+{
+  "snapshot_of": "research/graveyard/v0_graveyard_full.json",
+  "graveyard_generated": "2026-08-17 19:20:29",
+  "total_rows": 535425,
+  "distinct_findings": 48675,
+  "verdict_counts": {
+    "FAIL": 486350,
+    "NOT_TESTED": 48642,
+    "PASS": 381,
+    "PASS_BENCHMARK": 52
+  },
+  "per_timeframe": {
+    "15m": {
+      "rows": 109505,
+      "distinct_tickers": 181
+    },
+    "1d": {
+      "rows": 105875,
+      "distinct_tickers": 175
+    },
+    "1h": {
+      "rows": 107690,
+      "distinct_tickers": 178
+    },
+    "1wk": {
+      "rows": 104665,
+      "distinct_tickers": 173
+    },
+    "5m": {
+      "rows": 107690,
+      "distinct_tickers": 178
+    }
+  },
+  "nonfiring_nine": {
+    "rsi_extreme": {
+      "rows": 9735,
+      "total_trades": 66,
+      "max_trades_in_any_row": 1,
+      "verdicts": {
+        "FAIL": 9042,
+        "NOT_TESTED": 693
+      },
+      "reasons": {
+        "unsizable_at_cap": 418,
+        "test slice 53 bars < 100 minimum": 88,
+        "test slice 62 bars < 100 minimum": 22,
+        "test slice 72 bars < 100 minimum": 11,
+        "test slice 98 bars < 100 minimum": 11
+      }
+    },
+    "C2": {
+      "rows": 9735,
+      "total_trades": 0,
+      "max_trades_in_any_row": 0,
+      "verdicts": {
+        "NOT_TESTED": 9735
+      },
+      "reasons": {
+        "needs 840 bars, scan window is 260": 9042,
+        "unsizable_at_cap": 264,
+        "test slice 53 bars < 100 minimum": 88,
+        "needs 840 bars, series has 101": 77,
+        "needs 840 bars, series has 157": 77
+      }
+    },
+    "V2_vwap_magnet": {
+      "rows": 9735,
+      "total_trades": 1562,
+      "max_trades_in_any_row": 9,
+      "verdicts": {
+        "FAIL": 9042,
+        "NOT_TESTED": 693
+      },
+      "reasons": {
+        "unsizable_at_cap": 418,
+        "test slice 53 bars < 100 minimum": 88,
+        "test slice 62 bars < 100 minimum": 22,
+        "test slice 72 bars < 100 minimum": 11,
+        "test slice 98 bars < 100 minimum": 11
+      }
+    },
+    "V2_vwap_magnet_sessionatr": {
+      "rows": 9735,
+      "total_trades": 0,
+      "max_trades_in_any_row": 0,
+      "verdicts": {
+        "FAIL": 9042,
+        "NOT_TESTED": 693
+      },
+      "reasons": {
+        "unsizable_at_cap": 418,
+        "test slice 53 bars < 100 minimum": 88,
+        "test slice 62 bars < 100 minimum": 22,
+        "test slice 72 bars < 100 minimum": 11,
+        "test slice 98 bars < 100 minimum": 11
+      }
+    },
+    "V3_intraday_momentum_crypto": {
+      "rows": 9735,
+      "total_trades": 22,
+      "max_trades_in_any_row": 2,
+      "verdicts": {
+        "FAIL": 9042,
+        "NOT_TESTED": 693
+      },
+      "reasons": {
+        "unsizable_at_cap": 264,
+        "test slice 53 bars < 100 minimum": 88,
+        "needs 200 bars, series has 101": 77,
+        "needs 200 bars, series has 157": 77,
+        "test slice 62 bars < 100 minimum": 22
+      }
+    },
+    "V4_trend_reclaim": {
+      "rows": 9735,
+      "total_trades": 66,
+      "max_trades_in_any_row": 1,
+      "verdicts": {
+        "FAIL": 9042,
+        "NOT_TESTED": 693
+      },
+      "reasons": {
+        "unsizable_at_cap": 418,
+        "test slice 53 bars < 100 minimum": 88,
+        "test slice 62 bars < 100 minimum": 22,
+        "test slice 72 bars < 100 minimum": 11,
+        "test slice 98 bars < 100 minimum": 11
+      }
+    },
+    "V5_capitulation_equity": {
+      "rows": 9735,
+      "total_trades": 0,
+      "max_trades_in_any_row": 0,
+      "verdicts": {
+        "FAIL": 9042,
+        "NOT_TESTED": 693
+      },
+      "reasons": {
+        "unsizable_at_cap": 418,
+        "test slice 53 bars < 100 minimum": 88,
+        "test slice 62 bars < 100 minimum": 22,
+        "test slice 72 bars < 100 minimum": 11,
+        "test slice 98 bars < 100 minimum": 11
+      }
+    },
+    "V5_forced_flow_crypto": {
+      "rows": 9735,
+      "total_trades": 11,
+      "max_trades_in_any_row": 1,
+      "verdicts": {
+        "FAIL": 7557,
+        "NOT_TESTED": 2178
+      },
+      "reasons": {
+        "needs 110 bars, series has 101": 1397,
+        "unsizable_at_cap": 341,
+        "needs 110 bars, series has 100": 143,
+        "test slice 53 bars < 100 minimum": 88,
+        "test slice 62 bars < 100 minimum": 22
+      }
+    },
+    "C5_btc_dominance_rotation": {
+      "rows": 0,
+      "total_trades": 0,
+      "max_trades_in_any_row": 0,
+      "verdicts": {},
+      "reasons": {}
+    }
+  },
+  "c2_stale_rows_matching_reason": 9042,
+  "stale_reason_string": "needs 840 bars, scan window is 260",
+  "per_strategy_rows": {
+    "bullish_engulfing": 9735,
+    "hammer": 9735,
+    "inverted_hammer": 9735,
+    "morning_star": 9735,
+    "piercing_line": 9735,
+    "three_inside_up": 9735,
+    "tweezer_bottom": 9735,
+    "bullish_harami": 9735,
+    "bullish_marubozu": 9735,
+    "bullish_abandoned_baby": 9735,
+    "mat_hold": 9735,
+    "rising_three_methods": 9735,
+    "upside_tasuki_gap": 9735,
+    "dragonfly_doji": 9735,
+    "breakout_20": 9735,
+    "breakout_50": 9735,
+    "ema_pullback": 9735,
+    "bollinger_reversion": 9735,
+    "rsi_extreme": 9735,
+    "fair_value_gap": 9735,
+    "volume_surge": 9735,
+    "momentum_continuation": 9735,
+    "macd_crossover": 9735,
+    "stoch_rsi_oversold": 9735,
+    "grid_1.0atr": 9735,
+    "grid_2.0atr": 9735,
+    "dca_7": 9735,
+    "dca_14": 9735,
+    "S6": 9735,
+    "S1": 9735,
+    "C2": 9735,
+    "C5": 9735,
+    "S2": 9735,
+    "D2": 9735,
+    "D1": 9735,
+    "V2_wick_autopsy": 9735,
+    "V2_round_number_decay": 9735,
+    "V2_liquidation_echo": 9735,
+    "V2_second_break": 9735,
+    "V2_volume_desert": 9735,
+    "V2_vwap_magnet": 9735,
+    "V2_vwap_magnet_sessionatr": 9735,
+    "V2_expiry_pin": 9735,
+    "V2_0dte_amplifier": 9735,
+    "V3_intraday_momentum": 9735,
+    "V3_intraday_momentum_crypto": 9735,
+    "V3_macro_drift": 9735,
+    "V3_macro_drift_nfp": 9735,
+    "V3_vacuum_refill": 9735,
+    "V3_macro_drift_cpi": 9735,
+    "V4_gap_hold_proxy": 9735,
+    "V4_52w_high_breakout": 9735,
+    "V4_trend_reclaim": 9735,
+    "V5_forced_flow_crypto": 9735,
+    "V5_capitulation_equity": 9735
+  },
+  "per_strategy_total_trades": {
+    "grid_1.0atr": 345610,
+    "fair_value_gap": 218935,
+    "stoch_rsi_oversold": 160271,
+    "grid_2.0atr": 152279,
+    "S2": 141522,
+    "dca_7": 125605,
+    "ema_pullback": 95933,
+    "breakout_20": 86723,
+    "momentum_continuation": 86684,
+    "dca_14": 71291,
+    "volume_surge": 55684,
+    "breakout_50": 54036,
+    "macd_crossover": 49470,
+    "bollinger_reversion": 48554,
+    "bullish_marubozu": 46491,
+    "V2_round_number_decay": 30891,
+    "S6": 23174,
+    "tweezer_bottom": 13762,
+    "V2_expiry_pin": 11552,
+    "bullish_engulfing": 9462,
+    "hammer": 9023,
+    "V2_volume_desert": 7543,
+    "C5": 7309,
+    "S1": 7122,
+    "bullish_harami": 7068,
+    "D2": 6077,
+    "inverted_hammer": 4564,
+    "three_inside_up": 3712,
+    "dragonfly_doji": 2620,
+    "morning_star": 2275,
+    "piercing_line": 1846,
+    "D1": 1627,
+    "V2_vwap_magnet": 1562,
+    "V3_vacuum_refill": 1376,
+    "V3_intraday_momentum": 1373,
+    "upside_tasuki_gap": 1078,
+    "V2_0dte_amplifier": 1012,
+    "V2_second_break": 953,
+    "V3_macro_drift_cpi": 660,
+    "V3_macro_drift_nfp": 605,
+    "V2_liquidation_echo": 517,
+    "bullish_abandoned_baby": 497,
+    "mat_hold": 462,
+    "V4_52w_high_breakout": 385,
+    "V3_macro_drift": 341,
+    "V2_wick_autopsy": 297,
+    "rsi_extreme": 66,
+    "V4_trend_reclaim": 66,
+    "rising_three_methods": 55,
+    "V4_gap_hold_proxy": 33,
+    "V3_intraday_momentum_crypto": 22,
+    "V5_forced_flow_crypto": 11,
+    "C2": 0,
+    "V2_vwap_magnet_sessionatr": 0,
+    "V5_capitulation_equity": 0
+  }
+}

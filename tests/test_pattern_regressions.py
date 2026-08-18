@@ -138,14 +138,21 @@ def test_dca_fires_on_timestamp_cadence_not_window_length():
 # ---------- C2 min_bars honesty ----------
 
 def test_c2_declares_min_bars_and_sweep_reports_not_tested_on_a_short_series():
-    """A series shorter than C2's own min_bars is NOT_TESTED (D-109: could
-    not run, not tested-and-failed) - this is now a per-series check, not a
-    blanket "min_bars > SCAN_WINDOW" rejection (see the window-widening test
-    below); a 150-bar series is genuinely too short for an 840-bar strategy
-    either way."""
+    """A series C2 cannot run on is NOT_TESTED (D-109: could not run, not
+    tested-and-failed) - a per-series check, not a blanket "min_bars >
+    SCAN_WINDOW" rejection (see the window-widening test below).
+
+    The REASON changed when min_bars_for() was wired in (D-274). This 150-bar
+    series is labelled 15m, and on 15m bars C2's five weekends are 3,360 bars,
+    not the 840 on its class. So it is no longer rejected as "a short series
+    for an 840-bar strategy" - it is rejected because the requirement exceeds
+    MAX_STRATEGY_WINDOW on this timeframe and no series length could satisfy
+    it. Same verdict, stronger and more honest ground.
+    """
     from strategies.builtin.strategy_lab import WeekendVacuumReversion
     from backtest.vectorized_harness import (VectorizedBacktestHarness,
-                                             SCAN_WINDOW, precompute_indicators)
+                                             SCAN_WINDOW, MAX_STRATEGY_WINDOW,
+                                             precompute_indicators)
     assert WeekendVacuumReversion.min_bars == 24 * 7 * 5 > SCAN_WINDOW
 
     harness = VectorizedBacktestHarness({})
@@ -155,7 +162,12 @@ def test_c2_declares_min_bars_and_sweep_reports_not_tested_on_a_short_series():
                                 strategies=[WeekendVacuumReversion()],
                                 exit_configs=['fixed_2r'])
     assert reports[0]['verdict'] == 'NOT_TESTED'
-    assert 'series has 150' in reports[0]['not_tested_reason']
+    reason = reports[0]['not_tested_reason']
+    assert 'needs 3360 bars at this bar size' in reason, reason
+    # The class constant is recorded alongside it, so a reader can tell the
+    # requirement was derived rather than mistyped.
+    assert 'class min_bars is 840' in reason, reason
+    assert f'max strategy window is {MAX_STRATEGY_WINDOW}' in reason, reason
 
 
 def test_c2_gets_its_own_widened_window_on_a_long_enough_series():

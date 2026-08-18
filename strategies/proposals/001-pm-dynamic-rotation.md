@@ -10,6 +10,7 @@ related_graveyard_findings: "No PREDICTION_MARKET rows exist in the graveyard: 0
 kind: edge_hypothesis
 status: PROPOSED
 source: "Dan1ro0 concept 4A (dynamic position rotation)"
+forge_warnings: "none"
 ---
 
 

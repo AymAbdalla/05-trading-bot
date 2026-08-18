@@ -10,6 +10,7 @@ related_graveyard_findings: "No PREDICTION_MARKET rows exist in the graveyard. c
 kind: edge_hypothesis
 status: PROPOSED
 source: "Dan1ro0 concept 3 (cross-market relative value)"
+forge_warnings: "none"
 ---
 
 

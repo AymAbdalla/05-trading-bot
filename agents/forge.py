@@ -1,24 +1,53 @@
-"""Forge: turns graveyard evidence into structured strategy proposals.
+"""Forge: turns evidence into structured strategy proposals.
 
 Implements the Forge role (agents/forge/SOUL.md, agents/forge/forge.agent.md)
 as the deterministic half of the loop. The LLM half writes the argument; this
 module does the parts that must not drift: loading the evidence, computing the
-gaps, enforcing the proposal schema, and refusing anything that violates a
-convention.
+gaps, enforcing what little of the proposal schema still binds, and refusing
+anything that would put a false or unfalsifiable number into the record.
+
+Evidence comes from two places now:
+  - the graveyard (backtest): summary.json, judge_evidence_pack.json, pooled
+  - the shadow loop (live paper): db/trading.db, via agents/forge_shadow_eval.py
 
 Forge proposes. Forge does not build and does not grade. This module therefore
 writes ONLY under `strategies/proposals/` plus its own run log. It never writes
 to `strategies/builtin/`, `strategies/polymarket/`, `engine/`, `backtest/`, or
 any graveyard file, and it never runs a sweep.
 
+## The creative mandate (Aym, 2026-08-17)
+
+Verbatim: "forge can be as creative as they want to be on these strats let's
+have fun with it and don't be so controlling on what he is allowed to make."
+
+So the refusals that policed TASTE are gone. What is left refuses only things
+that would put a false or unfalsifiable number into the record:
+
+  KEPT as refusals    missing core fields; a kill condition with no number or
+                      no named harness; an edge estimate that is not a finite
+                      number when one is required; an edge below the
+                      INSTRUMENT'S floor; a repair or experiment claiming an
+                      edge it cannot know.
+  DOWNGRADED to       duplicating a graveyard name; MULTI asset class on a
+  WARNINGS            non-repair; an asset class outside the known list; no
+                      related graveyard finding.
+
+A warning is printed, counted by category in the run log, and written onto the
+proposal document itself, so nothing that used to be a refusal becomes
+invisible. Convention 20 applies to the retirement too: the retired categories
+stay in the counter schema at zero rather than silently disappearing.
+
 Conventions enforced here rather than trusted to a reader:
-  5.  gross edge under 30bps is dead on arrival, so it is refused at write time
-  6.  every proposal states a kill condition
+  5.  gross edge below the instrument's floor is dead on arrival, refused at
+      write time (see MIN_GROSS_EDGE_BPS_BY_ASSET_CLASS)
+  6.  every proposal states a kill condition with a NUMBER and a NAMED HARNESS.
+      This is the one hard content constraint that survives.
   11. NOT_TESTED is never mined as evidence of failure, and a repair's unknown
       edge is recorded as null rather than invented as a number
   19. json.dump(allow_nan=False) so a non-finite raises here, not downstream
-  20. every skip is counted AND categorised, and the accounting identity is
-      asserted: len(candidates) - refused == written
+  20. every skip is counted AND categorised, and the accounting identities are
+      asserted: screened - refused == written, and the per-category counts sum
+      back to the totals
 """
 import argparse
 import collections
@@ -37,16 +66,66 @@ SUMMARY_PATH = os.path.join(ROOT, 'research', 'graveyard', 'summary.json')
 EVIDENCE_PATH = os.path.join(ROOT, 'research', 'judge_evidence_pack.json')
 POOLED_PATH = os.path.join(ROOT, 'research', 'graveyard', 'pooled.json')
 
-# Convention 5. Stated once, here, so that raising it later is a one-line
-# change with a blast radius you can see rather than a constant sprinkled
-# through five proposals. Convention 17: this is an assumption with an expiry
-# date, and the expiry is "when the cost model says a 30bps gross edge no
-# longer nets positive."
+# Convention 5, made instrument-aware.
+#
+# bps is a RATIO and the denominator is not the same instrument to instrument,
+# so one number cannot serve both. On crypto/equity spot the denominator is
+# notional and the round-trip cost floor is roughly 22bps, so a 30bps floor is
+# "clears costs with a little room". On a Polymarket binary the denominator is
+# the PREMIUM, quoted in cents, and the minimum price increment is 1c. A 1c
+# edge on a 50c contract is 200bps. Read the other way: a 30bps "edge" on a 50c
+# contract is 0.15c, a sixth of a tick, a quantity the venue cannot even
+# represent. So on a binary the floor is set to ONE TICK of a mid-priced
+# contract, which is the smallest edge that can physically exist there.
+#
+# Convention 17: both numbers are assumptions with expiry dates. The spot floor
+# expires when the cost model says 30bps no longer nets positive; the binary
+# floor expires if Polymarket changes its tick size.
 MIN_GROSS_EDGE_BPS = 30
+
+MIN_GROSS_EDGE_BPS_BY_ASSET_CLASS: Dict[str, int] = {
+    # 1c tick / 50c premium = 200bps. One tick is the floor of what is
+    # expressible, so anything under it is not a small edge, it is not an edge.
+    'PREDICTION_MARKET': 200,
+    'EVENT': 200,
+    'SPORTS': 200,
+}
+
+
+def min_edge_bps_for(asset_class: Optional[str]) -> int:
+    """The gross-edge floor for one instrument class."""
+    return MIN_GROSS_EDGE_BPS_BY_ASSET_CLASS.get(
+        str(asset_class), MIN_GROSS_EDGE_BPS)
+
 
 # Below this fraction of rows producing at least one trade, a strategy is not
 # "performing badly" - it is not running. Convention 11 territory.
 NON_FIRING_TRADE_ROW_FRACTION = 0.01
+
+# Convention 6, and the ONE hard content constraint left. A kill condition must
+# name the thing that would score it, otherwise it is a sentence about the
+# future rather than a measurement anyone can take. Matched case-insensitively
+# as a substring so "the vectorized harness" and "backtest/polymarket_harness.py"
+# both pass. Add to this list when a new scorer lands; a scorer that is not
+# here will read as unnamed, which is a loud failure rather than a quiet one.
+KNOWN_SCORERS = (
+    'harness',                    # covers *_harness.py and "the X harness"
+    'run_incremental_graveyard',
+    'run_full_graveyard',
+    'run_vectorized_graveyard',
+    'run_go_nogo',
+    'run_fast_gonogo',
+    'run_horizon_ladder',
+    'run_inversions',
+    'constraint_sweep',
+    'conditional_edge',
+    'dispersion_gate',
+    'pooled_analysis',
+    'cross_sectional',
+    'judge.py',
+    'forge_shadow_eval',
+    'shadow_loop',
+)
 
 REQUIRED_FIELDS = (
     'name',
@@ -56,27 +135,73 @@ REQUIRED_FIELDS = (
     'asset_class',
     'entry_exit_rules',
     'data_requirements',
+)
+
+# Was required, now optional. A Polymarket binary, an event market or a sports
+# market has NO graveyard analogue - the graveyard is crypto spot and perp - so
+# demanding one forced either a fabricated link or a refusal. Absence is now a
+# warning, and the field is still rendered when supplied.
+OPTIONAL_FIELDS = (
     'related_graveyard_findings',
+    'markets',
 )
 
 # `expected_edge_bps` is the one required field allowed to be null, and only
-# for a repair (see KINDS). Everything else must be non-empty.
+# for the kinds in NULL_EDGE_KINDS. Everything else must be non-empty.
 NULLABLE_FIELDS = ('expected_edge_bps',)
 
-# MULTI is legitimate ONLY for a repair spanning several classes, e.g. the nine
-# non-firing strategies, which sit across CRYPTO, EQUITY and FUTURES. An edge
-# hypothesis that cannot name one class has not been thought through.
+# Expanded well past the graveyard's four classes, because "propose only in
+# classes we have already swept" is exactly the constraint the creative mandate
+# removes. An unlisted class is now a WARNING, not a refusal, so this list is a
+# vocabulary rather than a fence.
 VALID_ASSET_CLASSES = (
     'CRYPTO', 'EQUITY', 'ETF', 'FUTURES', 'OPTIONS', 'PREDICTION_MARKET',
-    'MULTI',
+    'EVENT', 'SPORTS', 'FX', 'COMMODITY', 'RATES', 'MULTI',
 )
 
-# An edge hypothesis claims a new inefficiency and must clear the 30bps floor.
-# A repair fixes a strategy that does not currently run: its edge is genuinely
-# UNKNOWN until it fires, and convention 11 says unknown is not zero. Forcing a
-# repair to invent a bps number would put a fabricated figure into the record,
-# so the schema requires it to be null instead.
-KINDS = ('edge_hypothesis', 'repair')
+# edge_hypothesis  claims an inefficiency and must put a number on it.
+# combination      two or more concepts wired together; same evidentiary bar as
+#                  an edge_hypothesis, because a combination that cannot state
+#                  a combined edge has not been thought through as one strategy.
+# repair           fixes a strategy that does not currently run.
+# experiment       a deliberate probe run to FIND OUT whether an edge exists.
+#
+# repair and experiment must record expected_edge_bps as null. Not to restrict
+# them: the opposite. It lets them exist without inventing a bps figure, which
+# is what the old schema forced. Convention 11: unknown is not zero, and a
+# fabricated number gets cited.
+KINDS = ('edge_hypothesis', 'combination', 'repair', 'experiment')
+NULL_EDGE_KINDS = ('repair', 'experiment')
+
+# Convention 20. These still fire and still block.
+REFUSAL_CATEGORIES = (
+    'unknown_kind',
+    'missing_fields',
+    'unmeasurable_kill_condition',
+    'kill_condition_names_no_harness',
+    'non_numeric_edge_estimate',
+    'non_finite_edge_estimate',
+    'below_min_edge_bps',
+    'unknowable_edge_claimed',
+)
+
+# Convention 20 again: a retired category does not vanish from the schema. It
+# stays here, is reported at zero refusals, and its information now arrives as
+# the warning named in the value.
+RETIRED_REFUSAL_CATEGORIES: Dict[str, str] = {
+    # The graveyard is crypto spot/perp. A Polymarket binary that shares a name
+    # with a buried strategy is a different instrument with a different payoff,
+    # so the duplicate check was a false positive there. Kept as information.
+    'duplicate_of_graveyard_entry': 'duplicate_name_warning',
+    # Multi-concept combinations are now the point, not a schema violation.
+    'multi_class_edge_hypothesis': 'multi_class_warning',
+    # A class we have never swept is a gap, not an error.
+    'unknown_asset_class': 'unlisted_asset_class_warning',
+    # See OPTIONAL_FIELDS.
+    'missing_related_graveyard_findings': 'no_graveyard_link_warning',
+}
+
+WARNING_CATEGORIES = tuple(sorted(set(RETIRED_REFUSAL_CATEGORIES.values())))
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +223,7 @@ def _load_json(path: str) -> Tuple[Optional[Any], Optional[str]]:
 
 
 def load_evidence() -> Dict[str, Any]:
-    """Load the three evidence sources Forge is allowed to reason from."""
+    """Load the three graveyard sources Forge is allowed to reason from."""
     summary, summary_err = _load_json(SUMMARY_PATH)
     evidence, evidence_err = _load_json(EVIDENCE_PATH)
     pooled, pooled_err = _load_json(POOLED_PATH)
@@ -212,6 +337,46 @@ def analyse_gaps(bundle: Dict[str, Any]) -> Dict[str, Any]:
     return gaps
 
 
+def attach_shadow(gaps: Dict[str, Any],
+                  shadow: Dict[str, Any]) -> Dict[str, Any]:
+    """Fold a shadow evaluation into the gap picture.
+
+    An unreadable shadow DB is recorded under `shadow_error`, never dropped.
+    Convention 11: no shadow evidence is not the same as no shadow entries.
+    """
+    gaps = dict(gaps)
+    if shadow.get('status') != 'ok':
+        gaps['shadow_error'] = {
+            'db_path': shadow.get('db_path'),
+            'error': shadow.get('error'),
+            'note': 'NOT_TESTED, not empty. Convention 11.',
+        }
+        gaps['shadow'] = None
+        return gaps
+    sg = shadow.get('gaps', {})
+    gaps['shadow'] = {
+        'db_path': shadow.get('db_path'),
+        'n_decision_rows': shadow['decisions']['n_rows'],
+        'n_entries': shadow['decisions']['n_entries'],
+        'n_strategies': shadow['decisions']['n_strategies'],
+        'zero_entry_session': sg.get('zero_entry_session'),
+        'strategies_not_tested': [r['strategy']
+                                  for r in sg.get('strategies_not_tested', [])],
+        'strategies_ran_no_entry': [
+            r['strategy'] for r in sg.get('strategies_ran_no_entry', [])],
+        'strategies_fired': [r['strategy']
+                             for r in sg.get('strategies_fired', [])],
+        'strategies_underpowered': [
+            r['strategy'] for r in sg.get('strategies_underpowered', [])],
+        'dominant_skip_reasons': sg.get('dominant_skip_reasons', []),
+        'unknown_skip_reasons': sg.get('unknown_skip_reasons', {}),
+        'closed_positions': shadow['positions']['n_closed'],
+        'equity': shadow.get('equity', {}),
+        'paper_log': shadow.get('paper_log', {}),
+    }
+    return gaps
+
+
 # ---------------------------------------------------------------------------
 # Proposal validation and rendering
 # ---------------------------------------------------------------------------
@@ -225,12 +390,25 @@ class ProposalRefused(Exception):
         self.detail = detail
 
 
-def validate(candidate: Dict[str, Any], known_strategies: List[str]) -> None:
-    """Refuse anything that breaks the schema or a convention.
+def _kill_condition_names_a_harness(kill: str) -> bool:
+    low = kill.lower()
+    return any(tok in low for tok in KNOWN_SCORERS)
+
+
+def validate(candidate: Dict[str, Any],
+             known_strategies: List[str]) -> List[Dict[str, str]]:
+    """Refuse what is false; warn about what is merely unusual.
 
     Raises ProposalRefused with a CATEGORY, never a bare False and never a
-    silent skip. Convention 20: the caller counts these by category.
+    silent skip. Returns the list of non-blocking warnings, which the caller
+    counts by category and writes onto the proposal (convention 20: a
+    downgraded refusal must not become invisible).
     """
+    warnings: List[Dict[str, str]] = []
+
+    def warn(category: str, detail: str) -> None:
+        warnings.append({'category': category, 'detail': detail})
+
     kind = candidate.get('kind', 'edge_hypothesis')
     if kind not in KINDS:
         raise ProposalRefused('unknown_kind', str(kind))
@@ -243,26 +421,44 @@ def validate(candidate: Dict[str, Any], known_strategies: List[str]) -> None:
 
     name = candidate['name']
     if name in known_strategies:
-        raise ProposalRefused(
-            'duplicate_of_graveyard_entry',
-            f'{name} is already a swept strategy')
+        # RETIRED refusal. The graveyard is crypto spot and perp; a binary or
+        # an event market with the same name is a different instrument with a
+        # different payoff, so this was a false positive there. The information
+        # is still worth carrying, so it is annotated rather than deleted.
+        warn('duplicate_name_warning',
+             f'{name} shares a name with a swept graveyard strategy. Engage '
+             'the burial reason in the body, or rename if the instrument is '
+             'genuinely different.')
 
     cls = candidate['asset_class']
     if cls not in VALID_ASSET_CLASSES:
-        raise ProposalRefused('unknown_asset_class', str(cls))
-    if cls == 'MULTI' and kind != 'repair':
-        raise ProposalRefused(
-            'multi_class_edge_hypothesis',
-            'MULTI is only valid for a repair spanning classes')
+        # RETIRED refusal.
+        warn('unlisted_asset_class_warning',
+             f'{cls!r} is outside the known vocabulary '
+             f'({", ".join(VALID_ASSET_CLASSES)}). Allowed; it just means no '
+             'harness currently scores this class.')
+    if cls == 'MULTI' and kind not in ('repair', 'combination', 'experiment'):
+        # RETIRED refusal.
+        warn('multi_class_warning',
+             'MULTI on an edge_hypothesis. Fine, but an edge that cannot name '
+             'one instrument is harder to score; consider kind=combination.')
+
+    if not candidate.get('related_graveyard_findings'):
+        # RETIRED refusal (the field left REQUIRED_FIELDS).
+        warn('no_graveyard_link_warning',
+             'no related graveyard finding. Expected for PREDICTION_MARKET, '
+             'EVENT and SPORTS: the graveyard has no rows in those classes.')
 
     bps = candidate['expected_edge_bps']
-    if kind == 'repair':
-        # The edge of a strategy that has never fired is not knowable. Recording
-        # it as null keeps a fabricated number out of the file (convention 11).
+    if kind in NULL_EDGE_KINDS:
+        # The edge of a strategy that has never fired, or of a probe run to
+        # find out, is not knowable. Recording it as null keeps a fabricated
+        # number out of the file (convention 11).
         if bps is not None:
             raise ProposalRefused(
-                'repair_claims_an_edge',
-                f'repair must record expected_edge_bps as null, got {bps!r}')
+                'unknowable_edge_claimed',
+                f'kind={kind} must record expected_edge_bps as null, '
+                f'got {bps!r}')
     else:
         if not isinstance(bps, (int, float)) or isinstance(bps, bool):
             raise ProposalRefused('non_numeric_edge_estimate', repr(bps))
@@ -270,18 +466,27 @@ def validate(candidate: Dict[str, Any], known_strategies: List[str]) -> None:
             # Convention 19: a non-finite would serialise into a file that
             # json.loads accepts and every other parser rejects.
             raise ProposalRefused('non_finite_edge_estimate', repr(bps))
-        if bps < MIN_GROSS_EDGE_BPS:
+        floor = min_edge_bps_for(cls)
+        if bps < floor:
             raise ProposalRefused(
                 'below_min_edge_bps',
-                f'{bps}bps < {MIN_GROSS_EDGE_BPS}bps floor')
+                f'{bps}bps < {floor}bps floor for {cls}')
 
-    # Convention 6. A kill condition that names no measurement is a sentence,
-    # not a kill condition, so require a digit somewhere in it.
+    # Convention 6, and the one hard content constraint. A kill condition needs
+    # a NUMBER (so it is a threshold, not a mood) and a NAMED HARNESS (so
+    # somebody can actually take the measurement).
     kill = str(candidate['kill_condition'])
     if not any(ch.isdigit() for ch in kill):
         raise ProposalRefused(
             'unmeasurable_kill_condition',
             'kill condition states no threshold')
+    if not _kill_condition_names_a_harness(kill):
+        raise ProposalRefused(
+            'kill_condition_names_no_harness',
+            'kill condition names no scorer; expected one of: '
+            + ', '.join(KNOWN_SCORERS))
+
+    return warnings
 
 
 def _yaml_scalar(value: Any) -> str:
@@ -301,27 +506,50 @@ def _yaml_scalar(value: Any) -> str:
     return json.dumps(text)
 
 
-def render(candidate: Dict[str, Any]) -> str:
-    """Proposal document: YAML frontmatter contract, markdown argument."""
+def render(candidate: Dict[str, Any],
+           warnings: Optional[List[Dict[str, str]]] = None) -> str:
+    """Proposal document: YAML frontmatter contract, markdown argument.
+
+    Warnings are written into BOTH the frontmatter and the body. A warning that
+    only exists in the run log is a warning nobody reading the proposal sees.
+    """
+    warnings = warnings or []
     lines = ['---']
     for field in REQUIRED_FIELDS:
         lines.append(f'{field}: {_yaml_scalar(candidate[field])}')
+    for field in OPTIONAL_FIELDS:
+        if candidate.get(field):
+            lines.append(f'{field}: {_yaml_scalar(candidate[field])}')
     lines.append(f"kind: {candidate.get('kind', 'edge_hypothesis')}")
     lines.append(f"status: {candidate.get('status', 'PROPOSED')}")
     lines.append(f"source: {_yaml_scalar(candidate.get('source', 'forge'))}")
+    lines.append('forge_warnings: '
+                 + _yaml_scalar(', '.join(w['category'] for w in warnings)
+                                or 'none'))
     lines.append('---')
     lines.append('')
     lines.append(candidate.get('body', '').rstrip())
+    if warnings:
+        lines.append('')
+        lines.append('## Forge warnings (non-blocking)')
+        lines.append('')
+        lines.append('These used to be refusals. They no longer block a '
+                     'proposal, and they are recorded here so the information '
+                     'survives the downgrade.')
+        lines.append('')
+        for w in warnings:
+            lines.append(f"- **{w['category']}**: {w['detail']}")
     lines.append('')
     return '\n'.join(lines)
 
 
-def write_proposal(candidate: Dict[str, Any], index: int) -> str:
+def write_proposal(candidate: Dict[str, Any], index: int,
+                   warnings: Optional[List[Dict[str, str]]] = None) -> str:
     """Write one proposal and return its path."""
     slug = candidate['name'].replace('_', '-')
     path = os.path.join(PROPOSALS_DIR, f'{index:03d}-{slug}.md')
     with open(path, 'w') as fh:
-        fh.write(render(candidate))
+        fh.write(render(candidate, warnings))
     return path
 
 
@@ -334,18 +562,21 @@ def generate(candidates: List[Dict[str, Any]],
              start_index: int = 1) -> Dict[str, Any]:
     """Validate and write every candidate. Returns the run record.
 
-    Convention 20: refusals are counted BY CATEGORY, and the accounting
-    identity is asserted rather than assumed. A proposal that vanished between
-    the candidate list and the output directory is a missing number.
+    Convention 20: refusals are counted BY CATEGORY, warnings are counted BY
+    CATEGORY, the RETIRED categories stay in the schema at zero, and every
+    accounting identity is asserted rather than assumed. A proposal that
+    vanished between the candidate list and the output directory is a missing
+    number, and so is a refusal category that quietly stopped existing.
     """
     known = gaps.get('known_strategies', [])
     written: List[Dict[str, Any]] = []
     refused: List[Dict[str, str]] = []
+    warned: List[Dict[str, str]] = []
 
     index = start_index
     for candidate in candidates:
         try:
-            validate(candidate, known)
+            warnings = validate(candidate, known)
         except ProposalRefused as exc:
             refused.append({
                 'name': str(candidate.get('name')),
@@ -353,33 +584,64 @@ def generate(candidates: List[Dict[str, Any]],
                 'detail': exc.detail,
             })
             continue
-        path = write_proposal(candidate, index)
+        for w in warnings:
+            warned.append({'name': candidate['name'], **w})
+        path = write_proposal(candidate, index, warnings)
         written.append({
             'name': candidate['name'],
             'path': os.path.relpath(path, ROOT),
             'kind': candidate.get('kind', 'edge_hypothesis'),
             'asset_class': candidate['asset_class'],
             'expected_edge_bps': candidate['expected_edge_bps'],
+            'warnings': [w['category'] for w in warnings],
         })
         index += 1
 
-    by_category = collections.Counter(r['category'] for r in refused)
+    seen_refusals = collections.Counter(r['category'] for r in refused)
+    seen_warnings = collections.Counter(w['category'] for w in warned)
+
+    # Full schema, zeros included. A category that fired zero times is a
+    # measurement; a category that disappeared from the schema is a hole.
+    refused_by_category = {c: seen_refusals.get(c, 0)
+                           for c in REFUSAL_CATEGORIES}
+    warned_by_category = {c: seen_warnings.get(c, 0)
+                          for c in WARNING_CATEGORIES}
+
+    unknown_refusals = sorted(set(seen_refusals) - set(REFUSAL_CATEGORIES))
+    unknown_warnings = sorted(set(seen_warnings) - set(WARNING_CATEGORIES))
+    assert not unknown_refusals, (
+        f'refusal category outside the schema: {unknown_refusals}')
+    assert not unknown_warnings, (
+        f'warning category outside the schema: {unknown_warnings}')
 
     assert len(candidates) - len(refused) == len(written), (
         f'accounting identity broken: {len(candidates)} candidates - '
         f'{len(refused)} refused != {len(written)} written')
+    assert sum(refused_by_category.values()) == len(refused), (
+        'refusal category counts do not sum to the refusal total')
+    assert sum(warned_by_category.values()) == len(warned), (
+        'warning category counts do not sum to the warning total')
 
     return {
         'candidates_screened': len(candidates),
         'written': written,
         'refused': refused,
-        'refused_by_category': dict(by_category),
+        'refused_by_category': refused_by_category,
+        'warned': warned,
+        'warned_by_category': warned_by_category,
+        'retired_refusal_categories': dict(RETIRED_REFUSAL_CATEGORIES),
+        'min_gross_edge_bps': {
+            'default': MIN_GROSS_EDGE_BPS,
+            'by_asset_class': dict(MIN_GROSS_EDGE_BPS_BY_ASSET_CLASS),
+        },
         'evidence_errors': gaps.get('evidence_errors', {}),
         'gaps_used': {
             'non_firing_count': len(gaps.get('non_firing', [])),
             'asset_classes_absent': gaps.get('asset_classes', {}).get('absent'),
             'failed_assertions': gaps.get('failed_assertions'),
             'distinct_findings': gaps.get('distinct_findings'),
+            'shadow': gaps.get('shadow'),
+            'shadow_error': gaps.get('shadow_error'),
         },
     }
 
@@ -397,10 +659,34 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help='print the gap analysis and write nothing')
     parser.add_argument('--start-index', type=int, default=1,
                         help='first proposal number (default 1)')
+    parser.add_argument('--shadow-results', metavar='DB_PATH', default=None,
+                        help='read live shadow-trading results from this '
+                             'SQLite DB (e.g. db/trading.db) and propose '
+                             'against them as well as against the graveyard')
+    parser.add_argument('--paper-log', metavar='CSV_PATH', default=None,
+                        help='Polymarket paper log CSV; defaults to '
+                             'research/polymarket_paper/'
+                             'polymarket_paper_log.csv')
     args = parser.parse_args(argv)
 
     bundle = load_evidence()
     gaps = analyse_gaps(bundle)
+
+    shadow_candidates: List[Dict[str, Any]] = []
+    if args.shadow_results:
+        from agents import forge_shadow_eval as shadow_eval
+        paper_log = args.paper_log or shadow_eval.DEFAULT_PAPER_LOG
+        shadow = shadow_eval.evaluate(args.shadow_results, paper_log)
+        gaps = attach_shadow(gaps, shadow)
+        if shadow.get('status') != 'ok':
+            # Convention 11: this is NOT_TESTED, not "no entries". Loud.
+            print(f"WARN unreadable shadow results "
+                  f"{args.shadow_results}: {shadow.get('error')}",
+                  file=sys.stderr)
+        else:
+            shadow_candidates = shadow_eval.shadow_candidates(shadow)
+            if args.gaps_only:
+                gaps['shadow_full'] = shadow
 
     if gaps['evidence_errors']:
         # Not fatal: Forge can still write a proposal that does not lean on the
@@ -417,18 +703,24 @@ def main(argv: Optional[List[str]] = None) -> int:
     from agents.forge_candidates import CANDIDATES
 
     os.makedirs(PROPOSALS_DIR, exist_ok=True)
-    record = generate(CANDIDATES, gaps, start_index=args.start_index)
+    record = generate(list(CANDIDATES) + shadow_candidates, gaps,
+                      start_index=args.start_index)
+    record['shadow_results_path'] = args.shadow_results
+    record['shadow_candidates_added'] = len(shadow_candidates)
     log_run(record)
 
     print(f"screened {record['candidates_screened']}, "
           f"wrote {len(record['written'])}, "
-          f"refused {len(record['refused'])}")
+          f"refused {len(record['refused'])}, "
+          f"warned {len(record['warned'])}")
     for row in record['written']:
         bps = ('unknown' if row['expected_edge_bps'] is None
                else f"~{row['expected_edge_bps']}bps")
         print(f"  WROTE   {row['path']} ({row['asset_class']}, {bps})")
     for row in record['refused']:
         print(f"  REFUSED {row['name']}: {row['category']} ({row['detail']})")
+    for row in record['warned']:
+        print(f"  WARN    {row['name']}: {row['category']}")
     return 0
 
 

@@ -16,6 +16,7 @@ from typing import Dict, List, Optional
 from strategies.base import Strategy, Signal
 from indicators.patterns_all import (
     BULLISH_PATTERNS, BEARISH_PATTERNS, NEUTRAL_PATTERNS,
+    RETIRED_ENTRY_PATTERNS,
 )
 from indicators.atr import latest_atr
 from indicators.rsi import latest_rsi
@@ -106,11 +107,21 @@ def _make_strategy_class(name, func, is_entry=True, confidence=0.5):
     })
 
 
-# Build all candlestick strategy classes
+# Build all candlestick strategy classes.
+#
+# This loop IS the active entry strategy set for candlesticks: one strategy per
+# key in BULLISH_PATTERNS, no filtering here. Retirement therefore happens at
+# the registry (D-284 removed `rising_three_methods` from BULLISH_PATTERNS, the
+# same treatment on_neck / in_neck got), and the assertion below is the wiring
+# test that keeps the two in step rather than a docstring claim (convention 22).
 _CANDLESTICK_STRATEGIES = []
 for pname, pfunc in BULLISH_PATTERNS.items():
     cls = _make_strategy_class(pname, pfunc, is_entry=True, confidence=0.55)
     _CANDLESTICK_STRATEGIES.append(cls())
+
+assert not (RETIRED_ENTRY_PATTERNS & {s.name for s in _CANDLESTICK_STRATEGIES}), (
+    'a pattern retired by D-284 is back in the active strategy set: '
+    f'{sorted(RETIRED_ENTRY_PATTERNS & {s.name for s in _CANDLESTICK_STRATEGIES})}')
 
 _EXIT_STRATEGIES = []
 for pname, pfunc in BEARISH_PATTERNS.items():
@@ -208,6 +219,14 @@ class BollingerReversion(Strategy):
     """Buy when price touches lower Bollinger Band in uptrend."""
     name = "bollinger_reversion"
     is_entry = True
+    # R-006 cohort member. The entry IS the adverse move - a touch of the lower
+    # band - so gating it on the confirmation stack's rising-EMA50 leg means it
+    # was never tested (convention 11), not tested and found wanting. Declared
+    # on the class rather than in a name list the harness owns, so the fact
+    # travels with the definition (convention 17). This replaces the
+    # `COHORT_BRIDGE_EXPANDED_PY` route, which existed only because this file
+    # was owned by a concurrent session when R-006 landed.
+    mean_reversion = True
 
     def _bollinger(self, closes, period=20, std_mult=2.0):
         if len(closes) < period:
@@ -261,9 +280,27 @@ class BollingerReversion(Strategy):
 
 
 class RsiExtreme(Strategy):
-    """Buy when RSI drops below 30 (oversold) in uptrend."""
+    """Buy a pullback (RSI below RSI_MAX_ENTRY) while price is still above EMA50.
+
+    Threshold history (D-273 / R-007, 2026-08-17). The original threshold was
+    35, which is unsatisfiable rather than tight: RSI(14) conditional on
+    `close > EMA50` has a hard floor at 36.26, so no bar can satisfy both
+    clauses at once. RSI under 35 needs ~14 bars of dominant downside, which
+    mechanically drags close under a 50-period EMA. Raven ruled 35 -> 45.
+    """
     name = "rsi_extreme"
     is_entry = True
+    # R-006 cohort member. The entry IS the adverse move - a pullback into
+    # oversold RSI - so gating it on the confirmation stack's rising-EMA50 leg
+    # means it was never tested (convention 11), not tested and found wanting.
+    # Declared on the class rather than in a name list the harness owns, so the
+    # fact travels with the definition (convention 17). This replaces the
+    # `COHORT_BRIDGE_EXPANDED_PY` route, which existed only because this file
+    # was owned by a concurrent session when R-006 landed.
+    mean_reversion = True
+    # Named, not inlined: a hardcoded threshold is an assumption with an
+    # expiry date (convention 17), and this one already expired once.
+    RSI_MAX_ENTRY = 45.0
 
     def scan(self, candles: Dict[str, List[float]]) -> Optional[Signal]:
         closes = candles['closes']
@@ -280,8 +317,9 @@ class RsiExtreme(Strategy):
         # Must be in uptrend
         if closes[-1] <= ema50:
             return None
-        # RSI must be oversold
-        if rsi_val >= 35:
+        # RSI must be pulled back (D-273: 35 was below the support of the
+        # conditional distribution, so the pair of clauses was unsatisfiable)
+        if rsi_val >= self.RSI_MAX_ENTRY:
             return None
         entry = closes[-1]
         stop = min(lows[-5:]) - 0.25 * atr_val
@@ -458,6 +496,14 @@ class StochRsiOversold(Strategy):
     """Buy when Stochastic RSI drops below 0.2 (oversold) in uptrend."""
     name = "stoch_rsi_oversold"
     is_entry = True
+    # R-006 cohort member. The entry IS the adverse move - oversold Stochastic
+    # RSI - so gating it on the confirmation stack's rising-EMA50 leg means it
+    # was never tested (convention 11), not tested and found wanting. Declared
+    # on the class rather than in a name list the harness owns, so the fact
+    # travels with the definition (convention 17). This replaces the
+    # `COHORT_BRIDGE_EXPANDED_PY` route, which existed only because this file
+    # was owned by a concurrent session when R-006 landed.
+    mean_reversion = True
 
     def scan(self, candles: Dict[str, List[float]]) -> Optional[Signal]:
         closes = candles['closes']

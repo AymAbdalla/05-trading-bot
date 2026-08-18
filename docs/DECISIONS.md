@@ -1,6 +1,6 @@
 # Decisions Log
 
-## v11 - 2026-08-17 (multi-asset scope expansion, Polymarket added)
+## v11 - 2026-08-17 (multi-asset scope expansion, Polymarket added, harness rulings D-269 to D-284, shadow loop live)
 
 ### D-267. SPEC expanded to multi-asset; Polymarket added as an asset class (AYM RULING)
 
@@ -70,6 +70,487 @@ Recorded so a future session cannot mistake "the code is written" for "the
 strategy was tested." Kill condition for all four: if the resolution-PnL
 harness scores a strategy below 30bps net edge on our own data, it dies,
 whatever moondevonyt's logs say.
+
+### D-269. Bar starvation fix: lower min_idx for daily and weekly series (RAVEN RULING)
+
+Cody's diagnosis (`docs/handoffs/2026-08-17-nonfiring-nine-diagnosis.md`)
+measured that `min_idx = min(SCAN_WINDOW, 100) = 100`
+(`vectorized_harness.py:1024`) against a last-20% test slice leaves daily
+series a median of ONE scannable bar: 5,100 across 175 series, 5.01% of the
+daily bars on disk. Weekly series get a median of 57.
+
+Convention 11: NOT_TESTED means "could not run," never "ran and found
+nothing." A strategy tested on 1 bar could not meaningfully run. The current
+min_idx is a harness default that was never validated against daily/weekly
+timeframes. Strategies labeled FAIL on daily/weekly were actually NOT_TESTED.
+
+Ruling: lower `min_idx` to `max(strategy.min_bars, 25)` for daily and weekly
+series. This is correcting a measurement error, not changing method or
+loosening a filter. The scan window was too narrow for strategies to compute
+their indicators.
+
+Convention 17 caution: this will make numbers improve. The improvement comes
+from strategies actually being tested, not from relaxing standards. Pre-change
+graveyard numbers must be snapshotted before the re-run and compared
+deliberately after.
+
+### D-270. Confirmation stack fix for mean-reversion cohort (RAVEN RULING)
+
+The sweep never sets `apply_confirmation_stack` or `require_regime_uptrend`,
+so both default True (`vectorized_harness.py:610-611`). Every signal must
+additionally satisfy `close > rising EMA50`. Cody measured that this removed
+100% of V2_vwap_magnet_sessionatr, 99.5% of its control twin, 92% of
+V5_capitulation_equity's candidate days, 87% of V3_intraday_momentum_crypto,
+and 82% of V4_trend_reclaim.
+
+On capitulation days specifically, `regime_uptrend` is true 7.77% of the time
+against a 49.71% unconditional baseline: a 6.4x suppression of exactly the
+signals mean-reversion strategies are designed to find.
+
+Convention 11: a mean-reversion strategy filtered through `close > rising
+EMA50` has not been tested and found wanting. It has not been tested.
+
+Ruling: set `apply_confirmation_stack=False` for the mean-reversion cohort
+(V2_vwap_magnet, V2_vwap_magnet_sessionatr, V5_capitulation_equity, and any
+other strategy whose thesis is buying weakness or fading). Trend-following
+strategies keep the stack. The machinery already exists and is used by
+`constraint_sweep.py:64` and `dispersion_gate.py:353`.
+
+Convention 17 caution applies identically. Pre-change numbers preserved.
+
+### D-271. rsi_extreme threshold fix: 35 to 45 (RAVEN RULING)
+
+`rsi_extreme` requires `rsi14 < 35` AND `close > ema50`. Over 42,010 bars:
+4,783 satisfy the first, 21,982 the second, zero satisfy both. RSI(14)
+conditional on `close > EMA50` has a hard floor at 36.26, so the threshold
+sits below the support of the conditional distribution. Category (b):
+unsatisfiable, not tight.
+
+The thesis (oversold pullback in an uptrend) is sound. The threshold is wrong.
+
+Ruling: change `rsi14 < 35` to `rsi14 >= 45` (1.28% firing rate). This
+preserves the "oversold" intent while making the condition satisfiable. The
+`>= 50` option (10.12% firing) is available if 1.28% proves too sparse after
+the re-sweep.
+
+### D-272. C2 lookback units fix and stale row deletion (RAVEN RULING)
+
+Two problems in C2 (`strategies/builtin/strategy_lab.py`):
+
+1. Units bug: anchor lookback is `24 * 4` BARS meaning 4 DAYS. True only for
+   hourly bars. On 15m it reaches back 24 hours; on 5m, 8 hours. It can never
+   reach Friday. Measured: 100% anchor failure on every sub-hourly series.
+
+   Ruling: fix the lookback to be time-aware (convert 4 days to bars based on
+   the series timeframe).
+
+2. Stale rows: 9,042 of 9,735 C2 rows in the graveyard carry the reason
+   string `"needs 840 bars, scan window is 260"`, which does not exist
+   anywhere in the current codebase. The current gate emits `"needs 840 bars,
+   series has {n}"`. These rows were written by a pre-fix harness; C2 has
+   never run under current code.
+
+   Ruling: delete the 9,042 stale rows before the re-sweep. Under current
+   code C2 would be testable on 401 of 860 series.
+
+Separately: the long-only constraint means C2 cannot reach 20 trades as a
+long-only spot strategy (all 10 qualified weekend vacuums were moves UP).
+This is a strategy design issue, not a harness bug. After the lookback fix
+and re-run, if C2 still cannot fire meaningfully, retire it with a D-number
+rather than repairing a second time (per proposal 004's kill condition).
+
+### D-273. rsi_extreme threshold shipped and measured: 35 to 45 (CC, implements D-271 / R-007)
+
+Raven ruled it in R-007 (`docs/handoffs/from-raven/2026-08-17-rulings-and-shadow-go.md`),
+Aym authorised the round-2 rulings the same day. D-271 records the RULING.
+This records the IMPLEMENTATION and the measured result, because a number
+written into a decision before the run is an estimate until it is corrected
+against the log (convention 15).
+
+Where it lands: `strategies/builtin/expanded.py`, class `RsiExtreme`. The
+threshold is now a named class constant `RSI_MAX_ENTRY = 45.0` instead of an
+inline literal, because a hardcoded threshold is an assumption with an expiry
+date (convention 17) and this one already expired once.
+
+Measured by replaying the sweep's own pipeline outside the harness (`load_csv`
+to last-20% test slice to `precompute_indicators` to `_make_window` to
+`scan()`), so these are firing counts on real data, not estimates. The
+scanned-bar counts reproduce the diagnosis table exactly (5,100 / 7,898 /
+195,282 / 204,978 / 596,922), which is how we know it is the same universe
+and not a friendlier one:
+
+| timeframe | series | bars scanned | fires at 35 | fires at 45 | rate at 45 | conditional RSI floor |
+|---|---|---|---|---|---|---|
+| 1d  | 176 | 5,101   | 0 | 33    | 0.647% | 40.38 |
+| 1wk | 164 | 7,898   | 0 | 57    | 0.722% | 41.00 |
+| 1h  | 175 | 195,282 | 0 | 1,480 | 0.758% | 35.68 |
+| 15m | 178 | 204,978 | 7 | 1,382 | 0.674% | 32.99 |
+| 5m  | 178 | 596,922 | 7 | 4,179 | 0.700% | 31.71 |
+| **all** | | **1,010,181** | **14** | **7,131** | **0.706%** | |
+
+Correction to the diagnosis, on the record rather than quietly: "zero of
+42,010 bars" is exact on daily, weekly and hourly, and NOT exact on 15m and
+5m, where 7 bars each do satisfy both clauses. The conditional RSI floor is
+below 35 on sub-hourly bars (32.99 and 31.71). So the honest claim is not
+"logically impossible everywhere" but "impossible on 1d/1wk/1h and 14 firings
+in 1,010,181 bars overall" - 0.0014%, which cannot produce a testable sample
+under any sweep. The conclusion does not change; the wording does.
+
+Convention 17 check, stated because this is exactly the shape of the
+`COST_FLOOR = -0.30` false positive: this change LOOSENS a filter and the
+number improved from ~zero. It is not a false positive here, and the reason
+is a falsifiable measurement rather than a judgement. RSI(14) conditional on
+`close > EMA50` has a measured floor of 40.38 on daily and 35.68 on hourly.
+A threshold of 35 excludes 100% of the conditional support on those
+timeframes. No sample size, no re-run and no cost model could ever have
+produced a trade there. A strategy that cannot produce a trade was not
+tested (convention 11), so rsi_extreme's 9,042 FAIL rows in the pre-resweep
+graveyard were mislabelled and should have read NOT_TESTED.
+
+What this does NOT establish: firing is not edge. 7,131 signals is a testable
+sample, not a result, and the 5m column is 0.700% of bars - frequent enough
+that costs will dominate. Whether rsi_extreme clears the gate is the
+re-sweep's answer, not this decision's.
+
+Kill condition: if the re-sweep shows rsi_extreme firing and failing on
+economics, it dies on economics. 45 does not get re-tuned toward 50 to chase
+a PASS. The `>= 50` option D-271 mentions is retired by this decision unless
+the re-sweep produces under 200 trades in total, which the table above says
+it will not.
+
+Two caveats on the numbers, so nobody has to rediscover them. (1) The clause
+counters read the harness's precomputed numpy Wilder RSI/EMA while `scan()`
+recomputes with the pure-Python indicators; the two agree exactly on every
+timeframe except 5m, where scan fires 4,179 against 4,177 clause-satisfying
+bars. A 2-in-596,922 boundary disagreement, recorded rather than rounded
+away. (2) These are RAW signal counts taken before the confirmation stack.
+The stack is being changed concurrently under D-270, and a raw count is the
+property this fix actually owns.
+
+Pinned by `tests/test_r007_r008_fixes.py` (5 tests + 5 real-data
+parametrisations), including an assertion that the threshold sits above the
+measured conditional floor - the invariant whose violation was the bug.
+
+### D-274. C2 lookback made timeframe-aware; min_bars is not, and that caps the fix (CC, implements D-272 part 1 / R-008)
+
+Raven ruled it in R-008, Aym authorised. D-272 records the ruling. This
+records the implementation, the measured before/after, and one thing the
+ruling did not anticipate.
+
+Where it lands: `strategies/builtin/strategy_lab.py`. Three hardcoded bar
+counts became durations, and a shared `_bar_seconds()` helper infers the bar
+size from the window's own timestamps (median spacing, not mean, because
+equity series have weekend holes):
+
+| horizon | was | now | 1h | 15m | 5m |
+|---|---|---|---|---|---|
+| anchor lookback | `24 * 4` bars | `ANCHOR_LOOKBACK_SECONDS` = 4 days | 96 | 384 | 1,152 |
+| baseline weekly step | `168` bars | `WEEK_SECONDS` = 7 days | 168 | 672 | 2,016 |
+| in-scan history guard | `24 * 7 * 5` bars | `HISTORY_SECONDS` = 5 weeks | 840 | 3,360 | 10,080 |
+
+On 1h the fix is a no-op by construction: the old literals were the correct
+1h values, which is why the bug survived. Verified on real data, 18
+crypto series across 5 timeframes and 2 data sources (Binance monthly
+slices and the yfinance-style CSVs), sweep test slices:
+
+| series | pre-fix anchor resolved | post-fix anchor resolved | pre-fix history guard | post-fix history guard |
+|---|---|---|---|---|
+| BTC/ETH/SOL 1h | 12/20 trigger bars each | 12/20 (unchanged) | 12 | 12 |
+| BTC_USD/ETH_USD/SOL_USD 1h | 32/40 each | 32/40 (unchanged) | 32 | 32 |
+| BTC/ETH/SOL 15m | **0/80 each** | 0/80 | 72 (wrongly passed) | 0 |
+| BTC_USD/ETH_USD/SOL_USD 5m | **0/48 each** | 0/48 | 24 (wrongly passed) | 0 |
+
+Read that table honestly: the fix produced ZERO new signals. What it changed
+is which gate rejects sub-hourly bars. Pre-fix, a 15m series cleared the
+840-bar history guard (840 bars is 5 weeks only on 1h) and then failed the
+anchor search silently on 100% of trigger bars. Post-fix it fails the history
+guard, which is the true reason and the honest one.
+
+**The thing R-008 did not anticipate, stated explicitly because the task
+asked and because it is the part that matters.** Fixing the lookback is not
+sufficient for the fix to be REACHABLE on sub-hourly series. `min_bars` is a
+class constant the harness reads before it knows the timeframe
+(`vectorized_harness.py`), and it sizes the window it hands `scan()` as
+`max(SCAN_WINDOW, min_bars)` = 840 bars. On 15m the strategy genuinely needs
+3,360 bars and on 5m 10,080, so it can never satisfy its own history
+requirement inside the window it is given. `min_bars` therefore DOES need to
+become timeframe-aware. `WeekendVacuumReversion.min_bars_for(bar_seconds)`
+now exposes the correct per-timeframe requirement; `min_bars` itself is left
+at 840 because changing it is a harness-contract change and the harness is
+another session's surface this cycle.
+
+The consequence is a live convention 11 violation: 3,360 and 10,080 both
+exceed `MAX_STRATEGY_WINDOW` (2,000), so the honest verdict for C2 on 15m and
+5m is NOT_TESTED - the harness structurally cannot supply the history - but
+until the gate calls `min_bars_for()` those rows will be written as FAIL.
+One-line follow-up at the two `getattr(strategy, 'min_bars', ...)` call sites.
+Until it lands, do not read a C2 sub-hourly FAIL as a verdict.
+
+**C2 on daily and weekly is structurally dead, and no lookback fix reaches
+it.** C2's trigger requires a Sunday bar at hour >= 22. Measured over 40
+daily series (1,132 scanned bars): daily bars stamp at hours 0, 4 and 5 UTC
+only, maximum hour 5. Equity daily series have no Sunday bar at all. Zero
+trigger bars, therefore zero signals, on every daily and weekly series, in
+both the pre-fix and post-fix code. C2 is an hourly-or-finer crypto strategy
+and its daily/weekly graveyard rows are NOT_TESTED, not FAIL. Pinned by test.
+
+**C2 does fire (convention 3 satisfied), on 1h, on full history.** Over the
+full 1h series for BTC/ETH/SOL from both sources: 876 trigger bars with the
+anchor resolved, 244 clear the 1.5x median-move gate, 46 also clear the
+sub-40th-percentile volume gate. Of those 46 fully-qualified weekend vacuums,
+36 were moves UP and are discarded by the long-only spot constraint, 10 were
+moves DOWN, and `scan()` returns a signal on all 10. Zero of them fall inside
+the sweep's last-20% test slice, which is why the sweep sees nothing.
+
+That 36-to-10 split is the strategy's real problem and it is not a bug: you
+cannot short spot (D-267). Proposal 004's kill condition applies. If the
+re-sweep confirms C2 cannot reach 20 trades on 1h, it should be retired with
+its own D-number rather than repaired a third time.
+
+Not fixed, disclosed rather than smoothed over: `valid_for=48` in C2's Signal
+is the same units bug (48 bars, intended 48 hours; 12 hours on 15m). It is an
+order-lifetime parameter rather than a lookback, so it sits outside R-008's
+ruling, and C2 currently produces zero trades so no baseline is corrupted by
+leaving it. It should be swept up when C2 is retired or repaired.
+
+Pinned by `tests/test_r007_r008_fixes.py` (8 tests), including one that fails
+if 15m ever becomes reachable inside the default window, so the caveat above
+cannot silently go stale.
+
+### D-275. C2 stale rows ARCHIVED, not deleted (RAVEN RULING R-009, supersedes D-272 part 2)
+
+D-272 ruled "delete the 9,042 stale rows before the re-sweep." R-009, issued
+later the same day in `docs/handoffs/from-raven/2026-08-17-rulings-and-shadow-go.md`,
+ruled ARCHIVE, do not delete. R-009 is the later ruling and it governs.
+Archiving preserves the audit trail without polluting the active graveyard,
+and it is the same instinct as D-255: an unreadable graveyard is not an empty
+one, and evidence you deleted is evidence you cannot re-examine.
+
+Where it lands: `research/graveyard/archive/c2_stale_rows.json` (3.9MB),
+written by `backtest/archive_c2_stale_rows.py`, which reuses the streaming
+object-by-object reader in `backtest/snapshot_graveyard.py` rather than
+`json.load`ing the 389MB graveyard into RAM.
+
+Measured, not assumed. Extracted from the stable pre-fix backup
+`research/graveyard/archive/v0_graveyard_full.pre-D269-D272.json` rather than
+the live file, because a concurrent re-sweep was rewriting the live one
+(convention 21):
+
+| bucket | rows |
+|---|---|
+| rows scanned | 535,425 |
+| non-C2 | 525,690 |
+| C2 total | 9,735 |
+| C2 stale, archived | **9,042** |
+| C2 under the current gate string | 154 |
+| C2 other (264 unsizable_at_cap, 275 short-slice) | 539 |
+
+9,042 exactly, matching the diagnosis. Convention 20: every bucket is counted
+AND categorised, no two drop causes share a number, and both accounting
+identities (`scanned == C2 + non-C2` and `C2 == stale + current + other`) are
+asserted in the script, not checked by eye. Convention 19: written with
+`json.dump(allow_nan=False)` and portability proved with
+`node -e 'JSON.parse(...)'`, because `json.loads` would happily accept
+`Infinity` back and no other parser will.
+
+Why these rows are stale, restated because it is the whole justification:
+they carry `not_tested_reason == "needs 840 bars, scan window is 260"`, and
+no code in the tree emits that string. The current gate emits
+`needs 840 bars, series has {n}`. They were written by a pre-fix harness that
+refused to widen the scan window; `scan_all_bars` now widens to
+`max(SCAN_WINDOW, min_bars)`. C2 has never run under current code.
+
+Removal from the ACTIVE graveyard is deliberately not done here. The re-sweep
+regenerates `v0_graveyard_full.json` from scratch, so the stale rows are gone
+by regeneration, and rewriting a 389MB file another process is writing is how
+you lose both copies. The audit trail is closed by the archived count above.
+
+Pinned by `tests/test_r007_r008_fixes.py` (3 tests), including one that fails
+if `vectorized_harness.py` ever regains the ability to emit the stale string -
+which would mean these rows are not stale and archiving them was hiding
+evidence rather than filing it.
+
+### D-276. V3 removed from mean-reversion cohort (RAVEN RULING, corrects R-006)
+
+R-006 included `V3_intraday_momentum_crypto` in the mean-reversion cohort by
+mistake. V3's thesis is "the first half hour's return predicts the last half
+hour's return" - that is momentum (trend continuation), not mean-reversion.
+The confirmation stack (`close > rising EMA50`) is a trend filter appropriate
+for momentum strategies. Applying it to V3 is correct; removing it was the
+error.
+
+Cody (session A, `docs/handoffs/2026-08-17-resweep-BLOCKED-two-sessions.md`)
+identified this: "Under D-270's own criterion V3 does not belong in the
+cohort."
+
+Ruling: remove `V3_intraday_momentum_crypto` from `R006_COHORT` in
+`strategies/cohorts.py` before the re-sweep. The assertion in
+`_assert_consistent` will catch downstream drift.
+
+### D-277. EMA convergence floor raised from 25 to 50 (RAVEN RULING)
+
+D-269 set `SLOW_TF_MIN_SCAN_START = 25` for daily and weekly timeframes. Cody
+(session A) flagged that `_ema` seeds the pre-convergence region with
+`closes[0]`, so on bars before index ~49 the precomputed `ema50` is a seed,
+not an EMA-50. With the floor at 25, roughly 24 of 76 scannable bars on a
+101-bar daily series sit in the seeded region, and `regime_uptrend` is False
+there by construction.
+
+Ruling: raise `SLOW_TF_MIN_SCAN_START` from 25 to 50. The cost is minimal (for
+most daily series the test slice starts well past bar 50) and the gain is
+correctness: no scan enters the EMA seed region. Session B already documented
+this as a caveat in the code; promoting it to a fix.
+
+### D-278. rising_three_methods: ATR threshold 0.7 to 1.0 (RAVEN RULING)
+
+`rising_three_methods` is one of two non-firing strategies not covered by any
+prior ruling (D-269..D-275 and R-005..R-009 between them cover seven of the
+nine). Its binding clause `small_reds` has 2 hits in 32,679 bars. The diagnosed
+fix is loosening the ATR threshold from 0.7 to 1.0.
+
+Ruling: apply the fix. This is a pure threshold loosening, so convention 17
+applies: document before/after. If it still does not fire meaningfully after
+the re-sweep, recommend retirement with a D-number.
+
+### D-279. V4_trend_reclaim: exempt weekly bars from volume_min_ratio (RAVEN RULING)
+
+`V4_trend_reclaim` is the second of two non-firing strategies not covered by
+any prior ruling. 27 of 27 candidates die on `volume_min_ratio >= 1.2` alone,
+not on the regime filter. V4 is trend-following, so it correctly keeps the
+confirmation stack. The volume filter issue is a data-availability problem on
+weekly bars (weekly volume is inherently lower and more variable).
+
+Ruling: exempt weekly bars from `volume_min_ratio` for V4 only. Same shape as
+D-269: a harness default never validated against weekly timeframes. Document
+before/after.
+
+### D-280. PM_temporal_arbitrage: proposal 002 shipped as runnable strategy (RAVEN RULING)
+
+Implements Forge proposal 002: buy two sides of one 5m window at different
+instants when each is cheap, pair redeems $1.00. Between legs the position is
+NAKED. Leg-completion risk, not direction, is the whole trade.
+
+Deviations from proposal 002, all tightenings, all in the module docstring:
+leg 1 capped at 0.35 not 0.47 (moves break-even completion from ~89% to ~69%);
+directional trigger added (proposal has none); 5-share blocks not 50; both caps
+judged on the book-walked effective entry, not top-of-book.
+
+NOT_TESTED until the harness extension lands (D-268). Completion rate is NOT
+computable from ENTER decisions alone: `evaluate()` sees decisions, never fills,
+and the halt check / risk gate / paper adapter downstream can all refuse. Must
+come from a join of the `positions` table on `window_ts`. Every row carries
+`completion_rate_measurable_from_this_log = False` and
+`leg1_fill_confirmed = False` until a fill-confirmation callback is wired.
+
+### D-281. PM_cross_window_relative_value: floored pair, NOT proposal 005 (RAVEN RULING)
+
+The task brief described a floored-pair structure (15m leader + final-5m
+opposite, pair floored at $1.00) and named it after proposal 005. Proposal 005
+is NOT that. It is a one-leg relative-value bet with no floor that can lose its
+whole premium. The floored pair is proposal 005's own "nearest neighbour"
+(`corridor_collector`), with an explicit table of the differences and an
+instruction never to pool them. Proposal 005's `data_requirements` call the
+missing 30 days of paired history a BLOCKER.
+
+Ruling on caveat 1: keep the class name (`CrossWindowRelativeValue`) since it
+is already wired and the docstring is honest about the mismatch. BUT the
+`strategy_name` attribute must be `PM_corridor_pair` (not anything referencing
+proposal 005) so no graveyard row, dashboard line, or handoff can be read as a
+measurement of proposal 005. Proposal 005 stays PROPOSED and unbuilt. No result
+from this strategy is evidence for or against proposal 005. Every decision row
+already carries `implements_proposal_005_hypothesis = False` and
+`structure = 'floored_pair_not_relative_value'`.
+
+Ruling on caveat 2: apply the 8c edge floor. The brief's $1.41 pair cap is fair
+value (1.00 + 0.413 blended corridor rate). Paying fair value earns exactly
+zero before fees. Worse, 0.413 is a blend and the binned table reads 0.326 at a
+5-10bps lead, so at a 6bps lead the fair pair is 1.326 and a 1.41 cap is 8.4c
+above fair: a reliably negative-expectancy entry. Zero-edge pairs at binned fair
+value are negative-expectancy after fees by construction. corridor_collector's
+8c edge requirement applies here too. `edge_vs_binned_fair >= 0.08` is a hard
+gate. The `require_binned_fair` second gate stays. `pair_cap_binding` names
+which gate stopped the trade.
+
+### D-282. PM_spread_harvest_taker: taker adaptation, book_implied gate disabled (RAVEN RULING)
+
+Taker adaptation of moondevonyt's `spread_harvest_maker`. This is a DIFFERENT
+ORDER, not a tightening: his bot rests a post-only bid inside the spread; ours
+pays the ask. Getting paid the spread is his entire thesis. File and class keep
+his name; `strategy_name` is `PM_spread_harvest_taker` so no graveyard row can
+read as a measurement of his maker bot.
+
+Ruling on caveat 3: ship with `allow_book_implied_coin_flip=False` until a
+Chainlink settlement strike feed exists. His primary gate
+(`coa = |spot - strike| / ATR <= 0.40`) is unavailable because Gamma does not
+publish the strike. `book_implied` (the 0.40-0.48 price band doing the near-tie
+work) is a DIFFERENT GATE, not a looser one: it asks what the book thinks, so a
+window that has quietly run away from the strike while quotes lag passes here
+and would fail his. The two populations must never be pooled.
+`allow_book_implied_coin_flip=False` refuses to trade without a real strike.
+Results under `coin_flip_source='book_implied'` must be scored SEPARATELY from
+any produced under `cushion_atr`.
+
+NOT_TESTED until the harness extension lands (D-268).
+
+### D-283. corridor_collector: final-third check is a latent bug, fix before unblock (RAVEN RULING)
+
+Cody found that `corridor_collector` never checks that the 5m window is the
+FINAL THIRD of its 15m parent. The $1.00 floor exists ONLY because both markets
+settle off the same close. Pair the 15m leader with the first or second third
+and BOTH legs can lose, and nothing in the pricing would tell you.
+
+Latent because corridor_collector cannot fire today (no strike, no `lead_bps`).
+The new strategy (`PM_corridor_pair`, D-281) already enforces it:
+`not_final_third_of_15m`, with a test.
+
+Ruling: assign D-283. The fix is one line: add the final-third check to
+`corridor_collector` before it is ever unblocked. Do not unblock
+`corridor_collector` without this fix.
+
+### D-284. rising_three_methods RETIRED (RAVEN RULING, executes D-278 kill condition)
+
+D-278 loosened the ATR threshold from 0.7 to 1.0 and set the kill condition:
+"if it still does not fire meaningfully after the re-sweep, recommend retirement
+with a D-number."
+
+After the fix: `small_reds` clause unblocked 8.6x (70 to 600 hits), but the
+pattern still fires ZERO times. `within_range` is now binding (1.03% of bars);
+it and `small_reds` co-occur on 5 of 13,901 bars, and none of those 5 satisfy
+all remaining clauses simultaneously.
+
+The kill condition is met. `rising_three_methods` is RETIRED. The strategy
+class stays in the codebase (it is test data and a cautionary record), but it
+is removed from the active strategy set. No graveyard row from any future
+sweep will be produced for it. Its prior rows are NOT_TESTED (they could
+never fire), not FAIL.
+
+This is not a close call. A strategy that fires zero times after a threshold
+loosening that unblocked its binding clause 8.6x has no edge to measure.
+Retirement is the honest verdict.
+
+### R-010. Intraday off-by-one in min_test_slice_bars: DEFER (RAVEN RULING)
+
+Cody identified an off-by-one in `min_test_slice_bars`: the intraday gate
+admits a 100-bar slice, which scans from bar 100, leaving zero scannable bars.
+Same defect RIVN's row exposes on the weekly side.
+
+Ruling: defer until the next fully-fixed sweep. Zero intraday series are
+anywhere near the boundary today, so it costs nothing. Fixing it mid-re-sweep
+would break the intraday control (convention 17). The fix will be applied
+before the next sweep starts. Not a separate D-number; it is a follow-on
+from D-269/R-005.
+
+### R-011. Re-sweep scope: let 18543 finish, do NOT promote, start new sweep (RAVEN RULING)
+
+PID 18543 is running on pre-D-276..D-279, pre-min_bars_for, pre-slice-gate
+config. Its output is stale relative to the current codebase.
+
+Ruling: let it finish (do not kill). Keep its output as a partial-fix
+baseline for convention 17 comparison. Do NOT promote it over
+`v0_graveyard_full.json`. Start a new fully-fixed sweep after 18543
+finishes, with the intraday off-by-one fix (R-010) and rising_three_methods
+retirement (D-284) applied.
+
 
 ## v10 - 2026-08-14 (D-226 duplicate_strategies superseded)
 

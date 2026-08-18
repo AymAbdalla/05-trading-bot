@@ -5,10 +5,14 @@ schema enforcement, refusal accounting) can be tested without the content, and
 so the content can be rewritten every cycle without touching the validator.
 
 Each dict is a CANDIDATE, not a proposal. `agents/forge.py` decides which ones
-become files: anything below the 30bps floor, duplicating a swept strategy, or
-carrying an unmeasurable kill condition is refused there and recorded in
-`forge_runs.jsonl` with a category. The candidates that get refused are part of
-the result, so they stay in this list rather than being deleted.
+become files. As of the 2026-08-17 creative mandate the refusal set is much
+smaller: a candidate is refused for a missing core field, an edge below its
+INSTRUMENT'S floor (30bps on spot, 200bps = one 1c tick on a 50c binary), a
+kill condition with no number or no named harness, or a repair/experiment
+claiming an edge it cannot know. Duplicating a swept name, an unlisted asset
+class and a missing graveyard link are now WARNINGS, not refusals. Candidates
+that do get refused are part of the result, so they stay in this list rather
+than being deleted.
 
 Numbers in `expected_edge_bps` are ESTIMATES made before any test, and every
 body below shows the arithmetic that produced them. Convention 15: when the
@@ -498,7 +502,10 @@ NONFIRING_NINE_REPAIR = {
         'min_idx lowered to max(min_bars, 25) for daily and weekly series) do '
         'not raise at least 4 of the 9 above the 1% firing rate, the '
         'shared-cause theory is wrong and these revert to nine separate '
-        'problems triaged individually.'),
+        'problems triaged individually. Both clauses are measured by '
+        're-running backtest/run_incremental_graveyard.py (which drives '
+        'backtest/vectorized_harness.py) and reading the per-strategy trade '
+        'counts out of research/judge_evidence_pack.json.'),
     'entry_exit_rules': (
         'Not applicable: this is a repair, not a new entry rule. The per-clause '
         'measurements that constitute the diagnosis are already done and are '

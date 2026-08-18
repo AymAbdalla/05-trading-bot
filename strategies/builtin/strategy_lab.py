@@ -65,6 +65,42 @@ def _in_xnys_session(ts: float) -> bool:
         return _dt_et(ts).weekday() <= 4
 
 
+def _bar_seconds(timestamps: List[float], default: float = 3600.0) -> float:
+    """Median spacing between bars, in seconds, inferred from the window itself.
+
+    Strategy.scan() is handed candles with no timeframe label, so any strategy
+    whose logic is expressed in TIME ("4 days back", "one week ago") has to
+    derive the bar size or it silently means something different on every
+    timeframe. Median, not mean: equity series have weekend and holiday gaps
+    that would drag a mean upward, and crypto series occasionally have a
+    missing bar.
+
+    Returns `default` (1h) only when there are fewer than two usable
+    timestamps, which cannot happen for any window a harness would build.
+    """
+    if not timestamps or len(timestamps) < 2:
+        return default
+    diffs = []
+    prev = _dt(timestamps[0]).timestamp()
+    for ts in timestamps[1:]:
+        cur = _dt(ts).timestamp()
+        d = cur - prev
+        prev = cur
+        if d > 0:
+            diffs.append(d)
+    if not diffs:
+        return default
+    diffs.sort()
+    return diffs[len(diffs) // 2]
+
+
+def _bars_for(seconds: float, bar_seconds: float) -> int:
+    """How many bars of size `bar_seconds` span `seconds` of wall time."""
+    if bar_seconds <= 0:
+        return 1
+    return max(1, int(round(seconds / bar_seconds)))
+
+
 def _percentile_rank(current: float, series: List[float]) -> float:
     """Fraction of `series` <= current. 0.15 means current is in the bottom 15%."""
     if not series:
@@ -287,9 +323,31 @@ class WeekendVacuumReversion(Strategy):
     """Fade abnormally large, abnormally low-volume weekend moves in crypto."""
     name = "C2"
     is_entry = True
-    # Needs 5 weeks of hourly bars. Harnesses with a smaller scan window must
-    # report this strategy as NOT_TESTED rather than tested-and-failed.
+
+    # Every horizon below is TIME, not a bar count (D-274 / R-008). The
+    # pre-fix code hardcoded bar counts that happened to equal these
+    # durations on 1h bars only: `24 * 4` bars meant "4 days" and was 24
+    # hours on 15m and 8 hours on 5m, so the Friday anchor was unreachable
+    # and the anchor search failed on 100% of sub-hourly trigger bars.
+    HISTORY_SECONDS = 5 * 7 * 24 * 3600      # 5 weeks of baseline weekends
+    ANCHOR_LOOKBACK_SECONDS = 4 * 24 * 3600  # far enough back to reach Friday
+    WEEK_SECONDS = 7 * 24 * 3600             # step between baseline weekends
+
+    # Bar-count floor the harness reads. It is the 1h value, because
+    # `min_bars` is a class constant and the harness reads it before it knows
+    # the series timeframe. Use `min_bars_for()` when the bar size IS known:
+    # on 15m the real requirement is 3,360 bars and on 5m it is 10,080, both
+    # above vectorized_harness.MAX_STRATEGY_WINDOW (2,000), so those series
+    # are structurally NOT_TESTED rather than tested-and-failed (convention
+    # 11). Until the harness calls min_bars_for, sub-hourly series clear the
+    # 840-bar gate, get a 840-bar window, fail the in-scan history guard and
+    # are mislabelled FAIL. See D-274.
     min_bars = 24 * 7 * 5
+
+    @classmethod
+    def min_bars_for(cls, bar_seconds: float) -> int:
+        """Bars of history this strategy needs on a series of this bar size."""
+        return _bars_for(cls.HISTORY_SECONDS, bar_seconds)
 
     def scan(self, candles: Dict[str, List[float]]) -> Optional[Signal]:
         closes = candles['closes']
@@ -298,7 +356,8 @@ class WeekendVacuumReversion(Strategy):
         volumes = candles['volumes']
         timestamps = candles['timestamps']
         n = len(closes)
-        if n < 24 * 7 * 5:
+        bar_seconds = _bar_seconds(timestamps)
+        if n < _bars_for(self.HISTORY_SECONDS, bar_seconds):
             return None
 
         current_dt = _dt(timestamps[-1])
@@ -308,7 +367,8 @@ class WeekendVacuumReversion(Strategy):
         friday_idx = None
         sunday20_idx = None
         i = n - 1
-        while i >= 0 and i >= n - 24 * 4:
+        anchor_lookback = _bars_for(self.ANCHOR_LOOKBACK_SECONDS, bar_seconds)
+        while i >= 0 and i >= n - anchor_lookback:
             dt = _dt(timestamps[i])
             if sunday20_idx is None and dt.weekday() == 6 and dt.hour <= 20:
                 sunday20_idx = i
@@ -329,17 +389,18 @@ class WeekendVacuumReversion(Strategy):
 
         weekly_moves = []
         weekly_volumes = []
+        week_bars = _bars_for(self.WEEK_SECONDS, bar_seconds)
         cursor = friday_idx
         for _ in range(12):
-            f_idx = cursor - 168
+            f_idx = cursor - week_bars
             s_idx = f_idx + weekend_span
             if f_idx < 0 or s_idx >= n or s_idx <= f_idx or closes[f_idx] == 0:
-                cursor -= 168
+                cursor -= week_bars
                 continue
             move = abs((closes[s_idx] - closes[f_idx]) / closes[f_idx])
             weekly_moves.append(move)
             weekly_volumes.append(sum(volumes[f_idx:s_idx + 1]))
-            cursor -= 168
+            cursor -= week_bars
         if len(weekly_moves) < 4:
             return None
 

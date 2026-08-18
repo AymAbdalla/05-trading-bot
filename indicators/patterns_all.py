@@ -225,14 +225,27 @@ def mat_hold(opens, highs, lows, closes) -> Dict:
 
 
 def rising_three_methods(opens, highs, lows, closes) -> Dict:
-    """Strong green, 3 small reds within range, then green continuation."""
+    """Strong green, 3 small reds within range, then green continuation.
+
+    RETIRED by D-284. The detector stays because it is test data and a
+    cautionary record, but it is out of BULLISH_PATTERNS, so no strategy is
+    built from it and no future sweep writes a graveyard row for it. See
+    RETIRED_ENTRY_PATTERNS at the registry below for the full reasoning.
+    """
     r = _base_result()
     if len(closes) < 6: return r
     atr = latest_atr(highs, lows, closes, 14)
     if atr == 0: return r
     big_green = closes[-5] > opens[-5] and (highs[-5] - lows[-5]) > atr
+    # D-278 (Raven ruling, 2026-08-17): 0.7 -> 1.0. "Small" red candles were
+    # required to be under 0.7 ATR while the big green leg only had to exceed
+    # 1.0 ATR, so the pattern demanded a range CONTRACTION the textbook
+    # definition does not ask for and effectively never fired. 1.0 ATR reads
+    # the condition as written: the pullback candles are not larger than
+    # average range. Loosening a filter can only ADD signals, so convention 17
+    # applies to whatever comes back - firing is not edge.
     small_reds = all(closes[-4+i] < opens[-4+i] and
-                     (highs[-4+i] - lows[-4+i]) < atr * 0.7 for i in range(3))
+                     (highs[-4+i] - lows[-4+i]) < atr * 1.0 for i in range(3))
     within_range = all(highs[-4+i] < highs[-5] and lows[-4+i] > lows[-5] for i in range(3))
     continuation = closes[-1] > opens[-1] and closes[-1] > closes[-5]
     if big_green and small_reds and within_range and continuation and is_upswing(lows, atr):
@@ -618,6 +631,21 @@ def rickshaw_man(opens, highs, lows, closes) -> Dict:
 
 # ============ PATTERN REGISTRY ============
 
+# D-284 (Raven ruling, 2026-08-17): entry patterns whose detector is kept but
+# which are OUT of the active strategy set. Being in this set is the whole
+# mechanism - `strategies/builtin/expanded.py` builds one strategy per entry in
+# BULLISH_PATTERNS, so a name absent from that dict produces no strategy, and a
+# strategy that does not exist produces no graveyard row.
+#
+# `rising_three_methods`: D-278 loosened its binding `small_reds` clause from
+# 0.7 to 1.0 ATR, which unblocked that clause 8.6x (70 -> 600 hits), and the
+# pattern STILL fired zero times - `within_range` became binding at 1.03% of
+# bars and the two co-occur on 5 of 13,901 bars, none of which satisfy the
+# remaining clauses. That met D-278's stated kill condition. Its prior graveyard
+# rows are NOT_TESTED, never FAIL: it could never fire, so it was never tested
+# (convention 11).
+RETIRED_ENTRY_PATTERNS = frozenset({'rising_three_methods'})
+
 BULLISH_PATTERNS = {
     'bullish_engulfing': bullish_engulfing,
     'hammer': hammer,
@@ -630,7 +658,8 @@ BULLISH_PATTERNS = {
     'bullish_marubozu': bullish_marubozu,
     'bullish_abandoned_baby': bullish_abandoned_baby,
     'mat_hold': mat_hold,
-    'rising_three_methods': rising_three_methods,
+    # rising_three_methods RETIRED by D-284 - see RETIRED_ENTRY_PATTERNS above.
+    # The detector function is still defined and still importable.
     'upside_tasuki_gap': upside_tasuki_gap,
     # on_neck / in_neck REMOVED from the bullish entry registry: the canonical
     # on-neck/in-neck lines are BEARISH CONTINUATION patterns (a failed rally

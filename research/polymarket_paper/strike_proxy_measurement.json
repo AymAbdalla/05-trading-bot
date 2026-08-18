@@ -1,0 +1,93 @@
+{
+  "measured_at": "2026-08-18T02:21:33Z",
+  "symbol": "BTCUSDT",
+  "twap_lookback_sec": 60,
+  "configured_noise_floor_bps": 5.0,
+  "windows_requested": 200,
+  "windows_scored": 199,
+  "drops": {
+    "unresolved": 1
+  },
+  "headline_disagreement_pct": 15.1,
+  "buckets": [
+    {
+      "lo_bps": 0.0,
+      "hi_bps": 1.0,
+      "n": 45,
+      "disagreements": 19,
+      "rate_pct": 42.2
+    },
+    {
+      "lo_bps": 1.0,
+      "hi_bps": 2.0,
+      "n": 17,
+      "disagreements": 4,
+      "rate_pct": 23.5
+    },
+    {
+      "lo_bps": 2.0,
+      "hi_bps": 5.0,
+      "n": 59,
+      "disagreements": 4,
+      "rate_pct": 6.8
+    },
+    {
+      "lo_bps": 5.0,
+      "hi_bps": 10.0,
+      "n": 46,
+      "disagreements": 3,
+      "rate_pct": 6.5
+    },
+    {
+      "lo_bps": 10.0,
+      "hi_bps": null,
+      "n": 32,
+      "disagreements": 0,
+      "rate_pct": 0.0
+    }
+  ],
+  "cumulative": [
+    {
+      "threshold_bps": 1.0,
+      "n": 154,
+      "disagreements": 11,
+      "rate_pct": 7.1
+    },
+    {
+      "threshold_bps": 2.0,
+      "n": 137,
+      "disagreements": 7,
+      "rate_pct": 5.1
+    },
+    {
+      "threshold_bps": 3.0,
+      "n": 119,
+      "disagreements": 5,
+      "rate_pct": 4.2
+    },
+    {
+      "threshold_bps": 4.0,
+      "n": 100,
+      "disagreements": 4,
+      "rate_pct": 4.0
+    },
+    {
+      "threshold_bps": 5.0,
+      "n": 78,
+      "disagreements": 3,
+      "rate_pct": 3.8
+    },
+    {
+      "threshold_bps": 8.0,
+      "n": 47,
+      "disagreements": 1,
+      "rate_pct": 2.1
+    },
+    {
+      "threshold_bps": 10.0,
+      "n": 32,
+      "disagreements": 0,
+      "rate_pct": 0.0
+    }
+  ]
+}

@@ -10,6 +10,7 @@ related_graveyard_findings: "The forced-flow family has been tried twice. V2_liq
 kind: edge_hypothesis
 status: PROPOSED
 source: "moondevonyt liq_cascade_chaser, ported from Polymarket to spot"
+forge_warnings: "none"
 ---
 
 
