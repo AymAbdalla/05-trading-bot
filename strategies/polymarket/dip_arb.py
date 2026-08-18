@@ -111,6 +111,7 @@ from typing import Dict, List, Optional, Tuple
 
 from strategies.polymarket.base import (GENERAL_BINARY_MARKET_TYPES,
                                         MARKET_TYPE_CRYPTO_UPDOWN,
+                                        MARKET_TYPE_WEATHER,
                                         WINDOW_SECONDS, Decision, Leg,
                                         MarketContext, PolymarketStrategy,
                                         effective_ask_for,
@@ -531,7 +532,12 @@ class DipArb(PolymarketStrategy):
     #: five-minute window, and the two populations must be scored apart rather
     #: than pooled (convention 7, and the same no-pooling rule the module
     #: docstring already applies against the fair-value family).
-    supported_market_types = ((MARKET_TYPE_CRYPTO_UPDOWN,)
+    #:
+    #: WEATHER JOINED AT D-316, same argument as event/sports/political: a
+    #: weather market's token also lives for days, not one window, so the tape
+    #: is exactly as continuous there. Its own population, scored apart from
+    #: the other four - convention 7 again, one more time.
+    supported_market_types = ((MARKET_TYPE_CRYPTO_UPDOWN, MARKET_TYPE_WEATHER)
                               + GENERAL_BINARY_MARKET_TYPES)
 
     def __init__(self, dip_threshold: float = DIP_THRESHOLD,

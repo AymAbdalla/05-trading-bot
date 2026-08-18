@@ -326,8 +326,11 @@ def test_stale_reason_string_is_emitted_by_no_live_code_path():
     r = subprocess.run(
         ['grep', '-rIl', '--include=*.py', STALE_REASON, str(ROOT)],
         capture_output=True, text=True)
+    # `test_hypothesis_graph.py` widened in at D-316: it carries the literal as
+    # a SYNTHETIC fixture value exercising the graph parser, never as a reason
+    # a live gate emits (ruling: rename would churn the graph for no reason).
     allowed = {'snapshot_graveyard.py', 'archive_c2_stale_rows.py',
-               'test_judge.py', Path(__file__).name}
+               'test_judge.py', 'test_hypothesis_graph.py', Path(__file__).name}
     unexpected = [h for h in r.stdout.split() if Path(h).name not in allowed]
     assert not unexpected, (
         f'new reference to the stale reason string in: {unexpected}')

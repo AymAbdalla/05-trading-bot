@@ -1439,6 +1439,16 @@ class TestConfigWiring:
         config.yaml, or edit config.yaml thinking it is documentation, and
         this fails. Loosening a cap should be a decision with a D-number, not
         a diff nobody read.
+
+        The two daily-loss scalars are excluded from the equality loop and
+        checked separately below (D-316 ruling). config.yaml is the OVERRIDE,
+        not a duplicate of the module default: Aym's explicit, repeated ruling
+        is no portfolio-wide stop in shadow mode (blowup = log + restart +
+        Forge adjusts), so config.yaml ships them at 0.0 - which
+        `PolymarketRiskGate` already treats as "disabled" (`> 0` gates every
+        use of both fields). The module default of 30.0 stays as the LIVE-mode
+        fallback for a caller that builds a gate with no config at all; it is
+        not a claim that shadow runs with a cap.
         """
         with open(os.path.join(REPO_ROOT, 'config.yaml')) as fh:
             cfg = yaml.safe_load(fh)
@@ -1447,8 +1457,7 @@ class TestConfigWiring:
 
         scalars = ['notional_cap_usdc', 'max_total_exposure_usdc',
                    'max_concurrent_positions', 'max_positions_per_market_side',
-                   'max_positions_per_market', 'daily_loss_limit_usdc',
-                   'portfolio_daily_loss_limit_usdc',
+                   'max_positions_per_market',
                    'max_exposure_per_market_type_usdc',
                    'max_correlated_exposure_usdc', 'min_premium', 'max_premium',
                    'min_shares', 'kelly_fraction', 'sizing_mode',
@@ -1458,6 +1467,14 @@ class TestConfigWiring:
                 'config.yaml polymarket.risk.{} disagrees with the module '
                 'default'.format(name))
         assert from_yaml.market_type_exposure_overrides == {}
+
+        # config OVERRIDES the module default here by design (D-316): shadow
+        # mode ships no daily stop, so both scalars are 0.0 - the value
+        # `PolymarketRiskGate` reads as "no limit" - deliberately below the
+        # module's 30.0 live-mode fallback rather than equal to it.
+        assert from_yaml.daily_loss_limit_usdc == 0.0
+        assert from_yaml.portfolio_daily_loss_limit_usdc == 0.0
+        assert from_defaults.daily_loss_limit_usdc == DEFAULT_DAILY_LOSS_LIMIT_USDC
 
     def test_config_yaml_classification_tables_match_the_module(self):
         """YAML gives lists where the module gives tuples, so compare the

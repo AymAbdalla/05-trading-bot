@@ -2603,3 +2603,77 @@ referred to Aym: 025 because it is gated behind the signals-retention decision,
 **Where:** `strategies/polymarket/__init__.py`,
 `agents/forge_shadow_eval.py`, `tests/test_maker_fill_wiring.py`,
 `tests/test_weather_shadow_wiring.py`.
+
+### D-316. Full market-space redeclaration ruling: widen where the model is honestly market-agnostic, decline where it structurally is not; both permanently-red tests get a ruling (AYM, ratified by execution)
+
+**Decided:** 2026-08-18. Aym ruled "all of them" on the redeclaration question
+left open by D-312/D-313: every strategy should be checked against the general
+binary spaces (weather / event / sports / political) and widened wherever it
+can honestly evaluate one, declined wherever it structurally cannot. This entry
+records what that check actually found, strategy by strategy, so a future
+session does not have to re-derive it from twenty files.
+
+**Widened (D-316): `fair_value_arb` (and its four thin variants - `_wide`,
+`_patient`, `_hft`, `_inverse` - which inherit the class attribute) and
+`dip_arb`, both gained `MARKET_TYPE_WEATHER`.** They already declared crypto +
+event + sports + political from an earlier pass; weather was the one general
+space nobody had added, for no stated reason - not a deliberate exclusion, just
+an earlier pass that predates the weather space existing as a poll target.
+
+- `fair_value_arb`'s gate is `if not ctx.is_crypto_window: SKIP
+  fair_value_model_needs_crypto_spot` - one uniform "not crypto" check that
+  already covered weather along with the other three. The MODEL is a crypto
+  price model and will never fire on weather; the widening turns a silent
+  non-poll into a named, counted skip row, which is the same trade Forge
+  already gets from this family on event/sports/political.
+- `dip_arb` is different in kind, not degree: its own module docstring already
+  argues it is "genuinely market-agnostic" (it reads only `ctx.market`,
+  `ctx.books` and the clock; `CANDIDATE_SIDES` carries `Yes`/`No` alongside
+  `Up`/`Down` for exactly this reason). A weather market's token also lives for
+  days rather than one 5-minute window, so the mean-reversion tape is exactly
+  as continuous there as on an event or political market - this widening is
+  functional, not a symbolic uniform-skip like the fair-value family's.
+
+**Declined, checked and confirmed structural (no code change):**
+`streak_snapper`, `mid_price_continuation`, `box_builder`,
+`corridor_collector`, `temporal_arbitrage`, `corridor_pair_live`,
+`spread_harvest_maker`, `liq_cascade_chaser`, `small_liq_continuation`,
+`near_liq_trigger`, `grid_hedge`, `maker_rebate_corridor_quote_ladder`. Every
+one of these reads `ctx.spot`, `ctx.strike`, `ctx.windows`, `ctx.atr14`, a
+`market_15m` companion, or a liquidation feed keyed to the SAME crypto asset as
+the window - none of which exist on a general-binary or weather context. Some
+of these gates would not even crash if widened (several already return a safe,
+named SKIP on a missing clock or missing spot), but a strategy that would
+ALWAYS skip on every poll of every market in a space is not "declared the
+space where its inputs can exist" - it is a strategy declaring a space its
+inputs cannot exist in, which is exactly what "do not fake declarations" rules
+out. `maker_rebate_corridor_quote_ladder` (024) already carries its own
+docstring reasoning for staying crypto-only; the redeclaration task's premise
+that it "already declares broadly" was checked and found wrong - it declares
+`(MARKET_TYPE_CRYPTO_UPDOWN,)` only, and that is correct, not a gap.
+
+**No change:** `smart_money_copy` (already declares all six types, unaffected
+by this pass) and `weather_arb` (stays weather-only; its model is a
+temperature-and-METAR model with no honest reading on any other space).
+
+**The two permanently-red tests, ruled:**
+
+1. `test_polymarket_risk_gate.py::TestConfigWiring::test_config_yaml_matches_the_module_defaults` -
+   config's `daily_loss_limit_usdc` / `portfolio_daily_loss_limit_usdc` = 0.0
+   is CORRECT and authoritative: shadow mode ships with no daily or
+   portfolio-wide stop, by Aym's explicit repeated ruling (blowup = log,
+   restart, Forge adjusts - no config key introduces a limit). The test's
+   blanket equality-with-module-defaults loop was testing the wrong
+   relationship for these two fields: config is the OVERRIDE, not a mirror of
+   the module default, which stays 30.0 as the live-mode fallback for a caller
+   that builds a gate with no config at all. Fixed by excluding both scalars
+   from the loop and asserting the override relationship directly.
+2. `test_r007_r008_fixes.py::test_stale_reason_string_is_emitted_by_no_live_code_path` -
+   `tests/test_hypothesis_graph.py` added to the allowlist. It carries the
+   stale reason string as a SYNTHETIC fixture value exercising the graph
+   parser, never as a string a live gate emits. Widened, not renamed - renaming
+   the string would churn the hypothesis graph for no reason.
+
+**Where:** `strategies/polymarket/fair_value_arb.py`,
+`strategies/polymarket/dip_arb.py`, `tests/test_polymarket_risk_gate.py`,
+`tests/test_r007_r008_fixes.py`, `CLAUDE.md`.

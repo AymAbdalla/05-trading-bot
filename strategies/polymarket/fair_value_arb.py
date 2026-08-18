@@ -117,6 +117,7 @@ from engine.polymarket.fair_value import (DEFAULT_MODEL_UNCERTAINTY,
                                           estimate_fair_value)
 from strategies.polymarket.base import (GENERAL_BINARY_MARKET_TYPES,
                                         MARKET_TYPE_CRYPTO_UPDOWN,
+                                        MARKET_TYPE_WEATHER,
                                         WINDOW_SECONDS, Decision, Leg,
                                         MarketContext, PolymarketStrategy,
                                         effective_ask_for,
@@ -312,10 +313,14 @@ class FairValueArb(PolymarketStrategy):
     #: it holds to resolution, which is what every other strategy here does.
     manages_exits = True
 
-    #: CRYPTO PLUS EVERY GENERAL BINARY - and read the gate in `evaluate`
-    #: before reading this as "the fair value model works on a sports market".
-    #: It does not, and it is refused on the first line rather than allowed to
-    #: fail downstream.
+    #: CRYPTO PLUS EVERY GENERAL BINARY PLUS WEATHER (D-316) - and read the
+    #: gate in `evaluate` before reading this as "the fair value model works on
+    #: a sports market". It does not, and it is refused on the first line
+    #: rather than allowed to fail downstream. Weather joined the other three
+    #: at D-316 for the identical reason: the gate below is `not
+    #: ctx.is_crypto_window`, which already caught weather along with event,
+    #: sports and political - the declaration just did not say so. Widening it
+    #: costs nothing and turns a silent non-poll into a named, counted skip.
     #:
     #: The two are not in tension. This declaration is about ROUTING: the loop
     #: is allowed to hand this strategy an event, sports or political market
@@ -339,7 +344,7 @@ class FairValueArb(PolymarketStrategy):
     #: through, so the gate below reaches all five strategies from this one
     #: place (convention 23: a fix at one site is not a fix - unless the one
     #: site is the only site, which a test pins).
-    supported_market_types = ((MARKET_TYPE_CRYPTO_UPDOWN,)
+    supported_market_types = ((MARKET_TYPE_CRYPTO_UPDOWN, MARKET_TYPE_WEATHER)
                               + GENERAL_BINARY_MARKET_TYPES)
 
     def __init__(self, edge_threshold: float = EDGE_THRESHOLD,
