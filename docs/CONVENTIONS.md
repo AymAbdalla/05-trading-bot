@@ -73,6 +73,11 @@ and the wording of the conventions that have been contested.
     inside the window, the failure is a collision, not a bug. Tests that use
     `getsource` should assert over imported attributes, not source text,
     wherever the attribute carries the same information.
+30. **The shadow log is not the system of record for dispositions.** The
+    `signals` table is. The stats line (`shadow_loop.flush_stats`) logs the crypto
+    identity's counter only; space dispositions live in `space.counts` and the
+    DB. Grepping stdout for a space skip reason returns 0 by construction.
+    Query the DB before calling anything zero.
 
 ---
 
