@@ -17,11 +17,11 @@ forge_warnings: "Survivorship bias is the biggest trap in this source class: the
 
 A tail-risk SELLER, the inverse of everything in the registry.
 
-Every existing strategy buys cheap upside (streak, dip, corridor) — small premiums, high loss rate, hoping for the rare big winner. This strategy buys expensive safety: NO at 80-90c on stable political questions, collecting 10-25% when nothing changes, accepting that one tail event will eventually happen and cost the position.
+Every existing strategy buys cheap upside (streak, dip, corridor), paying small premiums at a high loss rate, hoping for the rare big winner. This strategy buys expensive safety: NO at 80-90c on stable political questions, collecting 10-25% when nothing changes, accepting that one tail event will eventually happen and cost the position.
 
 ## Why the reference wallet's play is a real pattern
 
-The Iran scale-up is the evidence: $1.5k at 50c, then $94k at 82c, then $106k at 89c — adding as the market drifted. The wallet did NOT chase above 90c, and it held to resolution (or sold into the final drift). And its one $93k loss came from betting the Supreme Leader would be gone by March 31 — the black-swan YES side — which it never did again. The rule set is learnable and testable.
+The Iran scale-up is the evidence: $1.5k at 50c, then $94k at 82c, then $106k at 89c, adding as the market drifted. The wallet did NOT chase above 90c, and it held to resolution (or sold into the final drift). And its one $93k loss came from taking the black-swan YES side, betting the Supreme Leader would be gone by March 31. It never did that again. The rule set is learnable and testable.
 
 ## The honest limits
 
