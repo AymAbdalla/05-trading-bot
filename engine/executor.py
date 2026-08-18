@@ -1,7 +1,7 @@
 """Execution layer (T9): consumes scanner signals, applies the risk gate,
 places paper orders, and runs the position-monitoring loop.
 
-This is the ONLY layer that can trade (SPEC 3.1). Responsibilities:
+This is the ONLY layer that can trade crypto (SPEC 3.1). Responsibilities:
 - Entry signals: stale-data check -> risk gate -> open position via the
   adapter -> mark the signal acted (db.mark_signal_acted). Blocked signals
   get their skip_reason recorded so the skipped-signal dataset stays honest.
@@ -15,9 +15,12 @@ This is the ONLY layer that can trade (SPEC 3.1). Responsibilities:
   `botctl resume`.
 
 The executor never computes signals and never bypasses the risk gate.
+
+HALT lives in `engine/halt.py`, not here. It is the same switch the Polymarket
+runner reads, and a kill switch with two definitions is a kill switch that can
+halt one asset class while the other keeps trading.
 """
 import logging
-import os
 import time
 import threading
 from queue import Empty, Queue
@@ -25,11 +28,13 @@ from typing import Optional
 
 from engine.db import (get_connection, insert_audit, mark_signal_acted,
                        update_signal_skip_reason)
+from engine.halt import HALT_FILE, is_halted, write_halt
 from engine.risk import RiskGate
 
 logger = logging.getLogger(__name__)
 
-HALT_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'HALT')
+# HALT_FILE is re-exported from engine.halt: existing callers and tests import
+# it from this module, and there is still exactly one definition.
 SNAPSHOT_INTERVAL_S = 15 * 60  # SPEC 7.1: 15-minute equity snapshot cadence
 
 
@@ -101,7 +106,8 @@ class Executor:
     # ---------- halt ----------
 
     def is_halted(self) -> bool:
-        return os.path.exists(HALT_FILE)
+        """Delegates to the shared definition (engine.halt.is_halted)."""
+        return is_halted()
 
     def _handle_halt(self):
         """While halted: keep closing any open positions (retry every step -
@@ -325,10 +331,10 @@ class Executor:
     def _trigger_auto_halt(self, reason: str):
         import json as _json
         import uuid as _uuid
-        halt_id = _uuid.uuid4().hex[:8]
-        with open(HALT_FILE, 'w') as f:
-            _json.dump({'halt_id': halt_id, 'ts': int(time.time() * 1000),
-                        'reason': f'auto: {reason}'}, f)
+        # Same HALT file every other path reads (engine.halt). Unconditional
+        # write: an ops backstop firing must leave a record even if a halt is
+        # already in place.
+        halt_id = write_halt(f'auto: {reason}')
         conn = get_connection()
         try:
             conn.execute(

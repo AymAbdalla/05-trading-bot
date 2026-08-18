@@ -109,6 +109,75 @@ paper:
   starting_equity: 2000.0
   currency: USDT
 
+# ---------------------------------------------------------------------------
+# POLYMARKET BINARY OUTCOME MARKETS (D-267)
+#
+# PAPER ONLY. There is no live execution path in engine/polymarket/, and
+# PolymarketRiskGate.check_order refuses any mode other than 'paper'.
+#
+# WHY THESE ARE HERE: every value below was a hardcoded DEFAULT_* constant in
+# engine/polymarket/risk_gate.py. Convention 17 - a hardcoded threshold is an
+# assumption with an expiry date - and an assumption nobody can see in the
+# config is one nobody reviews. Each key is set to the module's CURRENT
+# default, so adding this block changes no behaviour.
+# tests/test_polymarket_risk_gate.py asserts this block and the module
+# defaults still agree, so drift in either direction fails loudly.
+#
+# Deleting a key falls back to the DEFAULT_* constant in the module.
+#
+# EXPIRY on all of it: none of these numbers are derived from our own data.
+# D-268 says every Polymarket strategy is NOT_TESTED until the resolution-PnL
+# harness exists. Raise a cap only after a strategy clears the 30bps net kill
+# line, and record it as a decision with a D-number.
+# ---------------------------------------------------------------------------
+polymarket:
+  # -- paper adapter (engine/polymarket/paper_adapter.py) --
+  starting_equity_usdc: 2000.0   # simulated USDC bankroll; also Kelly's default bankroll
+  taker_fee_rate: 0.0            # Polymarket charges no CLOB taker fee TODAY. An assumption, not a law.
+  notional_cap_usdc: 10.0        # adapter's own per-order premium cap
+  max_concurrent_positions: 5    # adapter's own open-position cap
+  min_shares: 5                  # exchange minimum order size, in shares
+  price_tick: 0.01               # CLOB price increment
+
+  # -- risk gate (engine/polymarket/risk_gate.py) --
+  # On a binary the premium IS the risk: a share pays exactly $1.00 or exactly
+  # $0.00, so shares * premium is simultaneously the notional and the maximum
+  # loss. Every cap below is therefore USDC of premium at risk, never a stop
+  # distance - none of the crypto gate's stop-based checks transfer.
+  risk:
+    notional_cap_usdc: 10.0                 # max premium at risk on ONE trade
+    max_total_exposure_usdc: 100.0          # max premium at risk across ALL open positions (10x one trade)
+    max_concurrent_positions: 5             # max open Polymarket positions at once
+    max_positions_per_market_side: 1        # stops a strategy averaging into the same side of the same market
+    max_positions_per_market: 2             # 2 so a deliberate Up+Down hedge stays expressible; 1 would ban hedging
+    daily_loss_limit_usdc: 30.0             # realized resolution loss since UTC midnight that halts new entries (3x one trade)
+    max_exposure_per_market_type_usdc: 40.0 # max premium at risk in any one market type (btc_5m, btc_15m, event, ...)
+    market_type_exposure_overrides: {}      # per-type tighter caps, e.g. {event: 20.0}. Empty = the flat cap applies to all.
+    max_correlated_exposure_usdc: 50.0      # max premium across one correlated group in one direction (BTC 5m Up + BTC 15m Up are ONE bet)
+    min_premium: 0.01                       # below this a fill is noise, not a price
+    max_premium: 0.99                       # 0.99 has 1c of upside and 99c of downside; out until it has its own limits
+    min_shares: 5                           # exchange minimum; a budget that cannot buy it is unsizable, NOT a loss
+    sizing_mode: flat                       # flat = always the per-trade cap | kelly = fractional Kelly, hard caps still bind on top
+    kelly_fraction: 0.20                    # fraction of full Kelly when sizing_mode=kelly
+    bankroll_usdc: 2000.0                   # Kelly bankroll; falls back to starting_equity_usdc above when unset
+    taker_fee_rate: 0.0                     # falls back to the adapter's rate above when unset
+    # Slug substring -> market type. Longest pattern wins, so a longer, more
+    # specific pattern added later cannot be shadowed by a shorter one already
+    # in the table. Anything unmatched classifies as 'event' and is still capped.
+    market_type_patterns:
+      btc_5m:  [btc-updown-5m, bitcoin-up-or-down-5m]
+      btc_15m: [btc-updown-15m, bitcoin-up-or-down-15m]
+      btc_1h:  [btc-updown-1h, bitcoin-up-or-down-1h]
+      eth_5m:  [eth-updown-5m, ethereum-up-or-down-5m]
+      eth_15m: [eth-updown-15m, ethereum-up-or-down-15m]
+      sol_5m:  [sol-updown-5m, solana-up-or-down-5m]
+    # DECLARED correlation groups, never inferred from realized correlation.
+    # A market type in no group still binds, under 'ungrouped:<type>:<direction>'.
+    correlation_groups:
+      btc: [btc_5m, btc_15m, btc_1h]
+      eth: [eth_5m, eth_15m]
+      sol: [sol_5m]
+
 notion:
   trading_journal_db: ""     # Notion database ID (fill when created)
   daily_summary_db: ""       # Notion database ID (fill when created)

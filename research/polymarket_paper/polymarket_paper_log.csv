@@ -1,0 +1,9 @@
+ts,iso,strategy,market_slug,window_ts,action,reason,outcome_side,token_id,limit_price,requested_shares,filled_shares,avg_price,best_ask,slippage_vs_top,levels_consumed,exhausted_book,cost_usdc,fee_usdc,max_loss_usdc,max_gain_usdc,position_id,resolution,won,pnl_usdc,features
+1787010589,2026-08-17T23:49:49Z,PM_streak_snapper,btc-updown-5m-1787010300,,SKIP,insufficient_window_history,,,,,,,,,,,,,,,,,,,
+1787010589,2026-08-17T23:49:49Z,PM_mid_price_continuation,btc-updown-5m-1787010300,,SKIP,no_spot_or_strike,,,,,,,,,,,,,,,,,,,
+1787010589,2026-08-17T23:49:49Z,PM_box_builder,btc-updown-5m-1787010300,,SKIP,past_quote_window,,,,,,,,,,,,,,,,,,,
+1787010589,2026-08-17T23:49:49Z,PM_corridor_collector,btc-updown-5m-1787010300,,SKIP,no_lead_or_atr,,,,,,,,,,,,,,,,,,,
+1787010687,2026-08-17T23:51:27Z,PM_streak_snapper,btc-updown-5m-1787010600,,SKIP,insufficient_window_history,,,,,,,,,,,,,,,,,,,
+1787010687,2026-08-17T23:51:27Z,PM_mid_price_continuation,btc-updown-5m-1787010600,,SKIP,not_through_strike,,,,,,,,,,,,,,,,,,,
+1787010687,2026-08-17T23:51:27Z,PM_box_builder,btc-updown-5m-1787010600,,SKIP,book_too_tight_to_arm,,,,,,,,,,,,,,,,,,,
+1787010687,2026-08-17T23:51:27Z,PM_corridor_collector,btc-updown-5m-1787010600,,SKIP,lead_below_zone,,,,,,,,,,,,,,,,,,,

@@ -148,25 +148,45 @@ class RiskGate:
         ).fetchone()
         return row['equity'] if row else None
 
+    def _period_open_equity(self, conn: sqlite3.Connection,
+                            boundary_ms: int) -> Optional[float]:
+        """Equity at a period boundary, falling FORWARD when there is no carry-in.
+
+        This used to look backward only (`ts <= boundary`). On any period whose
+        first snapshot lands after the boundary - a fresh database, a restart
+        after downtime, the first day of a deployment - that returns None, and
+        `check_ops_backstops` then skips the stop entirely because it guards on
+        `is not None`. The backstop was silently absent on exactly the days it
+        was most likely to be needed, and nothing logged that it had not run.
+
+        Convention 11: "no carry-in row" is not "no drawdown". When nothing
+        exists at or before the boundary, the earliest snapshot AFTER it is the
+        best available open. Using it errs toward TRIPPING the backstop rather
+        than disabling it, which is the correct direction for a safety control.
+        """
+        row = conn.execute(
+            "SELECT equity FROM equity_snapshots WHERE ts <= ? ORDER BY ts DESC LIMIT 1",
+            (boundary_ms,)
+        ).fetchone()
+        if row is not None:
+            return row['equity']
+        row = conn.execute(
+            "SELECT equity FROM equity_snapshots WHERE ts > ? ORDER BY ts ASC LIMIT 1",
+            (boundary_ms,)
+        ).fetchone()
+        return row['equity'] if row else None
+
     def get_day_open_equity(self, conn: sqlite3.Connection) -> Optional[float]:
         """Get equity at UTC midnight (start of trading day)."""
         utc_now = int(time.time() * 1000)
         utc_midnight = utc_now - (utc_now % 86400000)
-        row = conn.execute(
-            "SELECT equity FROM equity_snapshots WHERE ts <= ? ORDER BY ts DESC LIMIT 1",
-            (utc_midnight,)
-        ).fetchone()
-        return row['equity'] if row else None
+        return self._period_open_equity(conn, utc_midnight)
 
     def get_week_open_equity(self, conn: sqlite3.Connection) -> Optional[float]:
         """Get equity at start of week (7 days ago)."""
         utc_now = int(time.time() * 1000)
         week_ago = utc_now - (7 * 86400000)
-        row = conn.execute(
-            "SELECT equity FROM equity_snapshots WHERE ts <= ? ORDER BY ts DESC LIMIT 1",
-            (week_ago,)
-        ).fetchone()
-        return row['equity'] if row else None
+        return self._period_open_equity(conn, week_ago)
 
     def check_ops_backstops(self, conn: sqlite3.Connection) -> Tuple[bool, str]:
         """Check daily and weekly ops backstops.

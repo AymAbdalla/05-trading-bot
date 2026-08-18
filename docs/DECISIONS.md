@@ -1,5 +1,76 @@
 # Decisions Log
 
+## v11 - 2026-08-17 (multi-asset scope expansion, Polymarket added)
+
+### D-267. SPEC expanded to multi-asset; Polymarket added as an asset class (AYM RULING)
+
+Aym, 2026-08-17: "we are no longer binance.us only or crypto only, we are
+making a trading bot! we need to add polymarkets in it."
+
+SPEC.md is expanded. The bot is a multi-asset trading engine. Crypto, equities,
+ETFs, futures, options, and prediction markets (Polymarket) are all in scope for
+backtest. Paper mode first, for every class, without exception. Recorded in
+SPEC.md Section 1 (scope expansion note) and Section 2.1 (Polymarket).
+
+Additive, not a replacement. Binance.US spot crypto is untouched and remains
+the reference execution path. No existing crypto strategy, graveyard entry, or
+verdict changes as a result of this decision.
+
+Three things this does NOT relax:
+- Long-only still binds SPOT execution. You cannot short spot without
+  borrowing. Short exposure comes from futures and options, as Section 2
+  already specified. Polymarket needs neither: buying the No side IS the short.
+- Paper mode first, always. No asset class goes live without Aym's explicit
+  approval, and every strategy passes the graveyard first.
+- moondevonyt's published win rates and EV figures are HIS numbers from HIS
+  logs on HIS setup. They are hypotheses, not evidence, until our graveyard
+  says otherwise (convention 3). We take his strategy logic and take no
+  dependency on his MoonDev API - liquidation and whale data come from public
+  Binance/Bybit/OKX and Hyperliquid endpoints directly.
+
+Polymarket specifics: binary outcome markets on Polygon, priced $0.00-$1.00,
+settled in USDC, winners redeem at $1.00 and losers at $0.00. Data from three
+public read-only zero-auth APIs (Gamma for discovery, CLOB for orderbooks and
+price history, Data API for trades and open interest). Paper execution is a
+simulated taker fill walked against the live CLOB book. Live execution would
+need the CLOB SDK V2 with wallet-based EIP-712 signing and is explicitly out of
+scope until paper mode proves a strategy through the graveyard AND Aym approves.
+
+**The measurement consequence, which is the part that actually costs work.**
+On Polymarket the price IS the market's probability estimate, so edge means a
+calibration disagreement, not a price forecast. PnL is resolution-based: you
+hold to settlement and collect $1.00 or $0.00. It is not path-based. Profit
+factor, stop distance, R-multiple, and MAE/MFE - which the entire existing gate
+stack is built on - do not transfer unmodified. Payoff is bounded both ways,
+which caps loss per contract at the premium paid but also caps upside, so being
+right 60% of the time at 55c is profitable and being right 60% of the time at
+65c is not. Entry price and win rate are meaningless read apart.
+
+Therefore: a Polymarket strategy is NOT durable until the harness extension
+(SPEC 2.1 / brief task 3D) exists to score it on resolution PnL. Until then a
+Polymarket strategy is code that has never been tested. Convention 11 -
+NOT_TESTED, never tested-and-found-nothing. See D-268.
+
+### D-268. Polymarket strategies ship as NOT_TESTED until the harness extension lands (CC)
+
+The four ported strategies (streak_snapper, mid_price_continuation, box_builder,
+corridor_collector) implement the base `Strategy` interface so the scanner can
+call them, and they are structurally honest about the binary payoff: entry is
+the per-share premium, stop is 0.00 (a losing share is worth zero - the true
+floor, and it satisfies convention 8's stop-strictly-below-entry), target is
+1.00 (resolution).
+
+That makes them interface-compatible. It does NOT make them harness-runnable.
+Feeding them to the existing vectorized harness would score a Polymarket
+contract's payoff against BTC's price path, which is a different instrument -
+the numbers would be fabricated, in the same way the pre-purge FUTURES rows
+were. They must not be swept until 3D exists.
+
+Recorded so a future session cannot mistake "the code is written" for "the
+strategy was tested." Kill condition for all four: if the resolution-PnL
+harness scores a strategy below 30bps net edge on our own data, it dies,
+whatever moondevonyt's logs say.
+
 ## v10 - 2026-08-14 (D-226 duplicate_strategies superseded)
 
 ### D-266. D-226 duplicate_strategies finding superseded by post-purge analysis (Raven)
