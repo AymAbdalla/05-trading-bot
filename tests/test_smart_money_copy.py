@@ -174,37 +174,65 @@ def test_the_module_imports_no_wallet_or_signer():
 class TestWalletResolution:
     """The load-bearing accounting in this file. See the module docstring."""
 
-    def test_every_shipped_wallet_is_unresolved(self):
-        # If this ever fails because somebody filled an address in, that is
-        # good news, but the module docstring's "cannot enter" claim needs
-        # updating with it.
-        assert all(v is None for v in TRACKED_WALLETS.values())
+    def test_every_shipped_wallet_is_a_full_address(self):
+        # Resolved 2026-08-18. Provenance for every one of these:
+        # research/polymarket_wallets.md. This asserts SHAPE only. A well-formed
+        # address is not a correct address, and no test in this file can tell
+        # the difference - that check is the round trip in the research log,
+        # re-run by a human against the live API (convention 17).
         assert len(TRACKED_WALLETS) == 7
+        for handle, address in TRACKED_WALLETS.items():
+            assert is_full_address(address), handle
+
+    def test_the_seven_handles_did_not_move(self):
+        # The handle set is the input to the research log. If a handle is
+        # renamed here, its row in that log stops describing this table.
+        assert set(TRACKED_WALLETS) == {
+            'bonereaper', '0x50f7', 'boneohio', 'coinfilippe', '0xaaaaa',
+            'doggystyie', 'Sharky6999'}
+
+    def test_no_two_handles_share_an_address(self):
+        # A copy-paste in the table would double-weight one wallet's trade and
+        # look in a log like two whales agreeing.
+        addresses = [str(a).lower() for a in TRACKED_WALLETS.values()]
+        assert len(set(addresses)) == len(addresses)
 
     def test_the_census_balances_on_the_shipped_list(self):
         resolved, statuses, counts = resolve_tracked_wallets()
         assert sum(counts.values()) == len(TRACKED_WALLETS)
         assert len(statuses) == len(TRACKED_WALLETS)
-        assert resolved == {}
+        assert resolved == {h: a for h, a in TRACKED_WALLETS.items()}
 
     def test_prefix_only_and_no_address_are_never_pooled(self):
+        # The map is empty since 2026-08-18: `0x50f7` and `0xaaaaa` turned out
+        # to be chosen usernames, not truncated addresses (research log
+        # section 6). The bucket stays because the census is generic, so what
+        # is asserted here is that an EMPTY bucket still balances rather than
+        # quietly absorbing the resolved rows.
         _resolved, statuses, counts = resolve_tracked_wallets()
-        # The two entries that are address PREFIXES land in their own bucket.
         for handle in TRACKED_WALLET_PREFIXES:
             assert statuses[handle] == UNRESOLVED_PREFIX_ONLY
         assert counts[UNRESOLVED_PREFIX_ONLY] == len(TRACKED_WALLET_PREFIXES)
-        assert counts[UNRESOLVED_NO_ADDRESS] == \
-            len(TRACKED_WALLETS) - len(TRACKED_WALLET_PREFIXES)
-        assert counts[RESOLVED] == 0
+        assert counts[UNRESOLVED_PREFIX_ONLY] == 0
+        assert counts[UNRESOLVED_NO_ADDRESS] == 0
+        assert counts[RESOLVED] == len(TRACKED_WALLETS)
 
     def test_a_full_address_resolves_and_a_prefix_does_not(self):
+        # The prefix bucket is now driven by what is in the ADDRESS SLOT, not
+        # by the shape of the handle: TRACKED_WALLET_PREFIXES is empty, so a
+        # handle that merely LOOKS like hex and carries no address is
+        # `no_address` like any other unresolved name. That is the correct
+        # reading - `0x50f7` is a username (research log section 6) - and it
+        # keeps the two buckets meaning "we have some hex" vs "we have a name".
         resolved, statuses, counts = resolve_tracked_wallets(
-            {'good': ADDR_A, 'named': None, '0x50f7': None})
+            {'good': ADDR_A, 'named': None, '0x50f7': None,
+             'truncated': '0xdeadbeef'})
         assert resolved == {'good': ADDR_A}
         assert statuses['good'] == RESOLVED
         assert statuses['named'] == UNRESOLVED_NO_ADDRESS
-        assert statuses['0x50f7'] == UNRESOLVED_PREFIX_ONLY
-        assert sum(counts.values()) == 3
+        assert statuses['0x50f7'] == UNRESOLVED_NO_ADDRESS
+        assert statuses['truncated'] == UNRESOLVED_PREFIX_ONLY
+        assert sum(counts.values()) == 4
 
     def test_a_short_hex_string_in_the_address_slot_is_a_prefix_not_an_address(
             self):
@@ -543,12 +571,22 @@ class TestEntry:
 class TestSkipReasons:
     """One context per gate. A pooled reason is a missing number."""
 
-    def test_the_shipped_wallet_list_cannot_enter(self):
-        # The honest shipped state. NOT_TESTED, not tested-and-found-nothing.
+    def test_the_shipped_wallet_list_now_clears_the_address_gate(self):
+        # The honest shipped state as of 2026-08-18. All 7 addresses resolve,
+        # so `wallet_address_unresolved` is no longer reachable from the
+        # shipped list and the SKIP has MOVED to a later gate. This pins the
+        # move: if a future edit blanks the table, this test fails rather than
+        # the strategy quietly going back to skipping at gate 2.
         d = SmartMoneyCopy(trade_feed=StubTradeFeed()).evaluate(_ctx())
         assert d.action == 'SKIP'
-        assert d.reason == 'wallet_address_unresolved'
-        assert len(d.features['unresolved_handles']) == len(TRACKED_WALLETS)
+        assert d.reason != 'wallet_address_unresolved'
+        assert d.features['wallets_resolved'] == len(TRACKED_WALLETS)
+        assert d.features['wallets_unresolved_prefix_only'] == 0
+        assert d.features['wallets_unresolved_no_address'] == 0
+        # All 7 were actually QUERIED, which is the thing that could not happen
+        # before: the address gate returned before any feed call.
+        assert d.features['wallets_queried'] == len(TRACKED_WALLETS)
+        assert set(d.features['wallet_statuses'].values()) == {RESOLVED}
 
     def test_no_market(self):
         d = _strategy(StubTradeFeed()).evaluate(_ctx(market=False))

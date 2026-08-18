@@ -59,3 +59,10 @@ trading_bot.db
 research/cloddsbot/
 research/mrfadiai-polymarket-bot/
 research/polymarket_lp_tool/
+
+# Fetched open-meteo / METAR history for
+# backtest/measure_daily_extreme_calibration.py. ~15MB of raw API
+# responses, regenerable by re-running the harness. The FIT it
+# produces (research/weather_sigma_calibration.json) is tracked; the
+# bytes it was fitted from are not.
+backtest/data/weather_calibration_cache/

@@ -543,6 +543,456 @@ def search_event_markets(client: PolymarketClient,
     return result['markets']
 
 
+# -- category discovery: sports and politics ---------------------------------
+#
+# WHY THIS DOES NOT REUSE `search_event_markets(tag=...)`.
+#
+# Measured live 2026-08-18 against `https://gamma-api.polymarket.com`:
+#
+#   /markets?tag=sports  &limit=3&order=volumeNum&ascending=false&active=true
+#   /markets?tag=politics&limit=3&...
+#   /markets?tag=nfl     &limit=3&...
+#   /markets?tag=nba     &limit=3&...
+#   /markets            (no tag) &limit=3&...
+#
+# returned the SAME three rows every time: "Will Adanech Abiebie be the next
+# Prime Minister of Ethiopia?", "Will Jesus Christ return before 2027?", "Will
+# the U.S. invade Iran before 2027?". Gamma accepts `tag` on `/markets` with
+# HTTP 200 and IGNORES it. That is the `order=volume` failure mode again in a
+# different parameter: the request succeeds, the page looks like a filtered
+# result, and it is the unfiltered global top-of-book. A sports scanner built on
+# `/markets?tag=nfl` would return an Ethiopian election market and nobody would
+# see anything wrong.
+#
+# `/events?tag_slug=` DOES filter. Same day, `tag_slug=nba` -> "Will LeBron
+# James retire before next NBA season?", `tag_slug=nfl` -> "Tush Push banned for
+# 2026 NFL Season?", `tag_slug=fed` -> "How many Fed rate cuts in 2026?". This
+# is the same route `strategies/polymarket/weather_arb.find_weather_markets`
+# already uses, and for the same reason. It is not imported from there because
+# `engine` must not depend on `strategies`.
+#
+# THE `/events` ROUTE TAKES NO USABLE ORDER PARAMETER. `order=volumeNum` on
+# `/events` returns HTTP 422 (measured; `volumeNum` is a `/markets` column,
+# not an `/events` one) and `order=volume` returns 200 with the lexicographic
+# text sort documented on `VOLUME_ORDER_FIELD`. So these functions send NO
+# order at all and sort locally on a list already in hand, which is the same
+# call `rank_weather_markets` makes.
+#
+# SERVER-SIDE VOLUME FILTERING DOES NOT WORK EITHER. `volume_num_min=10000` and
+# `volume_min=10000` on `/events?tag_slug=soccer` both returned the identical
+# 2,100 events as the unfiltered query. Ignored, like `tag`. The floor is
+# applied locally.
+
+GAMMA_EVENTS_PATH = '/events'
+
+#: Gamma refuses `/events` past this offset. Measured 2026-08-18:
+#: `tag_slug=soccer&limit=100&offset=2000` -> 100 rows, `offset=2100` -> HTTP
+#: 422. So 2,100 rows is the whole reachable universe for ONE tag, whatever the
+#: tag actually contains, and soccer is genuinely at that ceiling today.
+#:
+#: This is a hard API cap, not our budget. It matters because the 422 arrives
+#: through `client.gamma` as a plain `None`, which is indistinguishable from an
+#: outage. We therefore never ASK past the cap: paging stops with
+#: `pagination_capped=True`, a counted fact, instead of a `read_failed` that
+#: would misreport a known ceiling as a network problem (convention 11).
+GAMMA_EVENTS_OFFSET_CAP = 2100
+
+#: 21 pages of 100 is exactly `GAMMA_EVENTS_OFFSET_CAP`. Raising this alone
+#: buys nothing; the cap is upstream.
+DEFAULT_MAX_PAGES_PER_TAG = GAMMA_EVENTS_OFFSET_CAP // GAMMA_PAGE_SIZE
+
+#: The sort these functions actually perform, as a label for `order_field`.
+#:
+#: DERIVED from `VOLUME_ORDER_FIELD`, not written out, so there is one
+#: definition of which column "by volume" means (convention 23) and no second
+#: order string in this module that a later edit could drift.
+#:
+#: The `local:` prefix is load-bearing. These functions sort LOCALLY and cannot
+#: do otherwise: `/events?order=volumeNum` is HTTP 422 (`volumeNum` is a
+#: `/markets` column) and `/events?order=volume` is the lexicographic text
+#: sort. Reporting a bare `'volumeNum'` would tell a reader the server sorted
+#: this page, and if Gamma's sort ever broke again the reader would be looking
+#: at the wrong component. The value sorted on is `Market.volume`, which
+#: `market_from_gamma_checked` has already parsed to a float, so the comparison
+#: is numeric - it is `volumeNum` semantics reached by a different route, not
+#: the text sort under another name.
+LOCAL_VOLUME_ORDER = 'local:{}_desc'.format(VOLUME_ORDER_FIELD)
+
+#: Tag slugs for `search_sports_markets`. Every one was confirmed to return a
+#: non-empty first page on 2026-08-18, with the live event count at
+#: `limit=100`: nfl 100, nba 21, mlb 100, nhl 4, soccer 100, tennis 100,
+#: esports 100, cs2 40, counter-strike 1, dota-2 37, league-of-legends 100.
+#:
+#: `csgo` is NOT here. It is a real slug that Gamma accepts and it returns 0
+#: events - the game is CS2 now and the old tag is dead. Listing a dead tag
+#: would spend a request per scan to learn nothing, and would let "CS:GO is
+#: covered" be true of the code and false of the data. CS:GO coverage is
+#: `cs2` plus `counter-strike` (convention 22).
+#:
+#: The tags OVERLAP heavily - `esports` is close to a superset of `cs2`,
+#: `dota-2` and `league-of-legends`. That is deliberate: the narrow tags catch
+#: anything the broad one has not been tagged with, and every repeat is counted
+#: under `duplicate_across_tags` rather than silently collapsed.
+SPORTS_TAG_SLUGS = (
+    'nfl', 'nba', 'mlb', 'nhl', 'soccer', 'tennis',
+    'esports', 'cs2', 'counter-strike', 'dota-2', 'league-of-legends',
+)
+
+#: Tag slugs for `search_political_markets`. Live event counts at `limit=100`
+#: on 2026-08-18: politics 100, us-politics 3, elections 100, world-elections
+#: 33, geopolitics 100, trump 100, congress 39, supreme-court 7, courts 18,
+#: fed 24, fed-rates 23, monetary-policy 3, inflation 28, gdp 18, economy 100.
+#:
+#: `policy`, `uk-politics` and `national-security` are accepted by Gamma and
+#: return 0 events. Excluded for the same reason as `csgo`. "Policy" markets on
+#: Polymarket live under `politics`, `congress` and `economy`, not under a
+#: `policy` tag; the tag exists and is empty.
+POLITICAL_TAG_SLUGS = (
+    'politics', 'us-politics', 'elections', 'world-elections', 'geopolitics',
+    'trump', 'congress', 'supreme-court', 'courts',
+    'fed', 'fed-rates', 'monetary-policy', 'inflation', 'gdp', 'economy',
+)
+
+DEFAULT_CATEGORY_MARKET_LIMIT = DEFAULT_EVENT_MARKET_LIMIT
+
+#: Every reason a raw row from the tag route does not become a returned market.
+#: Parse reasons are inherited from `market_from_gamma_checked` rather than
+#: restated (convention 23). No two causes share a counter and no cause has two
+#: counters (convention 20): a non-dict market row is counted as `not_a_dict`
+#: by the parser, not re-counted under a second name here.
+CATEGORY_MARKET_DROP_REASONS = MARKET_DROP_REASONS + (
+    'event_not_a_dict',
+    'duplicate_across_tags',
+    'inactive',
+    'closed',
+    'not_accepting_orders',
+    'volume_unreadable',
+    'volume_below_floor',
+    'over_limit',
+)
+
+#: Statuses `_gamma_events_page` can report instead of a page.
+EVENTS_PAGE_STATUSES = ('ok', 'read_failed', 'unexpected_shape')
+
+
+def _gamma_events_page(client: PolymarketClient, tag_slug: str, offset: int,
+                       limit: int) -> Tuple[Optional[List], str]:
+    """One page of `/events` for a tag. `(events, status)`.
+
+    Status is one of EVENTS_PAGE_STATUSES. `read_failed` and
+    `unexpected_shape` are kept apart because one is an outage and the other is
+    Gamma changing its response envelope, and the fix for each is different.
+
+    No `order` is sent. See the section header: `/events` answers 422 for
+    `volumeNum` and text-sorts `volume`.
+    """
+    payload = client.gamma(GAMMA_EVENTS_PATH, {
+        'tag_slug': tag_slug,
+        'limit': int(limit),
+        'offset': int(offset),
+        'active': 'true',
+        'closed': 'false',
+        'archived': 'false',
+    })
+    if payload is None:
+        return None, 'read_failed'
+    if isinstance(payload, list):
+        return payload, 'ok'
+    if isinstance(payload, dict):
+        events = payload.get('events')
+        if events is None:
+            events = payload.get('data')
+        if isinstance(events, list):
+            return events, 'ok'
+    return None, 'unexpected_shape'
+
+
+def _market_key(market: Market) -> str:
+    """Identity used to dedupe one market seen under several tags.
+
+    `condition_id` first: it is the on-chain identifier and two Gamma rows with
+    the same `conditionId` are the same tradeable market whatever their row ids
+    say. Falls back to `id` then `slug`, and finally to the object's own
+    identity so a row with none of the three is never merged into another one.
+    """
+    return (market.condition_id or market.id or market.slug
+            or 'obj:{}'.format(id(market)))
+
+
+def _search_tagged_markets_checked(client: PolymarketClient,
+                                   tags: Tuple[str, ...],
+                                   category: str,
+                                   limit: int,
+                                   min_volume_usdc: float,
+                                   max_pages_per_tag: int) -> Dict[str, object]:
+    """Shared body of `search_sports_markets` and `search_political_markets`.
+
+    One implementation, two tag lists (convention 23). A bug fixed in the
+    sports scanner that did not reach the political one would be exactly the
+    "a fix at one site is not a fix" failure.
+
+    Filter order is chosen for ATTRIBUTION, not for the outcome. A market that
+    is both a duplicate and below the floor is counted once, as a duplicate,
+    because the first thing wrong with the second copy of a market is that it
+    is the second copy. Deduping BEFORE the volume gates also keeps
+    `volume_below_floor` a count of distinct markets rather than of sightings.
+    """
+    floor = float(min_volume_usdc)
+    tags = tuple(tags)
+    base: Dict[str, object] = {
+        'category': category,
+        'tags_searched': list(tags),
+        'order_field': LOCAL_VOLUME_ORDER,
+        'min_volume_usdc': floor,
+    }
+
+    drops: Counter = Counter()
+    read_failures: Counter = Counter()
+    #: The markets that cleared every gate, keyed for dedupe.
+    seen: Dict[str, Market] = {}
+    #: Every DISTINCT market key parsed, whether or not it cleared the gates.
+    #:
+    #: Separate from `seen` on purpose. Deduping against the ACCEPTED map only
+    #: would let a market that was dropped for low volume under tag A be
+    #: evaluated again under tag B and dropped a second time, so
+    #: `volume_below_floor` would count copies rather than markets and
+    #: `duplicate_across_tags` would never fire for it. Attribution rule
+    #: (convention 20): the first thing wrong with the second copy of a market
+    #: is that it is the second copy.
+    seen_keys: set = set()
+    raw_count = 0
+    pages = 0
+    any_ok = False
+    pagination_capped = False
+
+    page_cap = min(int(max_pages_per_tag),
+                   GAMMA_EVENTS_OFFSET_CAP // GAMMA_PAGE_SIZE)
+
+    for tag_slug in tags:
+        for page in range(max(0, page_cap)):
+            offset = page * GAMMA_PAGE_SIZE
+            events, status = _gamma_events_page(client, tag_slug, offset,
+                                                GAMMA_PAGE_SIZE)
+            if events is None:
+                read_failures[status] += 1
+                break
+            any_ok = True
+            pages += 1
+
+            for event in events:
+                if not isinstance(event, dict):
+                    raw_count += 1
+                    drops['event_not_a_dict'] += 1
+                    continue
+                for raw in event.get('markets') or ():
+                    raw_count += 1
+                    market, reason = market_from_gamma_checked(raw)
+                    if market is None:
+                        drops[reason] += 1
+                        continue
+                    key = _market_key(market)
+                    if key in seen_keys:
+                        drops['duplicate_across_tags'] += 1
+                        continue
+                    # Recorded BEFORE the quality gates, so every distinct
+                    # market is judged exactly once and each drop counter
+                    # counts markets rather than copies.
+                    seen_keys.add(key)
+                    if not market.active:
+                        drops['inactive'] += 1
+                        continue
+                    if market.closed:
+                        drops['closed'] += 1
+                        continue
+                    if raw.get('acceptingOrders') is False:
+                        # Listed and open but the book is switched off. Not the
+                        # same fact as closed, and not tradeable either.
+                        drops['not_accepting_orders'] += 1
+                        continue
+                    if market.volume is None:
+                        # Cannot measure, not measured-and-too-small.
+                        drops['volume_unreadable'] += 1
+                        continue
+                    if market.volume <= floor:
+                        drops['volume_below_floor'] += 1
+                        continue
+                    seen[key] = market
+
+            if len(events) < GAMMA_PAGE_SIZE:
+                break
+        else:
+            # Ran the full page budget without a short page: there may be more
+            # behind the cap and we stopped, which is not the same as
+            # exhausting the tag.
+            pagination_capped = True
+
+    if not any_ok:
+        # Every page of every tag failed. An empty list here says nothing about
+        # the world (convention 11).
+        return dict(base, ok=False, markets=[], summaries=[], raw_count=0,
+                    returned=0, dropped=0, drops={}, pages=0, truncated=False,
+                    pagination_capped=False,
+                    read_failures=dict(read_failures), reason='read_failed')
+
+    # Local sort, descending. `None` volumes cannot reach here - they were
+    # dropped as `volume_unreadable` - so the key is total.
+    ranked = sorted(seen.values(), key=lambda m: -float(m.volume))
+
+    cap = max(0, int(limit))
+    out = ranked[:cap]
+    over = len(ranked) - len(out)
+    if over > 0:
+        drops['over_limit'] += over
+
+    dropped = sum(drops.values())
+    if len(out) + dropped != raw_count:
+        raise AssertionError(
+            '{} market accounting does not balance: {} returned + {} dropped '
+            '!= {} fetched'.format(category, len(out), dropped, raw_count))
+
+    return dict(base, ok=True, markets=out,
+                summaries=[event_market_summary(m) for m in out],
+                raw_count=raw_count, returned=len(out), dropped=dropped,
+                drops=dict(drops), pages=pages,
+                truncated=bool(over), pagination_capped=pagination_capped,
+                read_failures=dict(read_failures),
+                reason=None if out else 'no_{}_market'.format(category))
+
+
+def search_sports_markets_checked(
+        client: PolymarketClient,
+        limit: int = DEFAULT_CATEGORY_MARKET_LIMIT,
+        min_volume_usdc: float = DEFAULT_MIN_EVENT_VOLUME_USDC,
+        tags: Tuple[str, ...] = SPORTS_TAG_SLUGS,
+        max_pages_per_tag: int = DEFAULT_MAX_PAGES_PER_TAG
+        ) -> Dict[str, object]:
+    """Active, liquid sports markets, with every exclusion counted by cause.
+
+    Covers NFL, NBA, MLB, NHL, soccer, tennis and esports (CS2/CS:GO, Dota 2,
+    League of Legends) via `SPORTS_TAG_SLUGS`.
+
+    Returns `{'ok', 'markets', 'summaries', 'raw_count', 'returned', 'dropped',
+    'drops', 'order_field', 'min_volume_usdc', 'category', 'tags_searched',
+    'pages', 'truncated', 'pagination_capped', 'read_failures', 'reason'}`.
+
+    Three outcomes that must never be pooled (convention 11):
+
+        ok=False, reason='read_failed'       every page of every tag failed.
+                                             NOT a result and NOT an empty
+                                             market list.
+        ok=True,  reason='no_sports_market'  Gamma answered and nothing
+                                             cleared the floor.
+        ok=True,  reason=None                markets found.
+
+    A partial outage is a FOURTH thing and it is `ok=True` with a non-empty
+    `read_failures`: some tags answered and some did not, so the list is real
+    but incomplete. Pooling that into `ok=False` would throw away tags that
+    worked; pooling it into a clean `ok=True` would hide that it is short.
+
+    VOLUME FLOOR: `min_volume_usdc` defaults to
+    `DEFAULT_MIN_EVENT_VOLUME_USDC` ($10,000) and is STRICTLY exceeded - a
+    market at exactly $10,000.00 is dropped. Same constant as
+    `search_event_markets` on purpose, so a market's admission does not depend
+    on which scanner found it. Convention 17: this is an assumption with an
+    expiry date, not a measurement.
+
+    ORDERING IS LOCAL, descending on `market.volume`, and `order_field` says
+    so. Unlike `search_event_markets` this does NOT rely on Gamma's sort,
+    because the `/events` route has none that works. See the section header.
+    """
+    return _search_tagged_markets_checked(
+        client, tags, 'sports', limit, min_volume_usdc, max_pages_per_tag)
+
+
+def search_sports_markets(
+        client: PolymarketClient,
+        limit: int = DEFAULT_CATEGORY_MARKET_LIMIT,
+        min_volume_usdc: float = DEFAULT_MIN_EVENT_VOLUME_USDC,
+        tags: Tuple[str, ...] = SPORTS_TAG_SLUGS,
+        max_pages_per_tag: int = DEFAULT_MAX_PAGES_PER_TAG) -> List[Market]:
+    """Active sports markets over the volume floor, highest volume first.
+
+    The plain variant. A failed read logs and returns `[]`, exactly as
+    `search_event_markets` does; a caller that needs to tell an outage from a
+    genuinely empty result must use `search_sports_markets_checked`. A PARTIAL
+    outage also logs, because a short list that looks complete is the failure
+    mode this whole module is written against.
+    """
+    result = search_sports_markets_checked(client, limit, min_volume_usdc,
+                                           tags, max_pages_per_tag)
+    return _log_category_result('search_sports_markets', result)
+
+
+def search_political_markets_checked(
+        client: PolymarketClient,
+        limit: int = DEFAULT_CATEGORY_MARKET_LIMIT,
+        min_volume_usdc: float = DEFAULT_MIN_EVENT_VOLUME_USDC,
+        tags: Tuple[str, ...] = POLITICAL_TAG_SLUGS,
+        max_pages_per_tag: int = DEFAULT_MAX_PAGES_PER_TAG
+        ) -> Dict[str, object]:
+    """Active, liquid politics markets, with every exclusion counted by cause.
+
+    Covers elections (US and world), geopolitics, Congress and the courts, and
+    the macro-policy family - Fed rate decisions, monetary policy, inflation
+    and GDP - via `POLITICAL_TAG_SLUGS`.
+
+    Same result shape, same three-way `ok`/`reason` contract and same partial
+    outage rule as `search_sports_markets_checked`; `reason` is
+    `'no_political_market'` when Gamma answered and nothing cleared the floor.
+
+    VOLUME FLOOR: `$10,000`, strictly exceeded, the SAME
+    `DEFAULT_MIN_EVENT_VOLUME_USDC` the sports and event scanners use. The
+    threshold is deliberately not tuned per category. A per-category floor
+    would mean "this market is big enough" had a different meaning depending on
+    which function returned it, and any later comparison of sports against
+    politics would then be comparing two different populations while looking
+    like one query. One floor, one meaning, and it moves for all three at once
+    or not at all. $10,000 itself is inherited, not measured here - convention
+    17 applies and it has an expiry date.
+
+    ORDERING IS LOCAL, descending on `market.volume`. See the section header
+    for why `/events` cannot be asked to sort.
+    """
+    return _search_tagged_markets_checked(
+        client, tags, 'political', limit, min_volume_usdc, max_pages_per_tag)
+
+
+def search_political_markets(
+        client: PolymarketClient,
+        limit: int = DEFAULT_CATEGORY_MARKET_LIMIT,
+        min_volume_usdc: float = DEFAULT_MIN_EVENT_VOLUME_USDC,
+        tags: Tuple[str, ...] = POLITICAL_TAG_SLUGS,
+        max_pages_per_tag: int = DEFAULT_MAX_PAGES_PER_TAG) -> List[Market]:
+    """Active politics markets over the volume floor, highest volume first.
+
+    The plain variant. Same logging and same `[]`-on-failure contract as
+    `search_sports_markets`.
+    """
+    result = search_political_markets_checked(client, limit, min_volume_usdc,
+                                              tags, max_pages_per_tag)
+    return _log_category_result('search_political_markets', result)
+
+
+def _log_category_result(name: str, result: Dict[str, object]) -> List[Market]:
+    """Log what the plain variants throw away, then return the market list."""
+    if not result['ok']:
+        logger.warning('%s read FAILED (empty list is NOT the answer): %s',
+                       name, result['read_failures'])
+        return result['markets']
+    if result['read_failures']:
+        logger.warning('%s is INCOMPLETE: %s tag pages failed (%s). The list '
+                       'is real but short.', name,
+                       sum(result['read_failures'].values()),
+                       result['read_failures'])
+    if result['pagination_capped']:
+        logger.warning('%s hit the page cap on at least one tag; there may be '
+                       'markets it never asked for', name)
+    if result['drops']:
+        logger.info('%s dropped %d of %d rows: %s', name, result['dropped'],
+                    result['raw_count'], result['drops'])
+    return result['markets']
+
+
 # -- Crypto Up/Down 5-minute helpers -----------------------------------------
 
 def current_window_ts(now: Optional[float] = None,

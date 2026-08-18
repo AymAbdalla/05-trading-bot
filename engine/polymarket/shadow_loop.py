@@ -118,10 +118,17 @@ declined" (convention 11):
   PM_corridor_collector      CANNOT, same missing strike: no strike means no
                              `lead_bps`. Skips `no_lead_or_atr` forever. The
                              ATR half of that gate IS supplied.
-  PM_box_builder             CANNOT. It is a MAKER strategy and returns QUOTE,
-                             never ENTER. The adapter simulates taker fills
-                             only, so its resting fills cannot be modelled
-                             honestly. Counted as `maker_quote_not_simulable`.
+  PM_box_builder             CAN fill, since 2026-08-18, and it still never
+                             ENTERS. It is a MAKER strategy and returns QUOTE;
+                             this loop now RESTS those legs
+                             (`_attempt_maker_quotes`) and a later snapshot that
+                             crosses STRICTLY through the quoted price fills
+                             them (`observe_maker_orders`). The evaluation is
+                             counted `maker_quote_rested`, which is a SKIP - a
+                             rest is not a fill. The fill lands in
+                             `maker_counts`, outside the identity. The old
+                             single bucket `maker_quote_not_simulable` is gone;
+                             it pooled eight distinct causes.
 
   PM_fair_value_arb_wide     CAN fire, all four. ONE hypothesis tested four
   PM_fair_value_arb_patient  ways, not four hypotheses - see the package
@@ -148,19 +155,22 @@ declined" (convention 11):
                              win-rate gate refuses `wallet_record_unmeasured`.
                              Both are NOT_TESTED (convention 11), not
                              tested-and-found-nothing.
-  PM_grid_hedge              CANNOT, by construction, exactly like box_builder.
-                             It is a MAKER strategy and returns QUOTE, never
-                             ENTER; counted `maker_quote_not_simulable`. A
-                             module-level `assert_not_enter` RAISES on an ENTER,
-                             so the refusal is a WIRING TEST and not a docstring
-                             claim (convention 22). Its kill condition is
-                             currently UNMEASURABLE, because maker fills are not
-                             modelled anywhere in this package. It also declares
+  PM_grid_hedge              CAN fill, exactly like box_builder and by the same
+                             route. It is a MAKER strategy and returns QUOTE,
+                             never ENTER, and a module-level `assert_not_enter`
+                             RAISES on an ENTER, so that half is a WIRING TEST
+                             and not a docstring claim (convention 22). Its kill
+                             condition needs 50 grid FILLS and is still
+                             unmeasured: a fill MODEL existing is not 50 fills
+                             (convention 11). Its ladder is up to 10 rungs and
+                             the maker budget is 2, so most rungs are refused
+                             `maker_rest_budget_exhausted` - a counted, named
+                             refusal, not a silent drop. It also declares
                              `needs_strike = True`, so with no strike it is
                              stopped by the strike gate FIRST and reports
-                             `no_spot_or_strike` rather than the maker refusal -
-                             two independent blocks, and which one you see is
-                             the ordering, not a change of cause.
+                             `no_spot_or_strike` rather than anything maker-
+                             shaped - two independent blocks, and which one you
+                             see is the ordering, not a change of cause.
   PM_weather_arb             CAN fire in principle, and that is the strongest
                              thing that can honestly be said. Its station table
                              is an unverified ASSUMPTION and its sigma model was
@@ -221,6 +231,38 @@ A HALT does not block exits. See the paper adapter's module docstring for what
 that does and does not change about the halt's contract - the short version is
 that a halt still blocks entries only, and flattening is now a policy choice
 rather than a structural impossibility.
+
+## The maker path, and the one thing that makes it possible
+
+A QUOTE decision is rested, not filled. `_attempt_maker_quotes` calls
+`PolymarketPaperAdapter.simulate_maker_buy`, which returns a `RestingOrder` and
+opens nothing. `observe_maker_orders` runs at the top of every cycle and hands
+that cycle's books to every order still on the book; only a snapshot showing
+size resting STRICTLY BELOW our bid fills us, and only for whatever got past the
+queue that was ahead of us at rest time.
+
+**The order survives the cycle because the ADAPTER does.** `self.adapter` is
+built once in `__init__` and `adapter.resting_orders` is a dict on it, so an
+order placed in cycle N is still there in cycle N+1. That is the whole reason a
+maker fill is representable here at all, and it is why `observe_maker_orders`
+must stay in `run_cycle`: without it, orders would rest forever, never fill,
+never expire, and the two maker strategies would report activity and no results.
+
+Three counter spaces, three different facts, and none of them pooled:
+
+    counts          the EVALUATION's disposition. `maker_quote_rested` is a
+                    SKIP: at decision time nothing has been bought.
+    maker_counts    what happened to RESTING ORDERS. `fill:*`, `expire:*`,
+                    `cancel:*`, plus `observed` and `still_resting`. Outside
+                    the identity - a resting order is not a window.
+    health          our own wiring faults (`maker_leg_no_book`,
+                    `maker_adapter_refusals`, `maker_partial_quotes`).
+
+**The honest limitation, stated so nobody has to rediscover it.** We have no
+trade prints, only book snapshots ~5 seconds apart. A fill that happened and
+reversed between two polls is invisible and is scored as a no-fill. The model is
+therefore PESSIMISTIC, which is the right direction to be wrong in for a
+strategy whose entire claimed edge is "our resting order got hit".
 
 ## `timings` holds SECONDS and is outside the identity, permanently
 
@@ -308,13 +350,23 @@ from engine.polymarket.markets import (current_window_ts,
                                        get_btc_updown_5m_checked,
                                        get_market_by_slug_checked,
                                        get_updown_5m_checked,
+                                       search_event_markets_checked,
+                                       search_political_markets_checked,
+                                       search_sports_markets_checked,
                                        updown_15m_slug)
 from engine.polymarket.orderbook import orderbook_from_api
-from engine.polymarket.paper_adapter import PolymarketPaperAdapter
+from engine.polymarket.paper_adapter import (MAKER_FILL_MODEL, ORDER_EXPIRED,
+                                             PolymarketPaperAdapter)
 from engine.polymarket.risk_gate import PolymarketRiskGate
 from engine.polymarket.types import WINNING_REDEMPTION
 from strategies.polymarket import build_strategies
-from strategies.polymarket.base import MarketContext, window_atr
+from strategies.polymarket.base import (MARKET_TYPE_CRYPTO_UPDOWN,
+                                        MARKET_TYPE_EVENT,
+                                        MARKET_TYPE_POLITICAL,
+                                        MARKET_TYPE_SPORTS,
+                                        MARKET_TYPE_WEATHER, MarketContext,
+                                        window_atr)
+from strategies.polymarket.weather_arb import set_weather_config
 
 logger = logging.getLogger(__name__)
 
@@ -334,6 +386,106 @@ DEFAULT_EQUITY_SNAPSHOT_SEC = 300.0     # every 5 minutes
 DEFAULT_RESOLVE_SEC = 60.0
 DEFAULT_STATS_FLUSH_SEC = 60.0
 DEFAULT_CANDLE_REFRESH_SEC = 60.0
+
+#: How often the WEATHER cycle runs: discovery, then one decision per selected
+#: temperature market. 60 seconds, and it is deliberately 12x the crypto poll.
+#:
+#: The binding constraint is upstream, not us. A METAR station issues an
+#: observation about every 30 minutes and open-meteo refreshes its blended model
+#: roughly hourly, so polling a temperature market every 5 seconds would re-ask
+#: the same two questions 720 times per new answer. The books do move faster
+#: than that, but this strategy holds to resolution on a market that settles at
+#: the end of a calendar day: a fill one minute later is not a different trade.
+DEFAULT_WEATHER_CYCLE_SEC = 60.0
+
+#: How many temperature markets get an orderbook read per weather cycle.
+#:
+#: MEASURED, not guessed. Live 2026-08-18, discovery returned 1,090 markets of
+#: which 1,034 carried a readable station, a parseable threshold and a daily
+#: extreme. Two book reads each would be 2,068 CLOB requests per cycle; at a
+#: 60-second cadence that is 34 req/s against a 7,200-per-10s budget, so it
+#: would not breach the limiter - but it would spend the entire poll on rungs of
+#: the same few ladders, since one city's ladder is eleven markets standing on
+#: one station and one forecast.
+#:
+#: 8 is 16 book reads per minute. `rank_weather_markets` orders by volume AFTER
+#: filtering, so the budget lands on the deepest books rather than on whichever
+#: page Gamma returned first. Convention 17: an assumption with an expiry date.
+#: Raise it against a measured request count, never because it felt small.
+DEFAULT_WEATHER_MARKET_LIMIT = 8
+
+#: Cap on how many discovered markets are even considered for ranking. Purely a
+#: runaway guard on a pure-string filter that costs no network; the live board
+#: is about 1,090 and this is not expected to bind.
+DEFAULT_WEATHER_DISCOVERY_LIMIT = 1500
+
+# -- the GENERAL BINARY market spaces: event, sports, political (D-313) -------
+#
+# Same shape as the weather cycle and for the same reason: a universe whose size
+# is a property of the BOARD rather than of our configuration cannot live inside
+# the crypto cycle's fixed rectangle without destroying the identity that
+# catches a dropped decision. So each gets its own counters, its own evaluation
+# total, its own identity check and its own cadence.
+#
+# What is NOT duplicated is the code. `run_space_cycle` is one implementation
+# driven by a `MarketSpace` record; event, sports and political differ only in
+# their discovery query. Convention 23 - three copies of a cycle is three places
+# for the accounting to drift, and the weather cycle already showed how much
+# accounting a cycle carries.
+
+#: How often each general-binary space runs. 60s, matching weather rather than
+#: the 5s crypto poll.
+#:
+#: The justification is NOT the same as weather's, so it is not shared with it.
+#: Weather is slow because its INPUTS are slow (a METAR every 30 minutes). These
+#: books move continuously. The reason here is cost and honesty about what we
+#: can act on: an event or sports market resolves in hours or days, so a fill one
+#: minute later is the same trade, and polling three universes at 5s would
+#: triple our Gamma request rate to chase a difference no strategy here can use.
+#: Convention 17: an assumption with an expiry date. The measurement that would
+#: move it is the realised slippage between the price at decision time and the
+#: price one cycle later.
+DEFAULT_SPACE_CYCLE_SEC = 60.0
+
+#: How many markets per space get an orderbook read per cycle. Two book reads
+#: each, so 6 spaces x 6 markets x 2 = at most 72 CLOB reads a minute, which is
+#: 1.2/s against a 7,200-per-10s budget.
+DEFAULT_SPACE_MARKET_LIMIT = 6
+
+#: How many rows Gamma is asked for per space before filtering. Gamma caps a
+#: page at 100.
+DEFAULT_SPACE_DISCOVERY_LIMIT = 100
+
+#: Dollar volume a market must EXCEED to be polled. Raven's task file specifies
+#: ">$10K volume" for sports; applied to all three spaces for consistency, and
+#: it is the same floor `search_event_markets` already defaults to.
+DEFAULT_SPACE_MIN_VOLUME_USDC = 10000.0
+
+#: Disposition strings for a space cycle. One per cause, never pooled
+#: (convention 20). Deliberately parameterised by space name rather than shared,
+#: so "sports discovery failed" and "political discovery failed" are two facts.
+SPACE_DISCOVERY_FAILED = 'discovery_read_failed'
+SPACE_NO_MARKET_LISTED = 'no_market_listed'
+SPACE_NONE_POLLABLE = 'no_pollable_market'
+SPACE_NO_BOOK = 'no_orderbook'
+SPACE_CYCLE_EXCEPTION = 'cycle_exception'
+SPACE_DISABLED = 'disabled'
+SPACE_NO_STRATEGY = 'no_strategy_supports_this_market_type'
+
+#: The reasons above, as they appear in the counters: `{space}_{reason}`.
+SPACE_STATUSES = (SPACE_DISCOVERY_FAILED, SPACE_NO_MARKET_LISTED,
+                  SPACE_NONE_POLLABLE, SPACE_NO_BOOK, SPACE_CYCLE_EXCEPTION,
+                  SPACE_DISABLED, SPACE_NO_STRATEGY)
+
+
+def space_status(space_name: str, status: str) -> str:
+    """`('sports', 'no_orderbook')` -> `'sports_no_orderbook'`.
+
+    Namespaced so two spaces failing for the same reason are two counters. A
+    shared `no_orderbook` bucket across sports and political would answer "which
+    universe has no books" with a single number that describes neither.
+    """
+    return '{}_{}'.format(space_name, status)
 
 #: Width of the per-cycle fetch executor. THREADS, not asyncio: `client.py` is
 #: synchronous `requests`, and converting it to aiohttp would be a rewrite of
@@ -382,7 +534,6 @@ SKIP_NO_MARKET = 'no_market'
 SKIP_API_ERROR = 'api_error'
 SKIP_NO_LIQUIDITY = 'no_liquidity'
 SKIP_HALTED = 'halted'
-SKIP_MAKER = 'maker_quote_not_simulable'
 SKIP_CYCLE_EXCEPTION = 'cycle_exception'
 SKIP_NO_LEGS = 'enter_without_legs'
 SKIP_UNKNOWN_TOKEN = 'unknown_outcome_token'
@@ -393,6 +544,65 @@ SKIP_UNKNOWN_TOKEN = 'unknown_outcome_token'
 # one is a result. A strategy skipped for this reason has NOT been tested on
 # that window (convention 11).
 SKIP_PROXY_NOISE = 'strike_inside_proxy_noise_floor'
+
+#: -- the MAKER path's dispositions ------------------------------------------
+#:
+#: `maker_quote_not_simulable` is GONE. It was the short-circuit: every QUOTE
+#: decision was counted under it and the legs were thrown away, so both maker
+#: strategies produced one number forever and that number described this loop,
+#: not them. `simulate_maker_buy` has existed in the paper adapter since
+#: 2026-08-18 and nothing called it. Now this loop does.
+#:
+#: A QUOTE is still NEVER an entry. Resting is not filling: `_attempt_maker_quotes`
+#: rests the legs and the evaluation is counted as one of the reasons below,
+#: while the FILL (if any) happens one or more cycles later in
+#: `observe_maker_orders` and lands in `maker_counts`, outside the identity.
+#:
+#: Every one of these is a DISTINCT drop cause and none of them shares a
+#: counter with another (convention 20). In particular `maker_halted` is not
+#: `halted`: the kill switch refuses a taker ENTRY, and on this path it both
+#: refuses the rest AND cancels the buys already resting, which is a different
+#: observable consequence and needs its own number.
+SKIP_MAKER_RESTED = 'maker_quote_rested'
+SKIP_MAKER_HALTED = 'maker_halted'
+SKIP_MAKER_NO_LEGS = 'maker_quote_without_legs'
+SKIP_MAKER_ALREADY_RESTING = 'maker_quote_already_resting'
+SKIP_MAKER_BUDGET = 'maker_rest_budget_exhausted'
+#: The adapter's own refusal taxonomy, carried verbatim behind this prefix so
+#: our counters report the adapter's reason rather than our guess at it. It is
+#: a SEPARATE prefix from `adapter:` (the taker path) on purpose: a maker refused
+#: for `maker_would_cross_book` and a taker refused for `over_notional_cap` are
+#: not the same finding and pooling them under one prefix would hide which path
+#: is being refused.
+MAKER_ADAPTER_PREFIX = 'maker_adapter:'
+
+#: How many of `max_concurrent_positions` the maker strategies may hold at once.
+#:
+#: This is not decoration. The adapter's `committed_slots()` counts resting BUYS
+#: against the SAME cap as open positions, by design (a resting bid is a position
+#: the moment it is crossed into). `PM_box_builder` quotes two legs per asset and
+#: `PM_grid_hedge` up to ten, on three assets, every 5-7 seconds - so without a
+#: budget the first cycle that quotes fills all 5 slots and every one of the 17
+#: taker strategies is refused `max_concurrent_positions` for the rest of the
+#: session. Wiring the maker path on must not silently turn the taker path off.
+DEFAULT_MAX_RESTING_MAKER_ORDERS = 2
+
+#: The WEATHER cycle's own cycle-level dispositions. Named here for the same
+#: reason the ones above are: a typo becomes a NameError rather than a new
+#: bucket that silently splits one count into two.
+#:
+#: These live in `weather_counts`, never in `counts`. Convention 20 is the whole
+#: point of the split: "Gamma was unreachable", "Gamma answered and listed no
+#: temperature markets", "we found markets but none was worth a book read" and
+#: "we read the book and nobody is quoting" are four different facts, and the
+#: first three used to be indistinguishable because the weather cycle did not
+#: exist and `PM_weather_arb` was simply handed a BTC window instead.
+WX_DISCOVERY_FAILED = 'weather_discovery_read_failed'
+WX_NO_MARKET_LISTED = 'weather_no_market_listed'
+WX_NONE_POLLABLE = 'weather_no_pollable_market'
+WX_NO_BOOK = 'weather_no_orderbook'
+WX_CYCLE_EXCEPTION = 'weather_cycle_exception'
+WX_DISABLED = 'weather_disabled'
 
 #: A fetch thread RAISED. This is a fault in our own code, not a fact about the
 #: venue, and it must never merge with `api_error` ("we reached the venue and
@@ -510,12 +720,29 @@ class ShadowStore:
         return signal_id
 
     def record_entry(self, position, *, signal_id: str, limit_price: float,
-                     strategy_id: str) -> None:
+                     strategy_id: str, stop_px: Optional[float] = None) -> None:
         """orders + fills + positions for one simulated fill, in ONE transaction.
 
         A fill row whose order row is missing is a reconciliation problem
         invented by our own bookkeeping, and the dashboard joins fills to orders
         to derive fees.
+
+        `stop_px` is the DISCRETIONARY stop the strategy will manage this
+        position against, or None for a strategy that holds to resolution.
+
+        This column used to be hardcoded to 0.00 for every Polymarket row, on
+        the reasoning that a losing binary share is worth exactly 0.00 and that
+        IS the structural stop. True, and it made the column useless: the
+        2026-08-18 fair-value post-mortem could not answer "what stop did this
+        family run" from the trade rows at all, because 616 closed trades all
+        read `stop_px` 0.00 / `target_px` 1.00 while their exit reasons read
+        `sell:price_stop`. Two different stops - a resolution floor and a
+        discretionary exit level - shared one column and the discretionary one
+        was the one that was never written (convention 20).
+
+        None still writes 0.00, which is correct and now means what it says:
+        this position has no discretionary stop and only resolution can close
+        it at a loss.
         """
         order_id = str(uuid.uuid4())
         fill_id = str(uuid.uuid4())
@@ -541,10 +768,13 @@ class ShadowStore:
                 (position.position_id, position.market_slug, strategy_id,
                  signal_id, ts_ms, None, position.avg_price, None,
                  position.shares,
-                 # A losing binary share is worth exactly 0.00 and that IS the
-                 # stop (convention 8: strictly below any valid entry). The
-                 # target is resolution at 1.00. Neither is a modelling choice.
-                 0.0, WINNING_REDEMPTION,
+                 # The discretionary stop when the strategy has one, else 0.00
+                 # - a losing binary share is worth exactly 0.00 and that IS
+                 # the structural stop (convention 8: strictly below any valid
+                 # entry). The target stays resolution at 1.00: no strategy
+                 # here quotes a fixed target price, they exit on a rule.
+                 (0.0 if stop_px is None else float(stop_px)),
+                 WINNING_REDEMPTION,
                  None, None, position.fee_usdc, None, None, MODE))
 
     def record_resolution(self, position) -> None:
@@ -744,6 +974,78 @@ class AssetRuntime:
 
 
 # ---------------------------------------------------------------------------
+# Per-space runtime state (event, sports, political)
+# ---------------------------------------------------------------------------
+
+class MarketSpace:
+    """One non-crypto market universe polled on its own clock.
+
+    The crypto side is a fixed rectangle: three assets, one market each, known
+    before the poll. A space is not - its size is whatever Gamma returned this
+    minute. So a space owns the same five things the weather cycle had to grow
+    (poll list, counters, evaluation total, health, discovery record) and gets
+    the same treatment: its own identity check, and NOTHING of it inside the
+    crypto identity.
+
+    `strategies` is the routing result, not a hand-maintained list. It is the
+    subset of the registry that DECLARED this space's `market_type`, computed
+    once in the constructor. The weather cycle's predecessor selected on a
+    boolean `needs_weather_market` flag, which worked for one universe and does
+    not generalise: a flag per universe is a flag somebody has to remember to
+    add, and the failure mode is a strategy that is silently never polled.
+
+    These are DEDICATED instances, never the ones on `AssetRuntime`. The
+    argument is `AssetRuntime`'s own, one level up: strategy instances carry
+    per-market tape and per-window counters, and feeding one instance a BTC
+    window and an NFL market would interleave two observation streams into a
+    series neither of them saw.
+    """
+
+    __slots__ = ('name', 'market_type', 'strategies', 'query', 'cycle_sec',
+                 'market_limit', 'discovery_limit', 'min_volume_usdc',
+                 'enabled', 'counts', 'evaluations', 'cycles', 'health',
+                 'discovery', 'markets', 'identity_violations',
+                 'last_cycle', 'last_discovery')
+
+    def __init__(self, name: str, market_type: str, strategies, query: dict,
+                 cycle_sec: float = DEFAULT_SPACE_CYCLE_SEC,
+                 market_limit: int = DEFAULT_SPACE_MARKET_LIMIT,
+                 discovery_limit: int = DEFAULT_SPACE_DISCOVERY_LIMIT,
+                 min_volume_usdc: float = DEFAULT_SPACE_MIN_VOLUME_USDC,
+                 enabled: bool = True):
+        self.name = str(name)
+        self.market_type = str(market_type)
+        self.strategies = list(strategies)
+        #: `{'tag': ..., 'keywords': (...)}`. `tag` is handed to Gamma;
+        #: `keywords` filter the returned questions locally. Both are recorded
+        #: on every discovery result so a poll list can be explained rather
+        #: than inferred.
+        self.query = dict(query)
+        self.cycle_sec = float(cycle_sec)
+        self.market_limit = max(0, int(market_limit))
+        self.discovery_limit = max(1, int(discovery_limit))
+        self.min_volume_usdc = float(min_volume_usdc)
+        self.enabled = bool(enabled)
+        self.counts: Counter = Counter()
+        self.evaluations = 0
+        self.cycles = 0
+        self.identity_violations = 0
+        self.health: Counter = Counter()
+        self.discovery: Dict[str, object] = {}
+        self.markets: List = []
+        self.last_cycle = 0.0
+        self.last_discovery = 0.0
+
+    def status(self, reason: str) -> str:
+        """This space's namespaced form of a SPACE_* disposition."""
+        return space_status(self.name, reason)
+
+    @property
+    def strategy_names(self) -> List[str]:
+        return [getattr(s, 'strategy_name', str(s)) for s in self.strategies]
+
+
+# ---------------------------------------------------------------------------
 # The loop
 # ---------------------------------------------------------------------------
 
@@ -768,7 +1070,19 @@ class PolymarketShadowLoop:
                  candle_source_factory=None,
                  parallel_fetches: bool = True,
                  fetch_workers: int = DEFAULT_FETCH_WORKERS,
-                 spot_cache_ttl_sec: float = DEFAULT_SPOT_CACHE_TTL_SEC):
+                 spot_cache_ttl_sec: float = DEFAULT_SPOT_CACHE_TTL_SEC,
+                 weather_cycle_sec: float = DEFAULT_WEATHER_CYCLE_SEC,
+                 weather_market_limit: int = DEFAULT_WEATHER_MARKET_LIMIT,
+                 weather_discovery_limit: int =
+                 DEFAULT_WEATHER_DISCOVERY_LIMIT,
+                 enable_weather: bool = True,
+                 weather_strategies: Optional[Sequence] = None,
+                 space_cycle_sec: float = DEFAULT_SPACE_CYCLE_SEC,
+                 space_market_limit: int = DEFAULT_SPACE_MARKET_LIMIT,
+                 space_discovery_limit: int = DEFAULT_SPACE_DISCOVERY_LIMIT,
+                 space_min_volume_usdc: float = DEFAULT_SPACE_MIN_VOLUME_USDC,
+                 enable_spaces: bool = True,
+                 spaces: Optional[Sequence] = None):
         if PAPER_MODE is not True:
             raise RuntimeError(
                 'PAPER_MODE is not True. This loop has no live execution path; '
@@ -811,12 +1125,54 @@ class PolymarketShadowLoop:
         self.candle_source = candle_source
         self.candle_source_factory = candle_source_factory
 
+        # -- ROUTING (D-312). The crypto cycle gets the subset of the registry
+        # that DECLARED `crypto_updown`, not the whole registry.
+        #
+        # This changes the identity's denominator and that is the point. Before
+        # D-312 `PM_weather_arb` ran inside the crypto cycle on every asset,
+        # every 5-second poll, and returned `not_a_temperature_market` every
+        # time. The old comment below called that "what keeps the crypto
+        # identity's denominator at 19 x 3", which is true and is an argument
+        # for a WRONG denominator: it was writing three rows a poll - roughly
+        # 52,000 a day - into a `signals` table that already has an open
+        # retention question, to record 52,000 times that a Bitcoin market is
+        # not a temperature market. A denominator held constant by evaluating
+        # strategies against universes they cannot trade is not an accounting
+        # win, it is noise with an identity check on top.
+        #
+        # `evaluations_per_cycle` is computed from the LISTS, never written
+        # down, so the identity follows the routing automatically.
+        def _registry():
+            return list(strategies) if strategies is not None \
+                else build_strategies()
+
+        #: Everything the registry offers, before routing. Kept so `stats()`
+        #: can report what was routed OUT of each space and why - a strategy
+        #: that is silently in no space at all is the failure this records.
+        self._registry_names = [getattr(s, 'strategy_name', str(s))
+                                for s in _registry()]
+
+        def _supporting(pool, market_type: str) -> list:
+            """The members of `pool` that declared `market_type`.
+
+            Defaults to crypto-only for anything with no declaration at all, so
+            a strategy from outside this package - or one written before D-312 -
+            keeps its exact previous routing rather than silently joining every
+            universe.
+            """
+            out = []
+            for s in pool:
+                declared = getattr(s, 'supported_market_types',
+                                   (MARKET_TYPE_CRYPTO_UPDOWN,))
+                if market_type in declared:
+                    out.append(s)
+            return out
+
         self.runtimes: Dict[str, AssetRuntime] = {}
         for key in self.assets:
             self.runtimes[key] = AssetRuntime(
                 asset=key,
-                strategies=(list(strategies) if strategies is not None
-                            else build_strategies()),
+                strategies=_supporting(_registry(), MARKET_TYPE_CRYPTO_UPDOWN),
                 # An INJECTED proxy or candle source applies to every asset:
                 # that is what a test wants when it hands over one offline stub.
                 # The DEFAULTS are built per asset, because a default that
@@ -853,6 +1209,12 @@ class PolymarketShadowLoop:
         self.stats_flush_sec = float(stats_flush_sec)
         self.candle_refresh_sec = float(candle_refresh_sec)
         self.include_15m = bool(include_15m)
+        # See DEFAULT_MAX_RESTING_MAKER_ORDERS. Read off the SAME `pm` block the
+        # adapter reads its own caps from, so the two cannot be configured
+        # against each other from two different places.
+        self.max_resting_maker_orders = max(0, int(
+            pm.get('max_resting_maker_orders',
+                   DEFAULT_MAX_RESTING_MAKER_ORDERS)))
         # The strike Gamma does not publish, served as a MEASURED proxy.
         # Injectable for the same reason `candle_source` is: a default that
         # reaches the network turns every unit test into a live API call, and a
@@ -878,6 +1240,13 @@ class PolymarketShadowLoop:
         # evaluation of a window. Its own categorised taxonomy - see the module
         # docstring's exit-management section.
         self.exit_counts: Counter = Counter()
+        # Ditto, fourth space: what happened to RESTING ORDERS this cycle. A
+        # resting order is looked at on every cycle and usually nothing happens
+        # to it, so these are not evaluations and folding them into `counts`
+        # would break the identity with thousands of no-ops. Keys are
+        # `observed`, `still_resting`, `fill:*`, `expire:*` and `cancel:*`, and
+        # the terminal reasons are the ADAPTER's own strings, never re-worded.
+        self.maker_counts: Counter = Counter()
         # Ditto again, and the most important of the three: `timings` holds
         # SECONDS, not events. Separate from `health` so that nothing summing
         # counter values can pull a duration into a count, and outside the
@@ -950,6 +1319,108 @@ class PolymarketShadowLoop:
         self.health['exit_no_fair_value_protocol'] = len(
             self.exit_no_fair_value_protocol)
 
+        # -- the WEATHER cycle. A second, slower cycle over a completely
+        # different market universe, with its own counters, its own identity and
+        # its own cadence.
+        #
+        # WHY IT IS NOT PART OF `run_cycle`. The crypto cycle's identity is
+        # `evaluations == cycles * strategies * assets`: a fixed rectangle, one
+        # market per (cycle, asset), known before the poll starts. The weather
+        # universe is 1,090 markets that change through the day, of which a
+        # volume-ranked handful are polled, and the count per cycle is whatever
+        # discovery returned. Folding that into the rectangle would make the
+        # rectangle stop being a rectangle, and the identity is the only thing
+        # that catches a silently dropped decision (convention 20). So the two
+        # spaces are separate and BOTH are checked.
+        #
+        # `PM_weather_arb` NO LONGER runs inside the crypto cycle (D-312). It
+        # used to, and the reason given was that it kept the crypto identity's
+        # denominator at 19 x 3 - see the routing block above for why that was
+        # an argument for the wrong denominator. It is now selected into the
+        # weather space by DECLARATION (`supported_market_types`) rather than by
+        # the `needs_weather_market` boolean, which does not generalise past one
+        # universe. The flag is still read as a fallback so an injected stub
+        # that predates D-312 keeps working.
+        self.enable_weather = bool(enable_weather)
+        self.weather_cycle_sec = float(weather_cycle_sec)
+        self.weather_market_limit = max(0, int(weather_market_limit))
+        self.weather_discovery_limit = max(1, int(weather_discovery_limit))
+        # DEDICATED instances, not the ones on `runtimes`. Those are being fed
+        # crypto windows; these are being fed temperature markets, and a shared
+        # instance would merge two feed-cache streams and two health counters
+        # into one that describes neither (the same argument `AssetRuntime`
+        # makes for per-asset strategy instances).
+        if weather_strategies is not None:
+            self.weather_strategies = list(weather_strategies)
+        else:
+            self.weather_strategies = [
+                s for s in _registry()
+                if MARKET_TYPE_WEATHER in getattr(s, 'supported_market_types',
+                                                  ())
+                or getattr(s, 'needs_weather_market', False)]
+        #: OUTSIDE the crypto identity, and with an identity of its own:
+        #: `weather_evaluations == entry + every skip`. See `_count`.
+        self.weather_counts: Counter = Counter()
+        self.weather_evaluations = 0
+        self.weather_cycles = 0
+        self.weather_identity_violations = 0
+        #: Health, not dispositions. Discovery outcomes and book-read outcomes
+        #: live here for the same reason `health` exists on the crypto side: a
+        #: failed discovery is a fact about the venue, not a decision about a
+        #: market.
+        self.weather_health: Counter = Counter()
+        #: The last discovery result, verbatim, so an operator can see WHY the
+        #: poll list is what it is rather than inferring it from an empty list.
+        self.weather_discovery: Dict[str, object] = {}
+        self.weather_markets: List = []
+        self._last_weather_cycle = 0.0
+        self._last_weather_discovery = 0.0
+
+        # -- the general binary spaces (D-313) -----------------------------
+        #
+        # Selected by DECLARATION, exactly as the weather space is. A strategy
+        # joins `sports` by putting MARKET_TYPE_SPORTS in its
+        # `supported_market_types`, not by anyone editing a list here. The
+        # failure mode this avoids is a strategy that is silently never polled
+        # because somebody added a universe and forgot a flag.
+        #
+        # DEDICATED instances per space, never the ones on `runtimes` and never
+        # shared BETWEEN spaces. Same argument `AssetRuntime` makes: strategy
+        # instances carry per-market tape and per-window counters, so feeding
+        # one instance an NFL market and a Fed-decision market would interleave
+        # two observation streams into a series neither of them saw.
+        self._space_finders = {
+            'event': search_event_markets_checked,
+            'sports': search_sports_markets_checked,
+            'political': search_political_markets_checked,
+        }
+        self.enable_spaces = bool(enable_spaces)
+        self.space_cycle_sec = float(space_cycle_sec)
+        space_defs = (
+            ('event', MARKET_TYPE_EVENT, {'tag': None, 'keywords': ()}),
+            ('sports', MARKET_TYPE_SPORTS, {'tag': 'sports_tag_slugs',
+                                            'keywords': ()}),
+            ('political', MARKET_TYPE_POLITICAL, {'tag': 'political_tag_slugs',
+                                                  'keywords': ()}),
+        )
+        if spaces is not None:
+            self.spaces: List[MarketSpace] = list(spaces)
+        else:
+            self.spaces = [
+                MarketSpace(name=name, market_type=market_type,
+                            # `_registry()` builds a FRESH population per call
+                            # when nothing was injected, which is what makes
+                            # these dedicated instances rather than three
+                            # references to one list.
+                            strategies=_supporting(_registry(), market_type),
+                            query=query, cycle_sec=self.space_cycle_sec,
+                            market_limit=space_market_limit,
+                            discovery_limit=space_discovery_limit,
+                            min_volume_usdc=space_min_volume_usdc,
+                            enabled=self.enable_spaces)
+                for name, market_type, query in space_defs
+            ]
+
         self._stop = False
         self._halt_state = False
         self._consecutive_api_errors = 0
@@ -975,10 +1446,28 @@ class PolymarketShadowLoop:
 
     # -- helpers ------------------------------------------------------------
 
-    def _count(self, disposition: str) -> str:
-        """Record one evaluation's disposition. The only way a count moves."""
-        self.evaluations += 1
-        self.counts[disposition] += 1
+    def _count(self, disposition: str,
+               counts: Optional[Counter] = None) -> str:
+        """Record one evaluation's disposition. The only way a count moves.
+
+        `counts=None` is the IDENTITY SPACE: the crypto Up/Down cycle, where
+        `evaluations == cycles * strategies * assets` must hold exactly.
+
+        Passing a Counter records the disposition OUTSIDE that space and leaves
+        `self.evaluations` untouched. That is what the weather cycle uses, and
+        it is not a loophole: a weather market is not a (cycle, asset, strategy)
+        triple. There is no fixed number of temperature markets per poll, the
+        weather cycle runs on its own 60-second cadence rather than the 5-second
+        one, and folding either fact into the identity would make the identity
+        stop describing anything - which is the same argument `exit_counts` and
+        `timings` already sit outside it on. The weather space has its OWN
+        identity, checked in `check_weather_identity`.
+        """
+        if counts is None:
+            self.evaluations += 1
+            self.counts[disposition] += 1
+        else:
+            counts[disposition] += 1
         return disposition
 
     def _skips(self) -> int:
@@ -1471,7 +1960,8 @@ class PolymarketShadowLoop:
                        disposition: str, reason: str, features: dict,
                        confidence: float = 0.0, acted: bool = False,
                        window_ts: Optional[int] = None,
-                       log_csv: bool = True) -> str:
+                       log_csv: bool = True,
+                       counts: Optional[Counter] = None) -> str:
         """Count one evaluation, write its signals row, and (usually) its CSV row.
 
         `log_csv=False` is used on exactly one path: when the paper adapter has
@@ -1480,7 +1970,7 @@ class PolymarketShadowLoop:
         the CSV for one decision, which is the mirror image of the silent-skip
         problem - a window that looks like two.
         """
-        self._count(disposition)
+        self._count(disposition, counts)
         if log_csv:
             self.adapter.log_skip(
                 strategy_name, market_slug or 'unknown', reason,
@@ -1533,13 +2023,18 @@ class PolymarketShadowLoop:
         }
 
     def evaluate_strategy(self, strategy, ctx: MarketContext,
-                          detail: dict) -> str:
+                          detail: dict,
+                          counts: Optional[Counter] = None) -> str:
         """Evaluate one strategy against one context. Returns the disposition.
 
         Always returns, and every exit path has counted and logged first.
         """
         name = getattr(strategy, 'strategy_name', str(strategy))
         slug = getattr(ctx.market, 'slug', None)
+        # Bound ONCE so no exit path below can forget the counter space it
+        # belongs to. `counts=None` is the crypto identity space; the weather
+        # cycle passes its own Counter. See `_count`.
+        _log = functools.partial(self._log_and_count, counts=counts)
 
         # Strike-dependent strategies are gated BEFORE they evaluate, not after.
         # Letting one read a sub-noise-floor lead and decline on its own terms
@@ -1547,7 +2042,7 @@ class PolymarketShadowLoop:
         # are indistinguishable once they share a skip reason.
         if getattr(strategy, 'needs_strike', False):
             if ctx.strike is None:
-                return self._log_and_count(name, slug,
+                return _log(name, slug,
                                            'strategy:no_spot_or_strike',
                                            'no_spot_or_strike',
                                            dict(self._context_features(detail),
@@ -1614,7 +2109,7 @@ class PolymarketShadowLoop:
                     strike_is_proxy=True)
                 if error_pct is None:
                     gate_feats[ERROR_UNAVAILABLE_FLAG] = True
-                return self._log_and_count(
+                return _log(
                     name, slug, 'strategy:' + SKIP_PROXY_NOISE,
                     SKIP_PROXY_NOISE, gate_feats, window_ts=ctx.window_ts)
 
@@ -1637,29 +2132,82 @@ class PolymarketShadowLoop:
             confidence = 0.0
 
         if decision.action == 'QUOTE':
-            # A maker quote is not an entry and must never be filled as one.
-            # Simulating a resting bid as a taker lift would manufacture exactly
-            # the fills box_builder's claimed edge depends on.
-            return self._log_and_count(name, slug, SKIP_MAKER,
-                                       decision.reason or SKIP_MAKER, feats,
-                                       confidence, window_ts=ctx.window_ts)
+            # A maker quote is STILL not an entry and is still never filled as
+            # one. What changed is that the legs are now RESTED on the book
+            # instead of being thrown away: `simulate_maker_buy` returns a
+            # RestingOrder, and only a later snapshot that crosses STRICTLY
+            # through our price can turn one into a position. See
+            # `_attempt_maker_quotes` and `observe_maker_orders`.
+            return self._attempt_maker_quotes(strategy, decision, ctx, feats,
+                                              confidence, counts)
 
         if not decision.is_entry:
             reason = decision.reason or 'unspecified'
-            return self._log_and_count(name, slug, 'strategy:' + reason, reason,
+            return _log(name, slug, 'strategy:' + reason, reason,
                                        feats, confidence,
                                        window_ts=ctx.window_ts)
 
         if not decision.legs:
             # An ENTER with no legs is a strategy bug, not a market condition.
-            return self._log_and_count(name, slug, SKIP_NO_LEGS, SKIP_NO_LEGS,
+            return _log(name, slug, SKIP_NO_LEGS, SKIP_NO_LEGS,
                                        feats, confidence,
                                        window_ts=ctx.window_ts)
 
-        return self._attempt_entry(strategy, decision, ctx, feats, confidence)
+        return self._attempt_entry(strategy, decision, ctx, feats, confidence,
+                                   counts)
+
+    # -- the stop that gets written to the positions row ----------------------
+
+    def _strategy_named(self, name: Optional[str]):
+        """The strategy instance called `name`, or None.
+
+        Only used by the maker path, which knows the strategy by name because
+        the fill arrives cycles after the decision. Linear over a 19-element
+        list rather than a cached dict: this runs once per maker fill, and a
+        cache is one more thing that can disagree with `self.strategies`.
+        """
+        if not name:
+            return None
+        for s in self.strategies:
+            if getattr(s, 'strategy_name', None) == name:
+                return s
+        return None
+
+    def _entry_stop_px(self, strategy, position) -> Optional[float]:
+        """The discretionary stop for a new fill, or None.
+
+        None means "this strategy has no discretionary stop", which is the
+        truth for every hold-to-resolution strategy in the registry and is
+        written as 0.00 - the structural floor - by `record_entry`.
+
+        Capability dispatch on `stop_price_for`, the same shape `manage_exits`
+        uses for `estimate`: a strategy opts in by shipping the method, and the
+        six that manage their own exits do. Nothing here re-derives a stop, so
+        a strategy whose stop rule changes cannot be left behind by this file
+        (convention 23).
+
+        A `ValueError` from the helper means the fill price is unpriceable
+        (at or below 0.00, above 1.00) - a bookkeeping fault upstream, not a
+        stop of zero. It is counted under its own health key rather than
+        rounded into the same 0.00 a hold-to-resolution strategy writes,
+        because those are two different facts (convention 20).
+        """
+        fn = getattr(strategy, 'stop_price_for', None)
+        if not callable(fn):
+            return None
+        try:
+            return float(fn(position.avg_price,
+                            getattr(position, 'outcome_side', None)))
+        except (ValueError, TypeError, AssertionError) as exc:
+            self.health['entry_stop_unpriceable'] += 1
+            logger.warning('could not price a stop for %s @ %r: %s',
+                           getattr(strategy, 'strategy_name', strategy),
+                           getattr(position, 'avg_price', None), exc)
+            return None
 
     def _attempt_entry(self, strategy, decision, ctx: MarketContext,
-                       feats: dict, confidence: float) -> str:
+                       feats: dict, confidence: float,
+                       counts: Optional[Counter] = None) -> str:
         """Halt check, risk gate, then the paper adapter, for every leg.
 
         Multi-leg (corridor_collector) fills legs leader-first, which is the
@@ -1669,13 +2217,14 @@ class PolymarketShadowLoop:
         """
         name = getattr(strategy, 'strategy_name', str(strategy))
         slug = getattr(ctx.market, 'slug', None)
+        _log = functools.partial(self._log_and_count, counts=counts)
 
         # 1. The kill switch, before anything else. Checked HERE so a halted
         # window is counted as `halted` rather than reaching the adapter and
         # returning an anonymous refusal. The adapter checks again; that is the
         # backstop, not a duplicate.
         if is_halted():
-            return self._log_and_count(
+            return _log(
                 name, slug, SKIP_HALTED, SKIP_HALTED,
                 dict(feats, halt_note=('polymarket halt blocks ENTRIES only; a '
                                        'binary held to resolution has no sell '
@@ -1741,7 +2290,7 @@ class PolymarketShadowLoop:
 
         if not filled:
             reason = first_block or 'adapter:unreported'
-            return self._log_and_count(name, slug, reason, reason, feats,
+            return _log(name, slug, reason, reason, feats,
                                        confidence, window_ts=ctx.window_ts,
                                        log_csv=not adapter_logged)
 
@@ -1750,7 +2299,7 @@ class PolymarketShadowLoop:
 
         # The entry is counted ONCE per evaluation (the identity counts
         # evaluations, not legs) and written once per leg into the DB.
-        self._count('entry')
+        self._count('entry', counts)
         signal_id = self.store.record_signal(
             strategy_id=name, market_slug=slug, pattern=name, direction='long',
             confidence=confidence,
@@ -1761,7 +2310,9 @@ class PolymarketShadowLoop:
         for position, leg in filled:
             self.store.record_entry(position, signal_id=signal_id,
                                     limit_price=leg.limit_price,
-                                    strategy_id=name)
+                                    strategy_id=name,
+                                    stop_px=self._entry_stop_px(strategy,
+                                                                position))
             self.store.audit('position_opened', {
                 'position_id': position.position_id,
                 'strategy': name,
@@ -1779,6 +2330,361 @@ class PolymarketShadowLoop:
                         position.shares, position.avg_price,
                         position.cost_usdc)
         return 'entry'
+
+    # -- maker quotes ---------------------------------------------------------
+
+    def _resting_buys_for(self, strategy_name: str) -> list:
+        """This strategy's open resting BUYS, across every market and asset."""
+        return [o for o in self.adapter.open_resting_orders()
+                if o.side == 'BUY' and o.strategy == strategy_name]
+
+    def _attempt_maker_quotes(self, strategy, decision, ctx: MarketContext,
+                              feats: dict, confidence: float,
+                              counts: Optional[Counter] = None) -> str:
+        """Rest a QUOTE decision's legs on the book. NEVER opens a position.
+
+        This is the other half of `_attempt_entry`, and the difference between
+        the two is the whole maker/taker distinction stated in code: a taker
+        knows its fill at call time, so `_attempt_entry` can return `'entry'`; a
+        maker does not, so the best this can return is "the order is on the
+        book". The fill, if it ever comes, is booked one or more cycles later by
+        `observe_maker_orders` against a snapshot that crosses our price.
+
+        ## The honest limitation, stated here because it is load-bearing
+
+        We have NO TRADE PRINTS. A resting order is judged against successive
+        BOOK SNAPSHOTS, and the only snapshot-visible evidence that sell flow
+        came down through our bid is size resting strictly BELOW it (a real book
+        cannot stay crossed). So a fill that happened and reversed entirely
+        between two polls is invisible to us and is scored as a no-fill. That
+        biases this model PESSIMISTIC, which is the direction to be wrong in for
+        a strategy whose entire claimed edge is "our resting order got hit".
+        The alternative - counting a touch as a fill - books all the good fills
+        and none of the adverse selection and would produce box_builder's P&L
+        out of nothing. See the paper adapter's module docstring.
+
+        ## Every no-rest path is counted and categorised (convention 20)
+
+        `maker_halted`, `maker_quote_without_legs`, `maker_quote_already_resting`,
+        `maker_rest_budget_exhausted`, `unknown_outcome_token`, `no_liquidity`,
+        `risk_gate:*` and `maker_adapter:*` are eight distinct causes and none
+        of them shares a counter with another. The old single bucket
+        (`maker_quote_not_simulable`) pooled all eight and several thousand rows
+        of it said nothing about either strategy.
+        """
+        name = getattr(strategy, 'strategy_name', str(strategy))
+        slug = getattr(ctx.market, 'slug', None)
+        _log = functools.partial(self._log_and_count, counts=counts)
+
+        # 1. The kill switch, FIRST, exactly as on the entry path. A resting bid
+        # that fills is a new entry, and the Polymarket halt contract blocks
+        # entries - so a halt must refuse the rest rather than defer it. The
+        # buys ALREADY resting are cancelled by `observe_maker_orders`, which
+        # runs every cycle whether or not anybody quotes; this is the refusal
+        # half and that is the cancellation half (convention 23: a fix at one
+        # site is not a fix).
+        if is_halted():
+            return _log(
+                name, slug, SKIP_MAKER_HALTED, SKIP_MAKER_HALTED,
+                dict(feats, halt_note=('halt refuses NEW resting buys and '
+                                       'cancels the ones already on the book; '
+                                       'resting SELLS are left alone because '
+                                       'an ask over an open position reduces '
+                                       'risk')),
+                confidence, window_ts=ctx.window_ts)
+
+        if not decision.legs:
+            # A QUOTE with nothing to quote is a strategy bug, not a market
+            # condition - the mirror of `enter_without_legs`.
+            return _log(name, slug, SKIP_MAKER_NO_LEGS, SKIP_MAKER_NO_LEGS,
+                        feats, confidence, window_ts=ctx.window_ts)
+
+        rested = []
+        first_block: Optional[str] = None
+        adapter_logged = False
+
+        for leg in decision.legs:
+            leg_slug = leg.market_slug or slug
+            slug_15 = getattr(ctx.market_15m, 'slug', None)
+            market = (ctx.market_15m
+                      if (leg.market_slug and slug_15
+                          and leg.market_slug == slug_15)
+                      else ctx.market)
+            token_id = (market.token_id(leg.outcome_side)
+                        if market is not None else None)
+            if token_id is None:
+                first_block = first_block or SKIP_UNKNOWN_TOKEN
+                self.health['maker_leg_unknown_token'] += 1
+                continue
+            book = ctx.books.get(token_id) or ctx.books_15m.get(token_id)
+            if book is None:
+                first_block = first_block or SKIP_NO_LIQUIDITY
+                self.health['maker_leg_no_book'] += 1
+                continue
+
+            # 2. ONE resting buy per (strategy, token) at a time. Not an
+            # optimisation - a correctness rule and a fidelity rule at once.
+            #
+            # This loop polls every ~5 seconds and `box_builder` quotes for 150
+            # seconds of every window, so without this it would rest ~30 orders
+            # per side per window at whatever the bid had drifted to. It would
+            # also be CHASING, which is the specific behaviour box_builder's own
+            # module docstring refuses: his logs recorded 249 post-only rejects
+            # from exactly that. The first quote stands until it fills, expires
+            # on its TTL, or a halt cancels it. We do NOT amend or replace: an
+            # amend goes to the back of the queue anyway, so re-quoting every
+            # poll would reset our queue position 30 times a window and no
+            # order would ever reach the front.
+            if any(o.token_id == str(token_id)
+                   for o in self._resting_buys_for(name)):
+                first_block = first_block or SKIP_MAKER_ALREADY_RESTING
+                self.health['maker_leg_already_resting'] += 1
+                continue
+
+            # 3. The maker budget. See DEFAULT_MAX_RESTING_MAKER_ORDERS: the
+            # adapter counts resting buys against the same slot cap as open
+            # positions, so an unbudgeted maker path starves every taker
+            # strategy on the first cycle it quotes.
+            if len(self.adapter.resting_buy_orders()) >= \
+                    self.max_resting_maker_orders:
+                first_block = first_block or SKIP_MAKER_BUDGET
+                self.health['maker_budget_blocks'] += 1
+                continue
+
+            # 4. The risk gate, with the leg's own slug, exactly as the entry
+            # path calls it and with its reason carried verbatim. A resting bid
+            # is money that can be spent without asking us again, so it is gated
+            # at rest time rather than at fill time - there is no fill time we
+            # get to veto.
+            verdict = self.gate.check_adapter_order(
+                self.adapter, leg_slug, leg.outcome_side,
+                premium=leg.premium, requested_shares=leg.shares, mode=MODE)
+            if not verdict.approved:
+                first_block = first_block or ('risk_gate:' + verdict.reason)
+                self.health['maker_risk_gate_blocks'] += 1
+                continue
+
+            # 5. The adapter. It owns the post-only check, the queue
+            # measurement, the TTL and its own REST/SKIP log row; its refusal
+            # reason is recovered from the decision_counts delta so our taxonomy
+            # is its taxonomy rather than our guess at it.
+            before = dict(self.adapter.decision_counts)
+            order = self.adapter.simulate_maker_buy(
+                strategy=name, market_slug=leg_slug, token_id=token_id,
+                outcome_side=leg.outcome_side, limit_price=leg.limit_price,
+                shares=verdict.shares, window_ts=ctx.window_ts,
+                features={k: v for k, v in feats.items() if v is not None},
+                book=book, intent=decision.reason or 'maker_quote')
+            if order is None:
+                adapter_logged = True
+                moved = [k for k, v in self.adapter.decision_counts.items()
+                         if v > before.get(k, 0)]
+                first_block = first_block or (
+                    MAKER_ADAPTER_PREFIX + (moved[0] if moved else 'unreported'))
+                self.health['maker_adapter_refusals'] += 1
+                continue
+
+            rested.append((order, leg))
+
+        if not rested:
+            reason = first_block or (MAKER_ADAPTER_PREFIX + 'unreported')
+            return _log(name, slug, reason, reason, feats, confidence,
+                        window_ts=ctx.window_ts, log_csv=not adapter_logged)
+
+        if len(rested) < len(decision.legs):
+            # A one-sided box or a partial grid. Recorded because it is the
+            # shape both maker strategies are most likely to be wrong about:
+            # box_builder's edge needs BOTH legs and a lone leg is a naked
+            # directional binary.
+            self.health['maker_partial_quotes'] += 1
+        self.health['maker_legs_rested'] += len(rested)
+
+        for order, leg in rested:
+            logger.info('PM SHADOW REST %s %s %s %.0f sh @ %.4f '
+                        '(queue_ahead %.1f, ttl %s)',
+                        name, order.market_slug, order.outcome_side,
+                        order.shares, order.limit_price,
+                        order.queue_ahead_shares, order.expires_ts)
+            try:
+                self.store.audit('maker_order_rested', {
+                    'order_id': order.order_id,
+                    'strategy': name,
+                    'market_slug': order.market_slug,
+                    'outcome_side': order.outcome_side,
+                    'limit_price': order.limit_price,
+                    'shares': order.shares,
+                    'queue_ahead_shares': order.queue_ahead_shares,
+                    'expires_ts': order.expires_ts,
+                    'mode': MODE,
+                })
+            except sqlite3.Error:
+                pass
+
+        # ONE disposition per evaluation, and it is a SKIP, not an entry. The
+        # `log_csv=False` is the same rule the entry path uses: the adapter has
+        # already written a REST row per leg and a second row here would put two
+        # rows in the CSV for one decision.
+        return _log(name, slug, SKIP_MAKER_RESTED, SKIP_MAKER_RESTED,
+                    dict(feats, legs_rested=len(rested),
+                         legs_quoted=len(decision.legs),
+                         maker_fill_decided_on_a_later_cycle=True),
+                    confidence, window_ts=ctx.window_ts, log_csv=False)
+
+    def observe_maker_orders(self, contexts=None,
+                             now: Optional[float] = None) -> dict:
+        """Hand this cycle's books to every resting order. Never raises.
+
+        THIS IS THE HALF THAT MAKES A MAKER FILL POSSIBLE AT ALL, and it is why
+        resting orders had to live somewhere that survives a poll. They do:
+        `self.adapter` is built once in `__init__` and reused for every cycle,
+        and `adapter.resting_orders` is a dict on it. A resting order placed in
+        cycle N is still there in cycle N+1, and `observe_resting_orders` is
+        what tells it about the book that has arrived since.
+
+        Runs BEFORE `manage_exits` and therefore before entries, for the same
+        reason exits do: an order that fills or expires here changes
+        `committed_slots` and a slot freed this cycle should be usable this
+        cycle.
+
+        A token with no book this cycle is NOT observed and NOT a no-fill
+        (convention 11) - the adapter advances `observations` only when it is
+        handed a book, and expiry is still checked for orders whose feed went
+        dark. Everything lands in `maker_counts`, which is OUTSIDE the
+        `evaluations == cycles * strategies * assets` identity: a resting order
+        is not a window and looking at one is not an evaluation.
+        """
+        now_ts = int(time.time() if now is None else now)
+        if contexts is None:
+            contexts = {}
+        elif isinstance(contexts, MarketContext):
+            contexts = {self.assets[0]: contexts}
+
+        result = {'resting_before': len(self.adapter.open_resting_orders()),
+                  'observed': 0, 'filled': 0, 'terminated': 0,
+                  'cancelled_by_halt': 0}
+
+        # THE KILL SWITCH, and it runs before anything else here. A resting BUY
+        # is a pending entry, so a halt has to take it OFF the book rather than
+        # leave it armed - the adapter cancels a crossed one at observation
+        # time, but an uncrossed one would otherwise sit there and fill the
+        # moment the halt lifted, on a book that has since moved. Resting SELLS
+        # are deliberately left: an ask over an open position reduces risk, and
+        # this is the same asymmetry `simulate_taker_sell` already has.
+        if is_halted():
+            for order in self._all_resting_buys():
+                self.adapter.cancel_resting_order(order.order_id,
+                                                  'maker_cancelled_by_halt')
+                self.maker_counts['cancel:maker_cancelled_by_halt'] += 1
+                result['cancelled_by_halt'] += 1
+            result['resting_after'] = len(self.adapter.open_resting_orders())
+            return result
+
+        if not self.adapter.open_resting_orders():
+            result['resting_after'] = 0
+            return result
+
+        books: Dict[str, object] = {}
+        for ctx in contexts.values():
+            books.update(ctx.books or {})
+            books.update(ctx.books_15m or {})
+
+        # Counted BEFORE the call, over the orders that were still OPEN. The
+        # adapter keeps terminated orders in `resting_orders` forever (that is
+        # how a session can report how many it rested against how few filled),
+        # so counting afterwards would re-count every order that ever existed
+        # on every cycle and `observed` would grow quadratically.
+        observed = sum(1 for o in self.adapter.open_resting_orders()
+                       if o.token_id in books)
+
+        try:
+            terminated = self.adapter.observe_resting_orders(books, now_ts)
+        except Exception as exc:                              # noqa: BLE001
+            # A resting-order observation must never take the cycle with it,
+            # and its failure must be a NAMED counter rather than an empty list
+            # that reads like a quiet book.
+            logger.error('PM SHADOW observe_resting_orders raised: %s: %s',
+                         type(exc).__name__, exc)
+            self.health['maker_observe_exceptions'] += 1
+            self.maker_counts['observe_exception'] += 1
+            result['resting_after'] = len(self.adapter.open_resting_orders())
+            return result
+
+        self.maker_counts['observed'] += observed
+        result['observed'] = observed
+
+        for order in terminated:
+            reason = order.terminal_reason or 'unreported'
+            if order.filled_shares > 0:
+                # A maker FILL. On a BUY this opened a position, and the store
+                # has to learn about it here because no entry path ran.
+                self.maker_counts['fill:' + reason] += 1
+                result['filled'] += 1
+                if order.side == 'BUY':
+                    self._record_maker_entry(order)
+            elif order.status == ORDER_EXPIRED:
+                self.maker_counts['expire:' + reason] += 1
+            else:
+                self.maker_counts['cancel:' + reason] += 1
+            result['terminated'] += 1
+
+        still = len(self.adapter.open_resting_orders())
+        self.maker_counts['still_resting'] += still
+        result['resting_after'] = still
+        return result
+
+    def _all_resting_buys(self) -> list:
+        return list(self.adapter.resting_buy_orders())
+
+    def _record_maker_entry(self, order) -> None:
+        """Write a filled resting BUY into the store as the entry it is.
+
+        The taker path records its entry inside `_attempt_entry`. A maker fill
+        has no such moment - the decision that caused it was several cycles
+        ago - so without this the position would exist in the adapter and in
+        the CSV and NOWHERE in `db/trading.db`, which is the table every
+        downstream reader (Forge, the critic, the dashboard) actually reads.
+        """
+        position = self.adapter.positions.get(order.position_id or '')
+        if position is None:
+            self.health['maker_fill_without_position'] += 1
+            return
+        try:
+            signal_id = self.store.record_signal(
+                strategy_id=order.strategy, market_slug=order.market_slug,
+                pattern=order.strategy, direction='long', confidence=0.0,
+                features=dict(order.features,
+                              entry_liquidity='maker',
+                              order_id=order.order_id,
+                              queue_ahead_shares=order.queue_ahead_shares,
+                              max_through_shares=order.max_through_shares,
+                              observations=order.observations,
+                              maker_fill_model=MAKER_FILL_MODEL),
+                acted=True, skip_reason=None)
+            self.store.record_entry(
+                position, signal_id=signal_id,
+                limit_price=order.limit_price, strategy_id=order.strategy,
+                # Resolved by NAME here: a maker fill arrives cycles after the
+                # decision that placed it, so there is no strategy object in
+                # scope the way there is on the taker path.
+                stop_px=self._entry_stop_px(
+                    self._strategy_named(order.strategy), position))
+            self.store.audit('maker_order_filled', {
+                'order_id': order.order_id,
+                'position_id': position.position_id,
+                'strategy': order.strategy,
+                'market_slug': order.market_slug,
+                'outcome_side': order.outcome_side,
+                'filled_shares': order.filled_shares,
+                'limit_price': order.limit_price,
+                'observations': order.observations,
+                'queue_ahead_shares': order.queue_ahead_shares,
+                'max_through_shares': order.max_through_shares,
+                'mode': MODE,
+            })
+        except sqlite3.Error as exc:
+            logger.warning('could not record maker fill %s: %s',
+                           order.order_id, exc)
+            self.health['maker_fill_record_errors'] += 1
 
     # -- exits ----------------------------------------------------------------
 
@@ -2029,7 +2935,18 @@ class PolymarketShadowLoop:
         elif any_api_error:
             self._consecutive_api_errors += 1
 
-        # -- Phase 2: exits, across every asset at once.
+        # -- Phase 2: resting maker orders, against the books just fetched.
+        # BEFORE exits and therefore before entries: a resting order that fills
+        # or expires here changes `adapter.committed_slots()`, and a slot freed
+        # this cycle should be usable this cycle. This is also the ONLY place a
+        # maker order can ever fill - `_attempt_maker_quotes` only puts it on
+        # the book - so if this call is ever removed both maker strategies go
+        # back to booking zero fills while still reporting rested orders, which
+        # is the exact ambiguity convention 20 exists to remove.
+        detail['maker'] = self._timed('cycle_maker_observe',
+                                      self.observe_maker_orders, contexts, now)
+
+        # -- Phase 3: exits, across every asset at once.
         # BEFORE entries: closing a position frees a concurrency slot that an
         # entry this same cycle can use, and a stop that waits for the entry
         # loop is a stop one poll late. Positions on assets whose context failed
@@ -2039,7 +2956,7 @@ class PolymarketShadowLoop:
         detail['exits'] = self._timed('cycle_exits', self.manage_exits,
                                       contexts, now)
 
-        # -- Phase 3: evaluate each asset's own strategy instances.
+        # -- Phase 4: evaluate each asset's own strategy instances.
         evaluate_t0 = time.perf_counter()
         for asset in self.assets:
             runtime = self.runtimes[asset]
@@ -2102,6 +3019,616 @@ class PolymarketShadowLoop:
             detail.setdefault(key, value)
         detail['status'] = first['status']
         return detail
+
+    # -- the weather cycle ---------------------------------------------------
+
+    def discover_weather_markets(self, now: Optional[float] = None) -> dict:
+        """Ask Gamma what temperature markets exist, and rank them for polling.
+
+        Returns the discovery result with a `ranking` block attached. Never
+        raises: a discovery that blows up is a counted health event and an empty
+        poll list, not a dead loop.
+
+        THREE OUTCOMES THAT MUST NEVER BE POOLED (convention 11, and this is the
+        exact split the brief asked for):
+
+            ok=False, 'read_failed'       Gamma was unreachable. We know
+                                          NOTHING about the board.
+            ok=True, 'no_weather_market'  Gamma answered and listed none. A
+                                          fact about the day.
+            ok=True, ranking selects 0    Markets exist and not one of them is
+                                          worth a book read - because it has no
+                                          readable station, or no threshold, or
+                                          it is the annual-ranking family.
+
+        The third is `weather_no_pollable_market` and it is counted separately
+        from the second, because "Polymarket listed nothing" and "Polymarket
+        listed 1,090 and our parser can use none of them" point at completely
+        different things: one is a quiet day and the other is our bug.
+
+        DISCOVERY IS A TAG SWEEP, NOT A VOLUME QUERY, and it is worth saying why
+        no `order` parameter appears anywhere in this path. Gamma's `/markets`
+        route sorts `order=volume` as TEXT and returns the SMALLEST markets
+        while still answering HTTP 200 (it returns 422 only for a genuinely
+        unknown field, so a 200 does not mean the sort was understood). This
+        goes through `/events?tag_slug=weather` instead, which takes no ordering
+        at all, and `rank_weather_markets` sorts the result LOCALLY on a list we
+        already hold. A local sort cannot be silently backwards.
+        """
+        from strategies.polymarket.weather_arb import (find_weather_markets,
+                                                       rank_weather_markets)
+
+        now = time.time() if now is None else float(now)
+        t0 = time.perf_counter()
+        try:
+            result = find_weather_markets(self.client,
+                                          limit=self.weather_discovery_limit,
+                                          now=now)
+        except Exception as exc:                          # noqa: BLE001
+            # Discovery reaches the network. It must never take the loop with
+            # it, and its failure must be a NAMED counter rather than an empty
+            # list that reads like a quiet day.
+            self.weather_health['discovery_exceptions'] += 1
+            logger.error('PM SHADOW weather discovery raised: %s: %s',
+                         type(exc).__name__, exc)
+            result = {'ok': False, 'markets': [], 'reason': 'read_failed',
+                      'exception': '{}: {}'.format(type(exc).__name__, exc)}
+        self._record_timing('weather_discovery', time.perf_counter() - t0)
+
+        if not result.get('ok'):
+            self.weather_health['discovery_read_failed'] += 1
+            self.weather_markets = []
+            result['ranking'] = {'selected': [], 'declined': {},
+                                 'considered': 0, 'volume_ordered': []}
+        else:
+            self.weather_health['discovery_ok'] += 1
+            ranking = rank_weather_markets(result.get('markets') or (),
+                                           limit=self.weather_market_limit)
+            self.weather_markets = list(ranking['selected'])
+            for reason, count in ranking['declined'].items():
+                # Prefixed so a poll-budget decline can never be read as a
+                # decision skip: no market counted here ever reached `evaluate`.
+                self.weather_health['declined:' + reason] += count
+            result['ranking'] = ranking
+
+        self._last_weather_discovery = now
+        self.weather_discovery = result
+        logger.info('PM SHADOW weather discovery ok=%s reason=%s raw=%d '
+                    'found=%d selected=%d', result.get('ok'),
+                    result.get('reason'), result.get('raw_count', 0),
+                    len(result.get('markets') or ()), len(self.weather_markets))
+        return result
+
+    def build_weather_context(self, market, now: float
+                              ) -> Tuple[Optional[MarketContext], str, dict]:
+        """One temperature market's MarketContext. `(ctx, status, detail)`.
+
+        Far smaller than `build_context` because a temperature market needs none
+        of it: no spot, no strike, no candles, no 15m companion, no ATR. The
+        strategy fetches its own weather inputs (see `weather_arb`'s docstring on
+        why that compromise exists) and everything else it reads is on the market
+        object and its books.
+
+        `window_ts` is the POLL SECOND. There is no 5-minute window here to floor
+        to, and `WeatherArb.clock` is written for exactly that: it reads
+        `window_ts + seconds_into_window` as the absolute observation time, which
+        is what the METAR freshness gate and the local-day arithmetic need.
+        """
+        detail: dict = {'market_slug': getattr(market, 'slug', None),
+                        'asset': 'weather',
+                        'weather_market': True}
+        tasks: List[Tuple[str, Callable]] = [
+            ('wxbook:' + o.token_id,
+             functools.partial(self._fetch_book_checked, o.token_id))
+            for o in (market.outcomes or ())
+        ]
+        if not tasks:
+            return None, WX_NO_BOOK, detail
+        results = self._timed('weather_books', self._run_parallel, tasks)
+        books, book_status = self._books_from_results(market.outcomes, results,
+                                                      'wxbook:')
+        detail['book_status'] = book_status
+        if not books:
+            # Same precedence as the crypto path: our own code throwing outranks
+            # a venue outage, which outranks a book nobody is quoting.
+            values = set(book_status.values())
+            if STATUS_FETCH_EXCEPTION in values:
+                return None, WX_CYCLE_EXCEPTION, detail
+            if SKIP_API_ERROR in values:
+                return None, SKIP_API_ERROR, detail
+            return None, WX_NO_BOOK, detail
+
+        # STAMPED, not defaulted. `MarketContext.market_type` defaults to
+        # crypto_updown, so a weather context that does not set it is a weather
+        # market wearing a crypto label. Nothing raised on that before only
+        # because `WeatherArb` does not call `assert_supports`; the one strategy
+        # in this space that DOES call it (`smart_money_copy`) declares every
+        # type and so accepted the wrong label silently. Convention 22: the
+        # routing declaration is a claim, and it is only enforceable if the
+        # context carries the type the router used to select the strategy.
+        ctx = MarketContext(window_ts=int(now), market=market, books=books,
+                            seconds_into_window=float(now) - int(now),
+                            market_type=MARKET_TYPE_WEATHER)
+        return ctx, 'ok', detail
+
+    def run_weather_cycle(self, now: Optional[float] = None) -> dict:
+        """One weather poll: discover if due, then decide every selected market.
+
+        Never raises. Returns a small summary for the stats line and the tests.
+
+        EVERY EVALUATION LANDS IN `weather_counts` AND NOWHERE ELSE. The crypto
+        identity is untouched by this method, which is asserted rather than
+        trusted: `tests/test_weather_shadow_wiring.py` runs a weather cycle and
+        checks `loop.evaluations` and `loop.counts` are exactly what they were.
+        """
+        now = time.time() if now is None else float(now)
+        self.weather_cycles += 1
+        t0 = time.perf_counter()
+        summary: dict = {'cycle': self.weather_cycles, 'markets': 0,
+                         'entries': 0}
+
+        if not self.enable_weather or not self.weather_strategies:
+            # A DISPOSITION, not a silent return. A session running with weather
+            # off and one running with weather on and finding nothing produce
+            # the same empty log otherwise, and only one of them is a fact about
+            # the board (convention 20).
+            self._count(WX_DISABLED, self.weather_counts)
+            self.weather_evaluations += 1
+            summary['status'] = WX_DISABLED
+            self._record_timing('weather_cycle', time.perf_counter() - t0)
+            return summary
+
+        if (now - self._last_weather_discovery >= self.weather_cycle_sec
+                or not self.weather_discovery):
+            self.discover_weather_markets(now)
+
+        discovery = self.weather_discovery or {}
+        summary['discovery_ok'] = discovery.get('ok')
+        summary['discovery_reason'] = discovery.get('reason')
+
+        if not self.weather_markets:
+            # Three distinct causes, three distinct counters. This is the
+            # accounting that did not exist before: previously a cycle that
+            # found nothing was simply a cycle in which `PM_weather_arb` skipped
+            # `resolution_station_unknown` on a BTC window.
+            if not discovery.get('ok'):
+                status = WX_DISCOVERY_FAILED
+            elif not (discovery.get('markets') or ()):
+                status = WX_NO_MARKET_LISTED
+            else:
+                status = WX_NONE_POLLABLE
+            for strategy in self.weather_strategies:
+                name = getattr(strategy, 'strategy_name', str(strategy))
+                self._log_and_count(name, None, status, status,
+                                    {'weather_cycle': self.weather_cycles,
+                                     'discovery_reason': discovery.get('reason'),
+                                     'discovery_ok': discovery.get('ok'),
+                                     'discovery_raw_count': discovery.get(
+                                         'raw_count'),
+                                     'discovery_found': len(
+                                         discovery.get('markets') or ()),
+                                     'asset': 'weather'},
+                                    window_ts=int(now),
+                                    counts=self.weather_counts)
+                self.weather_evaluations += 1
+            summary['status'] = status
+            self._record_timing('weather_cycle', time.perf_counter() - t0)
+            return summary
+
+        summary['status'] = 'ok'
+        for market in self.weather_markets:
+            try:
+                ctx, status, detail = self.build_weather_context(market, now)
+            except Exception as exc:                      # noqa: BLE001
+                logger.error('PM SHADOW weather context raised for %s: %s: %s',
+                             getattr(market, 'slug', None),
+                             type(exc).__name__, exc)
+                self.weather_health['context_exceptions'] += 1
+                ctx, status = None, WX_CYCLE_EXCEPTION
+                detail = {'market_slug': getattr(market, 'slug', None),
+                          'asset': 'weather',
+                          'exception': '{}: {}'.format(type(exc).__name__, exc)}
+            detail['weather_cycle'] = self.weather_cycles
+            summary['markets'] += 1
+
+            if ctx is None:
+                # Attributed to every weather strategy, exactly as the crypto
+                # path attributes a failed context to every strategy on that
+                # asset. A market that never reached a strategy is visibly that.
+                for strategy in self.weather_strategies:
+                    name = getattr(strategy, 'strategy_name', str(strategy))
+                    self._log_and_count(name, detail.get('market_slug'), status,
+                                        status, dict(detail),
+                                        window_ts=int(now),
+                                        counts=self.weather_counts)
+                    self.weather_evaluations += 1
+                continue
+
+            for strategy in self.weather_strategies:
+                name = getattr(strategy, 'strategy_name', str(strategy))
+                try:
+                    disposition = self.evaluate_strategy(
+                        strategy, ctx, detail, counts=self.weather_counts)
+                except Exception as exc:                  # noqa: BLE001
+                    logger.error('PM SHADOW weather strategy %s raised on %s: '
+                                 '%s: %s', name,
+                                 getattr(market, 'slug', None),
+                                 type(exc).__name__, exc)
+                    self.weather_health['strategy_exceptions'] += 1
+                    disposition = self._log_and_count(
+                        name, getattr(market, 'slug', None),
+                        WX_CYCLE_EXCEPTION,
+                        '{}:{}'.format(type(exc).__name__, exc)[:200],
+                        dict(detail), window_ts=int(now),
+                        counts=self.weather_counts)
+                self.weather_evaluations += 1
+                if disposition == 'entry':
+                    summary['entries'] += 1
+
+        self._last_weather_cycle = now
+        self._record_timing('weather_cycle', time.perf_counter() - t0)
+        self.check_weather_identity()
+        return summary
+
+    def check_weather_identity(self) -> bool:
+        """`weather_evaluations == sum(weather_counts.values())`.
+
+        The weather space's own identity. It cannot take the crypto form
+        (`cycles * strategies * assets`) because the number of markets polled is
+        whatever discovery returned, which is a property of the board and not of
+        the configuration. What it CAN assert is the thing convention 20 is
+        actually about: every evaluation landed in exactly one named bucket and
+        none was silently dropped.
+
+        Logged at ERROR and audited; never repaired by adjusting a counter.
+        """
+        total = sum(self.weather_counts.values())
+        ok = total == self.weather_evaluations
+        if not ok:
+            self.weather_identity_violations += 1
+            logger.error('PM SHADOW WEATHER IDENTITY VIOLATED: '
+                         'weather_evaluations=%d counted=%d counts=%s',
+                         self.weather_evaluations, total,
+                         dict(self.weather_counts))
+            try:
+                self.store.audit('weather_accounting_violation', {
+                    'weather_evaluations': self.weather_evaluations,
+                    'counted': total, 'counts': dict(self.weather_counts)})
+            except sqlite3.Error:
+                pass
+        return ok
+
+    def weather_stats(self) -> dict:
+        """The weather space's numbers, kept apart from the crypto ones."""
+        discovery = self.weather_discovery or {}
+        return {
+            'enabled': self.enable_weather,
+            'strategies': [getattr(s, 'strategy_name', str(s))
+                           for s in self.weather_strategies],
+            'cycles': self.weather_cycles,
+            'cycle_sec': self.weather_cycle_sec,
+            'market_limit': self.weather_market_limit,
+            'evaluations': self.weather_evaluations,
+            'counts': dict(self.weather_counts),
+            'health': dict(self.weather_health),
+            'identity_ok': (sum(self.weather_counts.values())
+                            == self.weather_evaluations),
+            'identity_violations': self.weather_identity_violations,
+            'discovery_ok': discovery.get('ok'),
+            'discovery_reason': discovery.get('reason'),
+            'discovery_raw_count': discovery.get('raw_count'),
+            'discovery_found': len(discovery.get('markets') or ()),
+            'discovery_drops': discovery.get('drops'),
+            'polled_markets': [getattr(m, 'slug', None)
+                               for m in self.weather_markets],
+        }
+
+    # -- the general binary spaces: event, sports, political (D-313) --------
+    #
+    # One implementation, three records. Everything below takes a `MarketSpace`
+    # and touches nothing outside it, which is why there are three universes
+    # here and no third copy of the weather cycle. Convention 23: a fix at one
+    # site is not a fix, and three hand-copied cycles are three places for the
+    # accounting to drift apart.
+
+    def discover_space_markets(self, space: 'MarketSpace',
+                               now: Optional[float] = None) -> dict:
+        """Ask Gamma what this space contains. Never raises.
+
+        Same three-way split the weather discovery makes, for the same reason
+        (convention 11): a read that FAILED and a board that is genuinely EMPTY
+        are different facts and must not share a counter.
+
+        The ordering is LOCAL. `_search_tagged_markets_checked` sorts on
+        `market.volume` in Python on a list we already hold, because Gamma's
+        `/events` route has no working sort and `/markets?order=volume` sorts as
+        TEXT while still answering HTTP 200 - it returns the SMALLEST markets
+        and looks successful. A local sort cannot be silently backwards.
+        """
+        now = time.time() if now is None else float(now)
+        t0 = time.perf_counter()
+        finder = self._space_finders.get(space.name)
+        if finder is None:
+            # A space with no discovery function is a construction bug, not a
+            # quiet day. Counted, never silent (convention 20).
+            space.health['discovery_no_finder'] += 1
+            result = {'ok': False, 'markets': [], 'reason': 'read_failed',
+                      'exception': 'no discovery function for space {!r}'
+                                   .format(space.name)}
+        else:
+            try:
+                result = finder(self.client, limit=space.discovery_limit,
+                                min_volume_usdc=space.min_volume_usdc)
+            except Exception as exc:                      # noqa: BLE001
+                space.health['discovery_exceptions'] += 1
+                logger.error('PM SHADOW %s discovery raised: %s: %s',
+                             space.name, type(exc).__name__, exc)
+                result = {'ok': False, 'markets': [], 'reason': 'read_failed',
+                          'exception': '{}: {}'.format(type(exc).__name__, exc)}
+        self._record_timing(space.name + '_discovery', time.perf_counter() - t0)
+
+        if not result.get('ok'):
+            space.health['discovery_read_failed'] += 1
+            space.markets = []
+        else:
+            space.health['discovery_ok'] += 1
+            # Already volume-ordered by the finder. The poll budget is applied
+            # here rather than in the query so that `discovery_found` records
+            # what the BOARD held and `polled_markets` records what we chose,
+            # and the gap between them is visible instead of inferred.
+            found = list(result.get('markets') or ())
+            space.markets = found[:space.market_limit]
+            over = len(found) - len(space.markets)
+            if over > 0:
+                # Prefixed so a poll-budget decline can never be read as a
+                # decision skip: no market counted here ever reached `evaluate`.
+                space.health['declined:over_poll_budget'] += over
+            for reason, count in (result.get('read_failures') or {}).items():
+                space.health['read_failure:' + str(reason)] += count
+
+        space.last_discovery = now
+        space.discovery = result
+        logger.info('PM SHADOW %s discovery ok=%s reason=%s raw=%d found=%d '
+                    'selected=%d', space.name, result.get('ok'),
+                    result.get('reason'), result.get('raw_count', 0),
+                    len(result.get('markets') or ()), len(space.markets))
+        return result
+
+    def build_space_context(self, space: 'MarketSpace', market, now: float
+                            ) -> Tuple[Optional[MarketContext], str, dict]:
+        """One general-binary market's MarketContext. `(ctx, status, detail)`.
+
+        Shaped like `build_weather_context` and for the same reason: an NFL
+        market has no spot, no strike, no 5-minute clock, no ATR and no 15m
+        companion. What it has is a question, outcomes and books.
+
+        `market_type` is STAMPED from the space that selected the market. That
+        is what makes `assert_supports` meaningful: the router picked this
+        strategy because it declared this type, and the context now carries the
+        same type the router used, so a mismatch raises instead of being
+        evaluated under a wrong label.
+
+        `window_ts` is the POLL SECOND. These markets resolve in hours or days,
+        so there is no window to floor to, and a strategy that needs a deadline
+        reads `market.end_date` rather than inventing one from the clock.
+        """
+        detail: dict = {'market_slug': getattr(market, 'slug', None),
+                        'asset': space.name,
+                        'market_type': space.market_type,
+                        'space': space.name}
+        tasks: List[Tuple[str, Callable]] = [
+            ('spacebook:' + o.token_id,
+             functools.partial(self._fetch_book_checked, o.token_id))
+            for o in (market.outcomes or ())
+        ]
+        if not tasks:
+            return None, space.status(SPACE_NO_BOOK), detail
+        results = self._timed(space.name + '_books', self._run_parallel, tasks)
+        books, book_status = self._books_from_results(market.outcomes, results,
+                                                      'spacebook:')
+        detail['book_status'] = book_status
+        if not books:
+            # Same precedence as the crypto and weather paths: our own code
+            # throwing outranks a venue outage, which outranks an unquoted book.
+            values = set(book_status.values())
+            if STATUS_FETCH_EXCEPTION in values:
+                return None, space.status(SPACE_CYCLE_EXCEPTION), detail
+            if SKIP_API_ERROR in values:
+                return None, SKIP_API_ERROR, detail
+            return None, space.status(SPACE_NO_BOOK), detail
+
+        ctx = MarketContext(window_ts=int(now), market=market, books=books,
+                            seconds_into_window=float(now) - int(now),
+                            market_type=space.market_type)
+        return ctx, 'ok', detail
+
+    def run_space_cycle(self, space: 'MarketSpace',
+                        now: Optional[float] = None) -> dict:
+        """One space poll: discover if due, then decide every selected market.
+
+        Never raises. Returns a small summary for the stats line and the tests.
+
+        EVERY EVALUATION LANDS IN `space.counts` AND NOWHERE ELSE. The crypto
+        identity and the weather identity are both untouched by this method.
+        """
+        now = time.time() if now is None else float(now)
+        space.cycles += 1
+        t0 = time.perf_counter()
+        summary: dict = {'space': space.name, 'cycle': space.cycles,
+                         'markets': 0, 'entries': 0}
+
+        def _attribute(status: str, extra: dict) -> None:
+            """Charge one disposition to every strategy in this space.
+
+            A market that never reached a strategy is visibly that, on every
+            strategy, rather than being one unattributed decrement.
+            """
+            for strategy in space.strategies:
+                name = getattr(strategy, 'strategy_name', str(strategy))
+                self._log_and_count(name, extra.get('market_slug'), status,
+                                    status, dict(extra), window_ts=int(now),
+                                    counts=space.counts)
+                space.evaluations += 1
+
+        if not space.enabled or not space.strategies:
+            # Two different facts, two different counters, and neither is a
+            # silent return (convention 20). A session running with sports off
+            # and one running with sports on but no strategy declaring
+            # `sports` produce the same empty log otherwise, and only one of
+            # them is a fact about our configuration.
+            status = space.status(SPACE_DISABLED if not space.enabled
+                                  else SPACE_NO_STRATEGY)
+            self._count(status, space.counts)
+            space.evaluations += 1
+            summary['status'] = status
+            self._record_timing(space.name + '_cycle',
+                                time.perf_counter() - t0)
+            return summary
+
+        if (now - space.last_discovery >= space.cycle_sec
+                or not space.discovery):
+            self.discover_space_markets(space, now)
+
+        discovery = space.discovery or {}
+        summary['discovery_ok'] = discovery.get('ok')
+        summary['discovery_reason'] = discovery.get('reason')
+
+        if not space.markets:
+            # Three distinct causes, three distinct counters. "Gamma was
+            # unreachable", "Gamma listed nothing" and "Gamma listed markets
+            # and none cleared the volume floor" point at three different
+            # things: a venue outage, a quiet board, and our own filter.
+            if not discovery.get('ok'):
+                reason = SPACE_DISCOVERY_FAILED
+            elif not (discovery.get('markets') or ()):
+                reason = SPACE_NO_MARKET_LISTED
+            else:
+                reason = SPACE_NONE_POLLABLE
+            status = space.status(reason)
+            _attribute(status, {
+                'market_slug': None,
+                'asset': space.name,
+                'space': space.name,
+                'market_type': space.market_type,
+                'space_cycle': space.cycles,
+                'discovery_ok': discovery.get('ok'),
+                'discovery_reason': discovery.get('reason'),
+                'discovery_raw_count': discovery.get('raw_count'),
+                'discovery_found': len(discovery.get('markets') or ()),
+            })
+            summary['status'] = status
+            self._record_timing(space.name + '_cycle',
+                                time.perf_counter() - t0)
+            space.last_cycle = now
+            self.check_space_identity(space)
+            return summary
+
+        summary['status'] = 'ok'
+        for market in space.markets:
+            try:
+                ctx, status, detail = self.build_space_context(space, market,
+                                                               now)
+            except Exception as exc:                      # noqa: BLE001
+                logger.error('PM SHADOW %s context raised for %s: %s: %s',
+                             space.name, getattr(market, 'slug', None),
+                             type(exc).__name__, exc)
+                space.health['context_exceptions'] += 1
+                ctx = None
+                status = space.status(SPACE_CYCLE_EXCEPTION)
+                detail = {'market_slug': getattr(market, 'slug', None),
+                          'asset': space.name, 'space': space.name,
+                          'market_type': space.market_type,
+                          'exception': '{}: {}'.format(type(exc).__name__, exc)}
+            detail['space_cycle'] = space.cycles
+            summary['markets'] += 1
+
+            if ctx is None:
+                _attribute(status, detail)
+                continue
+
+            for strategy in space.strategies:
+                name = getattr(strategy, 'strategy_name', str(strategy))
+                try:
+                    disposition = self.evaluate_strategy(
+                        strategy, ctx, detail, counts=space.counts)
+                except Exception as exc:                  # noqa: BLE001
+                    # `assert_supports` lands here by design. A routing bug is
+                    # a stack trace in the bucket that already means "our code
+                    # broke", never a skip row that reads like a decision.
+                    logger.error('PM SHADOW %s strategy %s raised on %s: '
+                                 '%s: %s', space.name, name,
+                                 getattr(market, 'slug', None),
+                                 type(exc).__name__, exc)
+                    space.health['strategy_exceptions'] += 1
+                    disposition = self._log_and_count(
+                        name, getattr(market, 'slug', None),
+                        space.status(SPACE_CYCLE_EXCEPTION),
+                        '{}:{}'.format(type(exc).__name__, exc)[:200],
+                        dict(detail), window_ts=int(now),
+                        counts=space.counts)
+                space.evaluations += 1
+                if disposition == 'entry':
+                    summary['entries'] += 1
+
+        space.last_cycle = now
+        self._record_timing(space.name + '_cycle', time.perf_counter() - t0)
+        self.check_space_identity(space)
+        return summary
+
+    def check_space_identity(self, space: 'MarketSpace') -> bool:
+        """`space.evaluations == sum(space.counts.values())`.
+
+        One space's own identity, for the same reason the weather space has
+        one: the crypto form (`cycles * strategies * assets`) cannot apply when
+        the number of markets polled is a property of the board rather than of
+        the configuration. What it CAN assert is convention 20's actual claim -
+        every evaluation landed in exactly one named bucket.
+
+        Logged at ERROR and audited; never repaired by adjusting a counter.
+        """
+        total = sum(space.counts.values())
+        ok = total == space.evaluations
+        if not ok:
+            space.identity_violations += 1
+            logger.error('PM SHADOW %s IDENTITY VIOLATED: evaluations=%d '
+                         'counted=%d counts=%s', space.name.upper(),
+                         space.evaluations, total, dict(space.counts))
+            try:
+                self.store.audit('space_accounting_violation', {
+                    'space': space.name, 'evaluations': space.evaluations,
+                    'counted': total, 'counts': dict(space.counts)})
+            except sqlite3.Error:
+                pass
+        return ok
+
+    def space_stats(self) -> dict:
+        """Every space's numbers, each kept apart from the others."""
+        out: dict = {}
+        for space in self.spaces:
+            discovery = space.discovery or {}
+            out[space.name] = {
+                'enabled': space.enabled,
+                'market_type': space.market_type,
+                'strategies': space.strategy_names,
+                'cycles': space.cycles,
+                'cycle_sec': space.cycle_sec,
+                'market_limit': space.market_limit,
+                'min_volume_usdc': space.min_volume_usdc,
+                'evaluations': space.evaluations,
+                'counts': dict(space.counts),
+                'health': dict(space.health),
+                'identity_ok': (sum(space.counts.values())
+                                == space.evaluations),
+                'identity_violations': space.identity_violations,
+                'discovery_ok': discovery.get('ok'),
+                'discovery_reason': discovery.get('reason'),
+                'discovery_raw_count': discovery.get('raw_count'),
+                'discovery_found': len(discovery.get('markets') or ()),
+                'discovery_drops': discovery.get('drops'),
+                'polled_markets': [getattr(m, 'slug', None)
+                                   for m in space.markets],
+            }
+        return out
 
     # -- periodic work ------------------------------------------------------
 
@@ -2216,11 +3743,40 @@ class PolymarketShadowLoop:
             'health': dict(self.health),
             # Outside the identity on purpose - see manage_exits.
             'exit_counts': dict(self.exit_counts),
+            # Outside it too, and for the same reason: a resting order is not a
+            # window and looking at one is not an evaluation. For a MAKER
+            # strategy these are the result - `rested` against `fill:*` IS the
+            # fill rate, and a session with rests and no fills is a finding,
+            # not an absence.
+            'maker_counts': dict(self.maker_counts),
+            'maker_orders': {
+                'resting_now': len(self.adapter.open_resting_orders()),
+                'resting_buys_now': len(self.adapter.resting_buy_orders()),
+                'rested_total': len(self.adapter.resting_orders),
+                'capital_committed_usdc': (
+                    self.adapter.capital_committed_to_resting_orders()),
+                'max_resting_maker_orders': self.max_resting_maker_orders,
+                'fill_model': MAKER_FILL_MODEL,
+                # The adapter's non-terminal observation outcomes, kept
+                # separate from ours: it counts what the BOOK did to an order,
+                # we count what happened to the ORDER.
+                'adapter_observations': dict(self.adapter.maker_counts),
+            },
             # SECONDS, not events, and outside the identity for the same
             # reason. Reported as total / calls / per-call average because a
             # step that is slow and a step that merely ran a lot produce the
             # same total and need opposite fixes.
             'timings': self.timing_report(),
+            # Outside the identity, like `exit_counts` and `timings`, and for a
+            # reason stated in the constructor: a weather market is not a
+            # (cycle, asset, strategy) triple. It carries its own identity flag.
+            'weather': self.weather_stats(),
+            # Same argument as `weather`, three more times. Each space carries
+            # its OWN identity flag; there is deliberately no pooled total
+            # across spaces, because "how many evaluations did we make" summed
+            # over four universes on three different cadences is a number that
+            # describes none of them (convention 20).
+            'spaces': self.space_stats(),
             'halted': is_halted(),
             'equity_usdc': summary['equity_usdc'],
             'open_positions': summary['pending'],
@@ -2336,6 +3892,25 @@ class PolymarketShadowLoop:
                 self.run_cycle()
 
                 now = time.time()
+                # The weather cycle, on its own cadence. AFTER `run_cycle` so a
+                # slow weather sweep can never delay the 5-minute crypto window,
+                # and guarded by its own timer so it cannot run every poll.
+                # `run_weather_cycle` never raises; it counts instead.
+                if (self.enable_weather
+                        and now - self._last_weather_cycle
+                        >= self.weather_cycle_sec):
+                    self._last_weather_cycle = now
+                    self.run_weather_cycle(now)
+                # The general binary spaces, each on its own timer. AFTER the
+                # crypto cycle for the same reason weather is: a slow Gamma
+                # sweep must never delay a 5-minute window. Each space is
+                # timed independently so one slow universe cannot starve the
+                # next - `run_space_cycle` never raises, it counts.
+                if self.enable_spaces:
+                    for space in self.spaces:
+                        if (space.enabled
+                                and now - space.last_cycle >= space.cycle_sec):
+                            self.run_space_cycle(space, now)
                 if now - self._last_resolve >= self.resolve_sec:
                     self.resolve()
                     self._last_resolve = now
@@ -2439,6 +4014,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 1
     logger.info('strike proxy noise floor by asset (bps): %s', floors)
 
+    # The weather settings, same shape and same reason: changing whether a
+    # daily-extreme market is priced must not need a code edit (convention 17),
+    # and a bad value RAISES here rather than being coerced. `'false'` is a
+    # truthy string, and coercing it would turn a refusal into permission while
+    # the row stamp kept saying the flag was off.
+    try:
+        weather = set_weather_config(
+            (config.get('polymarket') or {}).get('weather'))
+    except ValueError as exc:
+        logger.error('REFUSING TO START: bad polymarket.weather config: %s', exc)
+        return 1
+    logger.info('weather settings: %s', weather)
+
     # Outer mode gate. `run_polymarket_shadow.sh` checks this too, and the risk
     # gate refuses a non-paper mode outright. Three readers, one answer.
     mode = config.get('mode')
@@ -2488,6 +4076,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         len(loop.strategies), loop.evaluations_per_cycle))
     print('    {}'.format(', '.join(
         getattr(s, 'strategy_name', str(s)) for s in loop.strategies)))
+    print('  weather cycle   : {} every {:.0f}s, top {} markets by volume'
+          .format('ON' if loop.enable_weather else 'OFF',
+                  loop.weather_cycle_sec, loop.weather_market_limit))
+    print('    {}'.format(', '.join(
+        getattr(s, 'strategy_name', str(s))
+        for s in loop.weather_strategies) or 'none'))
+    print('    daily-extreme markets priced: {}'.format(
+        weather['allow_daily_extreme_markets']))
     print('  halted          : {}'.format(is_halted()))
     print('  NOTE: a HALT blocks Polymarket ENTRIES only. It cannot flatten.',
           flush=True)

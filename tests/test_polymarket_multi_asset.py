@@ -49,13 +49,22 @@ from engine.polymarket.assets import (ASSETS, SHADOW_ASSETS, asset_for_slug,
                                       get_asset)
 from engine.polymarket.shadow_loop import PolymarketShadowLoop, ShadowStore
 from strategies.polymarket import build_strategies
+from strategies.polymarket.base import MARKET_TYPE_CRYPTO_UPDOWN
 
 WINDOW = 300
 
 #: Derived, never hardcoded - same reason as the single-asset file. A literal
 #: would turn an accounting assertion into an assertion that nobody has added a
 #: strategy since this file was written.
-N_STRATEGIES = len(build_strategies())
+#:
+#: The CRYPTO-ROUTED subset, not the whole registry, and for the reason spelled
+#: out in the single-asset file: since D-312 `PM_weather_arb` declares only
+#: `weather` and is polled by the weather cycle, so the crypto denominator is
+#: the population that DECLARED `crypto_updown`.
+N_STRATEGIES = len([
+    s for s in build_strategies()
+    if MARKET_TYPE_CRYPTO_UPDOWN in getattr(s, 'supported_market_types',
+                                            (MARKET_TYPE_CRYPTO_UPDOWN,))])
 THREE = ('btc', 'eth', 'sol')
 
 

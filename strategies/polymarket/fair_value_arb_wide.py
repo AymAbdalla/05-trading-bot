@@ -81,8 +81,17 @@ EDGE_THRESHOLD = 0.08
 #: fail while looking better on paper.
 MIN_PROFIT_WIDE = 0.03
 
-#: 5c, against the parent's 3c. Inoperative below a 0.13 fair value - see the
-#: docstring.
+#: NOMINAL geometry ONLY. **This is no longer the stop** (2026-08-18). The stop
+#: is `strategies.polymarket.base.tiered_stop_price`, shared by all six
+#: exit-managing Polymarket strategies and keyed to the entry price. Only
+#: `breakeven_win_rate` still reads this.
+#:
+#: The "WHERE THE 5c STOP STOPS EXISTING" section above is now partly obsolete
+#: and partly the whole point. The band where the stop was inoperative has not
+#: gone away - it MOVED and it is now REPORTED. Under the tiered rule an entry
+#: below its own tier distance still collapses onto the structural 0.00 stop,
+#: but the row says so explicitly (`stop_is_structural_floor`) instead of
+#: leaving it to be inferred from a `stop_price` of -0.02.
 MAX_LOSS_WIDE = 0.05
 
 #: Two attempts per window, not three. Attempts, not fills; the parent's

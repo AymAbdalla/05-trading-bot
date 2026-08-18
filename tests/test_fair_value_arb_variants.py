@@ -295,8 +295,10 @@ class TestMinHold:
     OPENED = WINDOW_TS + 100
 
     def _stop_book(self):
-        # bid 0.56 is at or below entry 0.60 - max_loss 0.03 = 0.57.
-        return _book(UP_TOK, asks=[(0.60, 100)], bids=[(0.56, 100)])
+        # bid 0.49 is below the TIERED stop for a 0.60 entry, which is 0.50
+        # (`base.tiered_stop_price`, the >= 0.50 tier at 0.10 away). It was
+        # 0.56 against `entry - max_loss = 0.57` while `max_loss` was the stop.
+        return _book(UP_TOK, asks=[(0.60, 100)], bids=[(0.49, 100)])
 
     def _target_book(self):
         # bid 0.62 is at or above entry 0.60 + min_profit 0.02.

@@ -71,6 +71,83 @@ WINDOW_SECONDS = 300
 PAPER_MODE = True
 
 
+# -- market types, and why routing is a DECLARATION rather than a guess -------
+#
+# Until D-312 there was exactly one market universe a strategy could be handed:
+# the crypto Up/Down 5m window. `MarketContext` therefore described a crypto
+# window and nothing else, and every strategy could assume `spot`, `strike`,
+# `windows` and a 300-second clock were meaningful. Weather markets broke that
+# assumption first - `build_weather_context` hands over a context with no spot,
+# no strike, no candles and a `window_ts` that is a POLL SECOND rather than a
+# window open - and the loop coped by keeping a separate `weather_strategies`
+# list so a crypto strategy never saw a weather context.
+#
+# That worked for one extra universe. It does not scale to five. Event, sports
+# and political markets are each a fourth, fifth and sixth list, and the failure
+# it invites is silent: hand `fair_value_arb` a sports market and it does not
+# crash, it computes a BTC-move probability against a `spot` of None and skips
+# forever under a fair-value reason, which reads in the skip table as "the model
+# declined" rather than "the model was never applicable". Convention 11 - a
+# strategy that could not run is NOT the same fact as one that ran and refused,
+# and one counter must never hold both.
+#
+# So the market type is carried ON THE CONTEXT and the support set is DECLARED
+# ON THE STRATEGY, and the loop routes on the pair. A strategy that is handed a
+# type it did not declare is a WIRING BUG, not a skip: `assert_supports` raises
+# rather than returning a reason, because a reason string would put the bug in
+# the data instead of in the stack trace (convention 22 - a claim in a docstring
+# is not a wiring test).
+
+#: Crypto Up/Down binaries, 5m and 15m, on the SHADOW_ASSETS. The original and
+#: the only universe with a spot price, a strike and a fixed 300-second clock.
+MARKET_TYPE_CRYPTO_UPDOWN = 'crypto_updown'
+
+#: Temperature markets. No spot, no strike, no candles; the strategy fetches its
+#: own METAR and forecast inputs. `window_ts` is the poll second.
+MARKET_TYPE_WEATHER = 'weather'
+
+#: High-volume general event markets discovered by dollar volume off Gamma.
+MARKET_TYPE_EVENT = 'event'
+
+#: Sports and esports markets. Structurally an event market; kept as its own
+#: type because the discovery query, the volume distribution and the resolution
+#: clock all differ, and pooling their results under one label would average two
+#: populations into one that describes neither.
+MARKET_TYPE_SPORTS = 'sports'
+
+#: Elections, Fed decisions, policy. Same argument as sports for keeping it
+#: separate from `event`.
+MARKET_TYPE_POLITICAL = 'political'
+
+#: Markets reached by following a tracked wallet's fills rather than by polling
+#: a universe. The market could be ANY of the above; what makes it its own type
+#: is the DISCOVERY path, and therefore the sample. A win rate measured on
+#: markets a smart-money wallet chose is not a win rate on markets we chose.
+MARKET_TYPE_SMART_MONEY = 'smart_money'
+
+#: Every type the router knows. A context carrying anything else is rejected at
+#: construction rather than routed to nobody, because a typo in a type string
+#: would otherwise present as "no strategy supports this market".
+MARKET_TYPES = (
+    MARKET_TYPE_CRYPTO_UPDOWN,
+    MARKET_TYPE_WEATHER,
+    MARKET_TYPE_EVENT,
+    MARKET_TYPE_SPORTS,
+    MARKET_TYPE_POLITICAL,
+    MARKET_TYPE_SMART_MONEY,
+)
+
+#: The types that are plain binary markets with a book, a resolution and no
+#: crypto window behind them. Named so a strategy can declare "any liquid
+#: binary" in one place instead of listing three constants that a fourth type
+#: would then silently not join (convention 23).
+GENERAL_BINARY_MARKET_TYPES = (
+    MARKET_TYPE_EVENT,
+    MARKET_TYPE_SPORTS,
+    MARKET_TYPE_POLITICAL,
+)
+
+
 @dataclass(frozen=True)
 class Window:
     """One completed 5-minute BTC window."""
@@ -110,15 +187,48 @@ class MarketContext:
     spot: Optional[float] = None             # live BTC price
     strike: Optional[float] = None           # this window's price-to-beat
     seconds_into_window: Optional[float] = None
+    #: Which universe this market came from. Defaults to the crypto Up/Down
+    #: window so every context built before D-312 keeps its exact meaning - a
+    #: default of None or '' would make "nobody set it" and "it is a crypto
+    #: window" the same value, which is the ambiguity this field exists to end.
+    #: Validated in `__post_init__`: an unrecognised type is a wiring bug and
+    #: raises, rather than routing to no strategy and reading as a quiet board.
+    market_type: str = MARKET_TYPE_CRYPTO_UPDOWN
     # Second market, for cross-market strategies (corridor_collector).
     market_15m: object = None
     books_15m: Dict[str, object] = field(default_factory=dict)
     lead_bps: Optional[float] = None
     atr14: Optional[float] = None
 
+    def __post_init__(self) -> None:
+        if self.market_type not in MARKET_TYPES:
+            raise ValueError(
+                'unknown market_type {!r}; known types are {}'
+                .format(self.market_type, ', '.join(MARKET_TYPES)))
+
+    @property
+    def is_crypto_window(self) -> bool:
+        """True when `windows`, `spot`, `strike` and the 300s clock are real.
+
+        Every other market type carries a `window_ts` that is a POLL SECOND and
+        a `seconds_remaining` that is arithmetic on a 300-second constant which
+        describes nothing. Read this before trusting either.
+        """
+        return self.market_type == MARKET_TYPE_CRYPTO_UPDOWN
+
     @property
     def seconds_remaining(self) -> Optional[float]:
-        if self.seconds_into_window is None:
+        """Seconds left in a 5-minute crypto window.
+
+        **None on every non-crypto market type, deliberately.** Before D-312
+        this computed `300 - seconds_into_window` unconditionally, and
+        `build_weather_context` passes `seconds_into_window` as a sub-second
+        fraction, so a weather market reported roughly 300 seconds remaining -
+        a number with no referent that nonetheless passed every "am I early
+        enough in the window" gate in the package. A clock that does not exist
+        must read as absent, not as comfortable (convention 11).
+        """
+        if self.seconds_into_window is None or not self.is_crypto_window:
             return None
         return WINDOW_SECONDS - self.seconds_into_window
 
@@ -220,13 +330,57 @@ class PolymarketStrategy(Strategy):
     #: Set by subclasses. Used for logging and graveyard keys.
     strategy_name = 'polymarket_base'
 
-    #: True when the strategy rests maker orders. The paper adapter simulates
-    #: TAKER fills only, so a maker strategy's fills cannot be simulated
-    #: honestly yet and its decisions come back as QUOTE, never ENTER.
+    #: True when the strategy rests maker orders. Note this no longer means
+    #: "cannot be filled": `PolymarketPaperAdapter.simulate_maker_buy` and the
+    #: loop's `observe_maker_orders` phase have simulated resting fills since
+    #: 2026-08-18. A maker strategy still returns QUOTE rather than ENTER,
+    #: because resting an order is not a fill.
     uses_maker_orders = False
+
+    #: The market universes this strategy is willing to be handed. The loop
+    #: routes on it; `assert_supports` enforces it.
+    #:
+    #: The default is crypto-only and that is load-bearing. Every strategy
+    #: written before D-312 assumed a spot, a strike and a 300-second clock,
+    #: and inheriting "supports everything" would hand those assumptions a
+    #: sports market and get a permanent, plausible-looking refusal instead of
+    #: a loud one. Widening this is an opt-in decision per strategy, made by
+    #: someone who has read what that strategy reads off the context.
+    supported_market_types = (MARKET_TYPE_CRYPTO_UPDOWN,)
 
     #: Never False in this repo. See the module docstring.
     paper_mode = PAPER_MODE
+
+    @classmethod
+    def supports_market_type(cls, market_type: str) -> bool:
+        """Does this strategy accept a context of `market_type`?"""
+        return market_type in cls.supported_market_types
+
+    def assert_supports(self, ctx: 'MarketContext') -> None:
+        """RAISE if handed a market type this strategy did not declare.
+
+        Deliberately an exception and not a `Decision(SKIP, ...)`. A strategy
+        evaluating a universe it never opted into is a ROUTING bug in the loop,
+        and the two ways to report it are not equivalent:
+
+          * a skip reason puts the bug in `db/trading.db` as a row that looks
+            like a decision, gets counted in the identity, and shows up in the
+            skip table next to genuine gates - where it will eventually be read
+            as evidence about the market rather than about our wiring;
+          * an exception puts it in a stack trace, where the loop's per-strategy
+            handler counts it under `strategy_exceptions` and `cycle_exception`,
+            which is the bucket that already means "our code broke".
+
+        Convention 22: the declaration above is a claim, and this is the test
+        that makes the wiring honour it.
+        """
+        market_type = getattr(ctx, 'market_type', MARKET_TYPE_CRYPTO_UPDOWN)
+        if not self.supports_market_type(market_type):
+            raise ValueError(
+                '{} was handed a {!r} market but declares support for {}; '
+                'this is a loop routing bug, not a strategy decision'
+                .format(self.strategy_name, market_type,
+                        ', '.join(self.supported_market_types)))
 
     @property
     def name(self) -> str:
@@ -373,6 +527,174 @@ def opposite(side: str) -> str:
     """'Up' <-> 'Down', 'Yes' <-> 'No', preserving the caller's casing style."""
     lookup = {'up': 'Down', 'down': 'Up', 'yes': 'No', 'no': 'Yes'}
     return lookup.get(side.strip().lower(), side)
+
+
+# -- the discretionary stop, in ONE place ------------------------------------
+#
+# Every strategy in this package that closes a position BEFORE resolution used
+# to carry its own `max_loss` constant, in absolute cents of a $1.00 contract
+# and identical for every entry price:
+#
+#     fair_value_arb          0.03      fair_value_arb_wide      0.05
+#     fair_value_arb_hft      0.02      fair_value_arb_patient   0.03
+#     fair_value_arb_inverse  0.03      dip_arb                  0.05
+#
+# A fixed cent distance is a wildly different RISK depending on where the
+# contract is priced, because the denominator is the premium and not the $1.00
+# payout. Measured on `db/trading.db` over the 2026-08-18 shadow window, the
+# three cheapest fills each family actually took:
+#
+#     PM_fair_value_arb       min entry 0.0500 -> a 3c stop is 60.0% of premium
+#     PM_fair_value_arb_hft   min entry 0.0483 -> a 2c stop is 41.4% of premium
+#     PM_dip_arb              min entry 0.0200 -> a 5c stop is below 0.00 and
+#                                                 therefore does not exist
+#
+# and at the same time the AVERAGE fill (0.35 on the parent) only risked 8.5%.
+# One constant was doing two incompatible jobs.
+#
+# The rule below states the stop as a distance keyed to the entry price tier.
+# It lives here and nowhere else (convention 23): six sites with the same
+# arithmetic is six places for it to drift.
+
+#: `(entry price strictly below this, stop DISTANCE)`, scanned in order.
+#: Distances are absolute contract price, i.e. a fraction of the $1.00 payout,
+#: NOT a fraction of the entry premium.
+#:
+#:     entry < 0.10           ->  0.05
+#:     0.10 <= entry < 0.50   ->  0.08
+#:     entry >= 0.50          ->  0.10
+#:
+#: EXPIRY (convention 17): these three numbers are a specification handed down,
+#: not a measurement. Nothing has been scored at them. The measurement that
+#: would move them is the realised loss distribution on `sell:price_stop` closes
+#: at each tier, which `stop_px` on the positions row now makes computable.
+STOP_TIERS = ((0.10, 0.05), (0.50, 0.08), (float('inf'), 0.10))
+
+#: Outcome labels a stop may be quoted for. Every position in this package is a
+#: LONG of exactly one outcome token - there is no short leg anywhere - so the
+#: stop is below the entry on every side and the label does not change the
+#: arithmetic. It is validated rather than ignored because a caller passing a
+#: label nobody recognises is a caller who may believe sides are handled
+#: asymmetrically, and silently agreeing with them is how a stop ends up on the
+#: wrong book.
+STOP_SIDE_LABELS = ('up', 'down', 'yes', 'no')
+
+
+def tiered_stop_distance(entry_px: float) -> float:
+    """The NOMINAL tier distance for `entry_px`. Not clamped, not a price.
+
+    This is the number the tier table says, before the 0.00 floor is applied.
+    `tiered_stop_price` is what anything trading should read; this exists so a
+    log row can say what the rule asked for next to what it could deliver.
+    """
+    entry = float(entry_px)
+    if not (entry == entry) or entry in (float('inf'), float('-inf')):
+        raise ValueError('entry_px must be finite, got {!r}'.format(entry_px))
+    for upper, distance in STOP_TIERS:
+        if entry < upper:
+            return distance
+    return STOP_TIERS[-1][1]
+
+
+def tiered_stop_price(entry_px: float, side: Optional[str] = None) -> float:
+    """The stop PRICE for a long of one outcome token bought at `entry_px`.
+
+    `max(0.00, entry_px - tiered_stop_distance(entry_px))`.
+
+    Convention 8 is enforced, not assumed:
+
+      * the result is clamped at 0.00, because a losing binary share is worth
+        exactly 0.00 and a negative stop is a price no book can print;
+      * the result is asserted strictly below `entry_px`, which is what makes
+        it a stop at all.
+
+    **The degenerate case, and the choice made about it.** When `entry_px` is at
+    or below its own tier distance - a 0.06 fill in the `<0.10` tier, or a 0.03
+    fill anywhere - `entry - distance` lands at or below 0.00. There is no price
+    strictly between 0.00 and the entry that the rule asks for, so the
+    discretionary stop COLLAPSES ONTO THE STRUCTURAL ONE at 0.00 and the whole
+    premium is at risk. That is reported (`stop_is_structural_floor`), never
+    silently rewritten to some other distance: inventing a tighter stop here
+    would be a number with no rule behind it, and inventing a wider one is
+    impossible. Convention 20 - the two cases get two flags, not one counter.
+
+    **Read this before quoting the tiers as a risk reduction.** The distances
+    are a fraction of the $1.00 payout, so as a fraction of the PREMIUM they are
+    largest exactly where the premium is smallest. At a 0.06 entry the `<0.10`
+    tier asks for 0.05, which is 83% of the premium - worse than the 3c-on-6c
+    case (50%) that motivated the change. The tiers cut risk on the mid and high
+    buckets, where the overwhelming majority of this package's fills sit, and
+    they do not fix the sub-10c bucket. `stop_loss_fraction_of_entry` is stamped
+    on every row so this is measurable rather than argued about.
+
+    `side` is accepted for interface symmetry and validated. It cannot change
+    the answer: see `STOP_SIDE_LABELS`.
+    """
+    entry = float(entry_px)
+    if side is not None and str(side).strip().lower() not in STOP_SIDE_LABELS:
+        raise ValueError(
+            'unknown outcome side {!r}; refusing to quote a stop for a side '
+            'this package does not trade'.format(side))
+    if not (entry > BINARY_STOP):
+        # An entry at or below 0.00 has no price strictly below it. That is a
+        # bookkeeping fault upstream, not a trade with a bad stop.
+        raise ValueError(
+            'entry_px must be strictly above {:.2f}, got {!r}'
+            .format(BINARY_STOP, entry_px))
+    if entry > BINARY_TARGET:
+        raise ValueError(
+            'entry_px must be at or below {:.2f}, got {!r}'
+            .format(BINARY_TARGET, entry_px))
+    stop = round(entry - tiered_stop_distance(entry), 10)
+    if stop < BINARY_STOP:
+        stop = BINARY_STOP
+    assert stop < entry, (
+        'stop {!r} is not strictly below entry {!r}'.format(stop, entry))
+    return stop
+
+
+def effective_stop_distance(entry_px: float,
+                            side: Optional[str] = None) -> float:
+    """`entry_px - tiered_stop_price(...)`: the loss the stop actually admits.
+
+    Equal to `tiered_stop_distance` everywhere except the degenerate band, where
+    it is the whole premium. This is the number an exit rule compares a bid
+    against; the nominal one is for the log.
+    """
+    return round(float(entry_px) - tiered_stop_price(entry_px, side), 10)
+
+
+def tiered_stop_features(entry_px: float,
+                         side: Optional[str] = None) -> Dict[str, object]:
+    """The stop, and everything needed to audit it, as decision features.
+
+    One dict built in one place so the six strategies cannot stamp six
+    different shapes of the same fact onto their rows.
+    """
+    entry = float(entry_px)
+    stop = tiered_stop_price(entry, side)
+    nominal = tiered_stop_distance(entry)
+    effective = round(entry - stop, 10)
+    return {
+        'stop_price': round(stop, 6),
+        'stop_distance': round(effective, 6),
+        'stop_distance_nominal': nominal,
+        'stop_is_tiered': True,
+        # None for the unbounded top tier, never `inf`: these features are
+        # serialised with `allow_nan=False` (convention 19) and an infinity
+        # here would get the whole key stripped out of the row.
+        'stop_tier_upper_bound': next(
+            (u for u, _d in STOP_TIERS if entry < u and u != float('inf')),
+            None),
+        # The number the whole change is about: a stop is only "50% per tick"
+        # or "8% per tick" relative to what was paid, and that ratio never
+        # appeared on a row before.
+        'stop_loss_fraction_of_entry': round(effective / entry, 6),
+        # True means the discretionary stop does not exist for this fill and
+        # the only stop is resolution at 0.00. Counted separately from a stop
+        # that merely sits wide (convention 20).
+        'stop_is_structural_floor': stop <= BINARY_STOP,
+    }
 
 
 def source_counts(windows: Sequence[Window]) -> Dict[str, int]:

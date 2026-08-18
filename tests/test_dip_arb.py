@@ -485,7 +485,11 @@ class TestExit:
         assert d.limit_price == dip_mod.URGENT_SELL_LIMIT
 
     def test_the_hard_stop_closes_at_any_price(self):
-        book = _book(UP_TOK, asks=((0.46, 100),), bids=((0.45, 100),))
+        # 0.40 is the TIERED stop for a 0.50 entry (>= 0.50 tier, 0.10 away).
+        # It was 0.45 while `MAX_LOSS = 0.05` was the stop; the stop now comes
+        # from `base.tiered_stop_price` and is shared with the fair-value
+        # family. See `tests/test_tiered_stop_loss.py`.
+        book = _book(UP_TOK, asks=((0.41, 100),), bids=((0.40, 100),))
         d = DipArb().manage_exit(_position(entry=0.50), book,
                                  now=WINDOW_TS + 150, fair_value=0.60)
         assert d.reason == 'price_stop'
@@ -495,7 +499,7 @@ class TestExit:
     def test_the_stop_outranks_the_mean_collapse(self):
         # Both fire. The action is the same either way, but the reason must be
         # the one an operator can act on.
-        book = _book(UP_TOK, asks=((0.46, 100),), bids=((0.45, 100),))
+        book = _book(UP_TOK, asks=((0.41, 100),), bids=((0.40, 100),))
         d = DipArb().manage_exit(_position(entry=0.50), book,
                                  now=WINDOW_TS + 150, fair_value=0.50)
         assert d.reason == 'price_stop'
@@ -554,7 +558,7 @@ class TestExit:
         assert d.reason == 'mean_reverted'
 
     def test_the_price_stop_still_works_without_a_reference_mean(self):
-        book = _book(UP_TOK, asks=((0.46, 100),), bids=((0.45, 100),))
+        book = _book(UP_TOK, asks=((0.41, 100),), bids=((0.40, 100),))
         d = DipArb().manage_exit(_position(entry=0.50), book,
                                  now=WINDOW_TS + 150)
         # A stop that stops working because the mean is unavailable is not a

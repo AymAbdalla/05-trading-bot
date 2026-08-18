@@ -14,10 +14,12 @@ import subprocess
 import sys
 import os
 import signal
+import json
 from datetime import datetime, timezone
 
 REPO = os.path.expanduser('~/aym/projects/05-trading-bot')
 DB = os.path.join(REPO, 'db/trading.db')
+VAULT = os.path.expanduser('~/aym/vault/Trading')
 STARTING_EQUITY = 1000.0
 RESTART_DELAY = 5  # seconds between blowup and restart
 
@@ -76,15 +78,71 @@ def get_trade_stats():
     conn.close()
     return total, pnl, json.dumps(per_strategy)
 
+def spawn_blowup_report(blowup_id):
+    """Kick off the Opus root-cause note for a blowup row, DETACHED.
+
+    The old version of this function contained the root cause as a hardcoded
+    f-string: it asserted "the primary cause was the fair_value_arb family"
+    and "the spread is the enemy" no matter what the account had actually
+    done. That is a judgement nobody made, and it would have kept asserting
+    itself after the strategies it names were killed.
+
+    So the split is now: the RAW DATA write stays here, in Python, immediate
+    and deterministic (log_blowup wrote the row before we were called). The
+    REASONING is composed by Opus in `agents/vault_writer.py`, from that row.
+
+    It is spawned detached rather than called inline because the runner must
+    restart the shadow loop within seconds and a reasoning turn takes minutes.
+    Detached also means the note survives this runner being killed, and any
+    past blowup can be re-analysed later with:
+
+        env -u PYTHONPATH python3 -m agents.vault_writer blowup --id N
+
+    Returns the child PID, or None when it could not be spawned. Never
+    raises: a blowup is exactly when you least want a stack trace.
+    """
+    env = dict(os.environ)
+    env.pop('PYTHONPATH', None)  # Convention 14
+    log_path = os.path.join(REPO, 'logs', 'blowup_report_%03d.log' % blowup_id)
+    try:
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        log_handle = open(log_path, 'ab')
+    except OSError as exc:
+        print('WARNING: could not open %s: %s' % (log_path, exc))
+        log_handle = subprocess.DEVNULL
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, '-m', 'agents.vault_writer', 'blowup',
+             '--id', str(blowup_id)],
+            cwd=REPO, env=env, stdin=subprocess.DEVNULL,
+            stdout=log_handle, stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    except Exception as exc:
+        print('WARNING: could not spawn the blowup report job: %s' % exc)
+        return None
+    print('Blowup report job spawned (PID %d), log: %s'
+          % (proc.pid, log_path))
+    return proc.pid
+
+
 def log_blowup(blowup_num, starting_eq, ending_eq, trades, pnl, duration, per_strategy):
     conn = sqlite3.connect(DB)
-    conn.execute('''
+    cur = conn.execute('''
         INSERT INTO shadow_blowups (ts, blowup_number, starting_equity, ending_equity,
                                      total_trades, total_pnl, duration_seconds, per_strategy_json)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ''', (int(time.time()*1000), blowup_num, starting_eq, ending_eq, trades, pnl, duration, per_strategy))
+    blowup_id = cur.lastrowid
     conn.commit()
     conn.close()
+    
+    # The raw row is now committed. Hand the REASONING to Opus, detached, so
+    # the shadow loop restarts on schedule instead of waiting on a model turn.
+    try:
+        spawn_blowup_report(blowup_id)
+    except Exception as e:
+        print(f"WARNING: could not spawn the blowup report job: {e}")
 
 def reset_equity():
     """Write a new equity snapshot at $1000 to reset the starting point."""

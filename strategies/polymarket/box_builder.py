@@ -44,6 +44,24 @@ decision carrying the legs it would have rested. It never returns ENTER. That
 makes it a fully specified, fully logged, zero-fill strategy until a maker fill
 model exists. Convention 11: not tested, not tested-and-failed.
 
+UPDATE: A MAKER FILL MODEL NOW EXISTS, AND IT IS NOT WIRED TO THE LOOP.
+
+`engine/polymarket/paper_adapter.py` grew `simulate_maker_buy` /
+`simulate_maker_sell`, which rest these exact legs and fill them only when a
+later book snapshot trades STRICTLY THROUGH the quoted price with more size than
+the queue that was ahead of us at rest time. A touch is explicitly not a fill;
+it is counted under `maker_touched_not_crossed`, which is the bucket the naive
+model above would have stolen every fill from.
+
+That does NOT unblock this strategy in the live shadow loop yet, and the
+distinction matters. `engine/polymarket/shadow_loop.py` short-circuits every
+`action == 'QUOTE'` into a counted skip and never hands the legs to the adapter,
+so these quotes still do not rest in production. The features below name the
+model and the verb so the loop can be taught to; until it is, this file is
+exactly as NOT_TESTED as it was, and a shadow log full of
+`maker_quote_not_simulable` rows still means ZERO EVIDENCE in either direction.
+Convention 22: a capability in a docstring is not a wired capability.
+
 The one part that IS taker and therefore IS simulatable is the completion lift:
 once leg one fills at p1, if the other side's ask is at or below 0.99 - p1 you
 cross for it. `completion_lift` implements that and returns an ENTER decision,
@@ -54,6 +72,7 @@ fill model exists (a box that only ever fills one leg is a directional bet
 wearing a hedge costume), or if the resolution-PnL harness scores it under
 30bps net edge on our own data (convention 5, D-268).
 """
+from engine.polymarket.paper_adapter import MAKER_FILL_MODEL
 from strategies.polymarket.base import (Decision, Leg, MarketContext,
                                         PolymarketStrategy)
 
@@ -192,9 +211,26 @@ class BoxBuilder(PolymarketStrategy):
             Leg('Up', quote_up, order_type='maker', shares=self.shares_per_leg),
             Leg('Down', quote_down, order_type='maker', shares=self.shares_per_leg),
         ]
-        # QUOTE, never ENTER. See the module docstring: we cannot honestly
-        # simulate whether these rest orders fill, and pretending otherwise
-        # would manufacture the strategy's entire P&L.
+        # A maker fill model now EXISTS in the paper adapter
+        # (`simulate_maker_buy`, strict cross minus queue ahead). These three
+        # keys are the whole wiring change: they tell a consumer that these legs
+        # are restable, and name the verb and the rule so a log row can be
+        # matched against the model that produced it.
+        #
+        # The action stays QUOTE and the reason string is untouched on purpose.
+        # A maker does not enter at decision time - it rests, and finds out one
+        # or more cycles later - so a QUOTE is still the truthful decision, and
+        # `maker_fill_not_simulated` stays accurate for any caller that has not
+        # been taught to rest these legs.
+        feats.update({
+            'maker_fill_model_available': MAKER_FILL_MODEL,
+            'maker_quote_is_restable': True,
+            'maker_rest_verb': ('engine.polymarket.paper_adapter'
+                                '.PolymarketPaperAdapter.simulate_maker_buy'),
+        })
+        # QUOTE, never ENTER. Resting is not filling: the adapter returns a
+        # RestingOrder, and only a later book snapshot that crosses STRICTLY
+        # through the quoted price can turn one into a position.
         return decide('QUOTE', 'maker_fill_not_simulated', legs=legs, **feats)
 
     # -- taker sub-paths, which CAN be simulated ---------------------------

@@ -97,6 +97,12 @@ SKIP_CLASSIFICATION: Dict[str, Tuple[str, str]] = {
     'no_orderbook': (DATA_BLOCKER, 'CLOB orderbook'),
     'no_asks': (DATA_BLOCKER, 'ask side of the book'),
     'no_bids_to_join': (DATA_BLOCKER, 'bid side of the book'),
+    # `maker_rebate_corridor_quote_ladder` rests a BUY, so it needs the bid
+    # side to have a price to join. Named separately from `no_bids_to_join`
+    # rather than pooled with it: two strategies missing the same side of the
+    # book are still two facts, and convention 20 forbids one counter for two
+    # drop causes.
+    'no_bids': (DATA_BLOCKER, 'bid side of the book'),
     'no_magnitude_data': (DATA_BLOCKER, 'move magnitude series'),
     'no_window_clock': (DATA_BLOCKER, 'window clock (seconds_remaining)'),
     'no_window_open': (DATA_BLOCKER, 'window open price'),
@@ -127,6 +133,10 @@ SKIP_CLASSIFICATION: Dict[str, Tuple[str, str]] = {
     'lead_above_zone': (GENUINE, ''),
     'lead_inside_noise': (GENUINE, ''),
     'book_too_tight_to_arm': (GENUINE, ''),
+    # Both evaluated a real condition against real inputs and it was false: a
+    # clock gate that had a clock, and a price band that had a mid.
+    'quote_outside_arm_band': (GENUINE, ''),
+    'mid_outside_quote_band': (GENUINE, ''),
     'book_not_wide_enough': (GENUINE, ''),
     'ask_above_band': (GENUINE, ''),
     'ask_above_cap': (GENUINE, ''),
@@ -186,9 +196,49 @@ SKIP_CLASSIFICATION: Dict[str, Tuple[str, str]] = {
                                             'outcome side'),
 
     # --- our side refused a decided action ---------------------------------
-    'maker_quote_not_simulable': (SIM_LIMIT, 'the paper adapter models taker '
-                                             'fills only; this is a QUOTE'),
+    # RETIRED 2026-08-18 (see RETIRED_SKIP_REASONS) and kept here because
+    # ~220k historical CSV rows carry it and an unclassifiable historical row
+    # would surface as UNKNOWN evidence rather than as filed evidence.
+    'maker_quote_not_simulable': (SIM_LIMIT, 'RETIRED. The paper adapter '
+                                             'modelled taker fills only and '
+                                             'every QUOTE was dropped under '
+                                             'this one string; the maker fill '
+                                             'model is wired now'),
     'halted': (SIM_LIMIT, 'the kill switch was engaged; entry blocked'),
+
+    # --- the MAKER path (wired 2026-08-18) ---------------------------------
+    # `maker_quote_not_simulable` is retired below. It was the short-circuit
+    # that counted every QUOTE under one string and threw the legs away, so
+    # both maker strategies produced one number forever and that number
+    # described the LOOP, not them. The loop now rests the legs and these are
+    # the eight distinct causes that bucket was pooling.
+    #
+    # `maker_quote_rested` is NOT a data blocker and NOT a simulator limit: the
+    # order is on the book and the fill is genuinely undecided until a later
+    # snapshot. It is the maker equivalent of "ran and found nothing yet", so
+    # it is GENUINE - a rest that never fills is a RESULT about the strategy's
+    # pricing, which is exactly what box_builder and grid_hedge are being asked.
+    'maker_quote_rested': (GENUINE, ''),
+    'maker_halted': (SIM_LIMIT, 'the kill switch was engaged; the resting buy '
+                                'was refused and any already on the book were '
+                                'cancelled'),
+    'maker_quote_without_legs': (DATA_BLOCKER, 'a well-formed QUOTE (no legs)'),
+    'maker_quote_already_resting': (
+        SIM_LIMIT, 'nothing - an order for this token is ALREADY on the book. '
+                   'One quote per strategy per token; we do not chase'),
+    'maker_rest_budget_exhausted': (
+        SIM_LIMIT, 'a free maker slot. The resting-order budget exists so the '
+                   'maker strategies cannot consume every concurrency slot and '
+                   'starve the 17 taker strategies'),
+    # `maker_rebate_corridor_quote_ladder`'s own per-window cap (proposal 024
+    # rule 4: one resting order per market per window). SIM_LIMIT and not
+    # GENUINE, on the same argument as `maker_quote_already_resting` directly
+    # above: OUR budget refused, the market never got a look in. Calling it
+    # GENUINE would read as "it evaluated the book and declined", which is the
+    # precise confusion the SIM_LIMIT class exists to prevent.
+    'already_quoted_this_window': (
+        SIM_LIMIT, 'a free quote slot for this window - our own cap refused, '
+                   'not the book'),
 
     # --- liquidation-fed strategies ----------------------------------------
     # `no_cascade` is flagged in its own source as "RAN and found nothing. The
@@ -217,9 +267,22 @@ SKIP_CLASSIFICATION: Dict[str, Tuple[str, str]] = {
     'wallet_feed_unavailable': (DATA_BLOCKER, 'the tracked-wallet feed'),
     'wallet_address_unresolved': (DATA_BLOCKER, 'a resolvable wallet address'),
     'wallet_record_unmeasured': (DATA_BLOCKER, "the wallet's track record"),
+    # 2026-08-18: split out of `wallet_record_unmeasured`. We SCORED some of
+    # this wallet's fills against how their markets actually resolved, and got
+    # fewer than the minimum sample. That is NOT_TESTED - a 75% on 8 trades is
+    # a shrug (convention 7) - and it is a different fact from having scored
+    # nothing at all, so it gets its own counter (convention 20).
+    'wallet_record_insufficient_sample': (
+        DATA_BLOCKER, 'enough RESOLVED trades to measure a win rate on'),
     'wallet_record_mixed_unmeasured_and_below': (
         DATA_BLOCKER, 'a track record for at least one wallet (some records '
                       'were unmeasured, some measured-and-below)'),
+    # Any other mix of the three record-gate causes (unmeasured / insufficient
+    # sample / below threshold). At least one leg is a data blocker, so the
+    # whole row is classified as one rather than being credited as a result.
+    'wallet_record_mixed_causes': (
+        DATA_BLOCKER, 'a measurable, large-enough track record for at least '
+                      'one wallet'),
     'no_trade_clock': (DATA_BLOCKER, 'a timestamp on the copied trade'),
     'wallet_record_below_threshold': (GENUINE, ''),
     'no_tracked_wallet_trades': (GENUINE, ''),
@@ -295,6 +358,111 @@ SKIP_CLASSIFICATION: Dict[str, Tuple[str, str]] = {
     'daily_extreme_not_priced_by_point_in_time_model': (
         DATA_BLOCKER, 'a daily-extreme model - the point-in-time model cannot '
                       'price a high/low question'),
+
+    # --- weather arb: THE WRONG PRODUCT -------------------------------------
+    # Added 2026-08-18 with the weather cycle. Before that cycle existed the
+    # shadow loop handed `PM_weather_arb` a BTC Up/Down 5m market on every poll
+    # and it came back `resolution_station_unknown` - which classified as
+    # "the resolution station is missing" for a market that has no weather in
+    # it at all. Two entirely different facts under one counter; convention 20.
+    #
+    # DATA_BLOCKER for the same reason `global_temperature_market_excluded` is:
+    # the strategy has no instrument for this product, so it did not look and
+    # find no edge. GENUINE here would put a fabricated verdict in the record.
+    'not_a_temperature_market': (
+        DATA_BLOCKER, 'a temperature market - this evaluation was handed a '
+                      'crypto Up/Down window, which this strategy has no '
+                      'instrument for'),
+
+    # --- weather arb: THE DAILY EXTREME MODEL'S OWN MISSING INPUTS ----------
+    # All DATA_BLOCKER, and every one of them names a specific input that was
+    # absent rather than a condition that was computed and came out false. The
+    # daily-extreme model needs four things the point-in-time model did not:
+    # the station's coordinates, a forecast at them, the market's observation
+    # DAY, and the station's running extreme so far inside that day.
+    'station_coordinates_unknown': (
+        DATA_BLOCKER, 'the station lat/lon (normally on the METAR payload) - '
+                      'without it no forecast can be requested'),
+    'station_forecast_unavailable': (
+        DATA_BLOCKER, 'the open-meteo daily/hourly forecast at the station'),
+    'resolution_date_unparseable': (
+        DATA_BLOCKER, 'the observation DATE - the question named none, and '
+                      'endDate is a settlement stamp, not the window'),
+    'resolution_date_outside_forecast_window': (
+        DATA_BLOCKER, 'a forecast covering the market\'s local date'),
+    'forecast_extreme_missing_for_date': (
+        DATA_BLOCKER, 'the forecast daily high/low for that local date'),
+    'forecast_hour_missing_for_bias': (
+        DATA_BLOCKER, 'an hourly forecast point near the observation - '
+                      'without it the station-minus-grid bias is unmeasurable '
+                      'and the model would price the grid cell, which is the '
+                      'consumer anchor this strategy claims retail is wrong '
+                      'to use'),
+    # The running observed extreme is a HARD FLOOR on the resolution value, not
+    # an optional prior. Missing it is missing an input, and pricing without it
+    # is the documented Madrid failure.
+    'daily_extreme_history_unavailable': (
+        DATA_BLOCKER, 'the station\'s observations for the elapsed part of the '
+                      'local day, which bound the daily extreme from below'),
+    # These two are about the OBSERVATION WINDOW, not the settlement stamp, and
+    # they are GENUINE for the same reason `market_past_resolution_time` and
+    # `resolution_too_far_out` are: every input was present and a condition on
+    # them came out false. Note they cannot be merged with those two - Madrid's
+    # endDate sits at 14:00 local on the very afternoon its market is about, so
+    # the two clocks disagree by hours in both directions.
+    'observation_window_closed': (GENUINE, ''),
+    'observation_window_too_far_out': (GENUINE, ''),
+    # THE SAME SHAPE AS `strike_inside_proxy_noise_floor`, and classified the
+    # same way for the same reason. The rung is narrower than our sigma, so the
+    # model's SIDE is decided by the bucket width before any temperature is
+    # read: it can never prefer Yes, and would take No on nine of the eleven
+    # rungs of every ladder, every cycle. Measured 2026-08-18, the Madrid 36C
+    # rung returned 0.238 against a ceiling of 0.239 and booked a 0.43 "edge".
+    #
+    # DATA_BLOCKER, not GENUINE, and the distinction matters more here than
+    # almost anywhere: GENUINE would report "the strategy looked and found no
+    # edge" about a rung it has no resolution for. The missing input is a
+    # FITTED sigma - the two constants are estimates and the calibration harness
+    # does not exist. Convention 11: the strategy has NOT been tested on these
+    # rungs, and an empty population here must never read as a silent strategy.
+    # STILL A DATA BLOCKER AFTER THE HARNESS LANDED, AND THE REASON CHANGED.
+    # `backtest/measure_daily_extreme_calibration.py` now exists and the sigma
+    # IS fitted, per station, against 537 station-days of realised METAR daily
+    # extremes. The fitted number came back at 2.74F RMSE at the 24-48h lead
+    # against a house estimate of 2.96F - i.e. the estimate was right and the
+    # rungs are still narrower than the model can resolve. A 1.8F Celsius bucket
+    # needs sigma under 1.334F to reach a 0.5 ceiling and one station of 49
+    # reaches it. So the missing input is no longer "a fitted sigma", it is a
+    # SMALLER one, which is a different (and much harder) thing to go and get.
+    'rung_narrower_than_model_resolution': (
+        DATA_BLOCKER, 'a sigma narrow enough to resolve this rung - fitted '
+                      '2026-08-18 at 2.74F RMSE per station-day at the 24-48h '
+                      'lead, against the 1.334F a 1.8F Celsius bucket needs; a '
+                      'narrower predictor, not a narrower threshold'),
+    # The same axis, one notch further along, and its own counter because the
+    # DISTANCE to tradeable is different: this rung's ceiling clears 0.5 but not
+    # the 0.55 entry conviction floor. Pooling it into the line above would hide
+    # how close the board is to the line - measured 2026-08-18, exactly one
+    # station of 49 sits in this band.
+    'rung_cannot_reach_entry_conviction_on_yes': (
+        DATA_BLOCKER, 'a sigma narrow enough for the Yes side of this rung to '
+                      'reach the 0.55 entry floor; the rung clears the 0.5 '
+                      'resolution gate but its side is still decided by the '
+                      'bucket width rather than by the temperature'),
+    # NOT the same fact as the line above, and this is exactly the convention 20
+    # split that would otherwise be lost: that one has a measured sigma and it
+    # is too wide, this one has NO measured sigma at all. Convention 11 - the
+    # strategy could not run at this station, it did not run and decline.
+    'daily_extreme_sigma_unfitted_for_station': (
+        DATA_BLOCKER, 'a fitted forecast-error sigma for this station in '
+                      'research/weather_sigma_calibration.json (re-run '
+                      'backtest/measure_daily_extreme_calibration.py; the '
+                      'station universe is discovered from the live board and '
+                      'a newly listed city will be absent until it is)'),
+    # GENUINE: the model ran, priced the rung, and declined its own side. A
+    # conviction refusal, deliberately not pooled with `edge_below_min`, which
+    # is a PRICE refusal.
+    'model_confidence_below_entry_floor': (GENUINE, ''),
 
     # --- corridor pair / collector -----------------------------------------
     'no_15m_window_open': (DATA_BLOCKER, 'the 15m window open price'),
@@ -527,6 +695,11 @@ SKIP_CLASSIFICATION: Dict[str, Tuple[str, str]] = {
 RETIRED_SKIP_REASONS: Tuple[str, ...] = (
     # Split 2026-08-18 into `no_book_midpoint` + `book_implied_exact_tie`.
     'no_underdog',
+    # Retired 2026-08-18 when the maker fill model was WIRED into
+    # `engine/polymarket/shadow_loop.py`. It was the QUOTE short-circuit: one
+    # bucket for eight distinct causes, and ~220k CSV rows of it. The rows are
+    # real and stay classifiable; nothing emits it any more.
+    'maker_quote_not_simulable',
 )
 
 #: Reasons the loop emits with a VARIABLE tail - the blocking gate's own
@@ -539,6 +712,13 @@ SKIP_PREFIX_CLASSIFICATION: Tuple[Tuple[str, str, str], ...] = (
     ('risk_gate:', SIM_LIMIT, 'the risk gate blocked an entry the strategy '
                               'had already decided on'),
     ('adapter:', SIM_LIMIT, 'the paper adapter refused a decided entry'),
+    # A SEPARATE prefix from `adapter:` on purpose. The taker path is refused
+    # for taker reasons (`over_notional_cap`, `partial_below_min_shares`) and
+    # the maker path for maker ones (`maker_would_cross_book`, `no_orderbook`
+    # at rest time). Pooling them would hide which path is being refused, and
+    # they have different fixes.
+    ('maker_adapter:', SIM_LIMIT,
+     'the paper adapter refused to REST a decided quote'),
 )
 
 

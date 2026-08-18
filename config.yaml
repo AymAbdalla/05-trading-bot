@@ -160,6 +160,46 @@ polymarket:
   # which convention 17 says is the exact shape of a false positive if a win
   # rate improves afterwards. Compare against the pre-change baseline
   # deliberately, do not read an improvement as edge.
+  weather:
+    # Aym, 2026-08-18: price daily-extreme temperature markets.
+    # DECISIONS.md, "Weather markets get a daily-extreme model, a
+    # discovery cycle, and their own counters". Cited by TITLE and not
+    # by D-number on purpose: convention 24, and the number this block
+    # was first written against was taken by a concurrent session.
+    #
+    # Read `strategies/polymarket/weather_arb.py` before changing either of
+    # these. `true` here does NOT mean "price a daily extreme with the
+    # point-in-time model" - that combination produced the Madrid 0.000024 and
+    # Buenos Aires 0.87 rows and is gone. It selects the DAILY EXTREME model:
+    # max(what the station has already reported today, Normal(open-meteo's
+    # forecast daily extreme + the station-minus-grid bias, sigma)).
+    #
+    # `backtest/measure_daily_extreme_calibration.py` EXISTS as of 2026-08-18
+    # and `use_fitted_sigma` below turns its output on. What it has NOT done is
+    # score this model against a RESOLVED market, because no weather position
+    # has ever resolved - so every entry is still TAPE and every row is stamped
+    # `daily_extreme_model_scored_on_resolved_markets: false`. The harness
+    # measured the PREDICTOR's error, which is a different and weaker claim
+    # than a measured win rate.
+    allow_daily_extreme_markets: true
+    # Price with the FITTED forecast-error sigma, per station, from
+    # research/weather_sigma_calibration.json, written by
+    # backtest/measure_daily_extreme_calibration.py.
+    #
+    # `true` means there is NO fallback: a station absent from the artifact is
+    # refused under `daily_extreme_sigma_unfitted_for_station`, which is a
+    # convention 11 cannot-run. That is the point. A house constant wearing a
+    # fitted label is worse than a skip.
+    #
+    # Re-run the harness when the board lists a new city; the station universe
+    # is discovered from Gamma, so a city that appeared today is not in
+    # yesterday's artifact.
+    use_fitted_sigma: true
+    # The running observed extreme is a HARD FLOOR on the resolution value, not
+    # an optional input. `true` refuses a market whose OPEN observation window
+    # we could not read. A window that has not opened yet is a different fact
+    # and is never refused by this: there is no floor to miss.
+    require_observed_extreme: true
   strike_proxy:
     noise_floor_bps_by_asset:
       btc: 1.0

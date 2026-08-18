@@ -38,6 +38,26 @@ that gap is not a model.
 this docstring (convention 22): every decision this class emits passes through
 it, and an ENTER stops the run.
 
+## THE FILL MODEL LANDED. THE LOOP WIRING DID NOT.
+
+`engine/polymarket/paper_adapter.py` now has `simulate_maker_buy` /
+`simulate_maker_sell`. A rung rests, and it fills only when a later book
+snapshot trades STRICTLY THROUGH the rung price with more size than the queue
+that was ahead of us at rest time. A touch is not a fill; it is counted under
+`maker_touched_not_crossed`.
+
+`assert_not_enter` stays, and this file still returns QUOTE. That is not a
+leftover: a maker does not enter at decision time, it rests and finds out one or
+more cycles later, so QUOTE remains the truthful decision and the adapter
+returns a `RestingOrder` rather than a position.
+
+What is still blocked is production. `engine/polymarket/shadow_loop.py`
+short-circuits `action == 'QUOTE'` into a counted skip and never hands these
+rungs to the adapter, so no rung has rested in a live cycle and the kill
+condition still has zero of its 50 fills. `kill_condition_blocked_by` below is
+deliberately NOT cleared. Convention 11: a shadow log full of
+`maker_quote_not_simulable` is still ZERO EVIDENCE in either direction.
+
 ## BUT EVERYTHING A FILL MODEL WOULD NEED IS COMPUTED AND EXPOSED
 
 The ladder is built in full on every QUOTE row: both sides, every rung, price
@@ -129,6 +149,7 @@ from dataclasses import dataclass, field
 from statistics import NormalDist
 from typing import Dict, Iterable, List, Optional, Tuple
 
+from engine.polymarket.paper_adapter import MAKER_FILL_MODEL
 from strategies.polymarket.base import (WINDOW_SECONDS, Decision, Leg,
                                         MarketContext, PolymarketStrategy)
 
@@ -778,4 +799,18 @@ class GridHedge(PolymarketStrategy):
         feats['grid_pnl_helper'] = 'strategies.polymarket.grid_hedge.grid_pnl'
         feats['kill_condition'] = 'grid_pnl net_usdc < -5.00 over 50 fills'
         feats['kill_condition_blocked_by'] = 'maker_fills_not_simulated'
+        # A maker fill model now EXISTS in the paper adapter
+        # (`simulate_maker_buy`, strict cross minus the queue that was ahead of
+        # us). These three keys are the whole wiring change: they tell a
+        # consumer these rungs are restable and name the verb and the rule.
+        #
+        # `kill_condition_blocked_by` above is deliberately NOT cleared. The
+        # kill condition needs 50 grid FILLS, and a fill model existing is not
+        # 50 fills. It stays blocked until the shadow loop rests these rungs and
+        # the adapter reports them filled - convention 11, and convention 22: a
+        # capability in a docstring is not a wired capability.
+        feats['maker_fill_model_available'] = MAKER_FILL_MODEL
+        feats['maker_quote_is_restable'] = True
+        feats['maker_rest_verb'] = ('engine.polymarket.paper_adapter'
+                                    '.PolymarketPaperAdapter.simulate_maker_buy')
         return decide('QUOTE', 'maker_fill_not_simulated', legs=legs, **feats)

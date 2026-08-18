@@ -115,9 +115,14 @@ from typing import Dict, List, Optional
 from engine.polymarket.fair_value import (DEFAULT_MODEL_UNCERTAINTY,
                                           FairValueEstimate, PriceTape,
                                           estimate_fair_value)
-from strategies.polymarket.base import (WINDOW_SECONDS, Decision, Leg,
+from strategies.polymarket.base import (GENERAL_BINARY_MARKET_TYPES,
+                                        MARKET_TYPE_CRYPTO_UPDOWN,
+                                        WINDOW_SECONDS, Decision, Leg,
                                         MarketContext, PolymarketStrategy,
-                                        effective_ask_for, window_atr)
+                                        effective_ask_for,
+                                        effective_stop_distance,
+                                        tiered_stop_features,
+                                        tiered_stop_price, window_atr)
 
 # Never False in this repo. Nothing here has live-trading authority.
 PAPER_MODE = True
@@ -135,7 +140,19 @@ EDGE_THRESHOLD = 0.04
 #: Floor on the sell limit at the profit target. NOT a cap on the fill.
 MIN_PROFIT = 0.01
 
-#: Bid decline from the entry price that closes the position at a loss.
+#: NOMINAL payoff geometry ONLY. **This is no longer the stop.**
+#:
+#: Until 2026-08-18 this constant WAS the stop: `manage_exit` fired `price_stop`
+#: when the bid fell 3c below entry, at every entry price, so a 0.05 fill risked
+#: 60% of its premium and a 0.83 fill risked 3.6%. The stop is now
+#: `strategies.polymarket.base.tiered_stop_price`, which keys the distance to
+#: the entry tier, and it lives in exactly one place for the whole package.
+#:
+#: What still reads this: `breakeven_win_rate`, and nothing else. That property
+#: describes the payoff geometry the variants were SPECIFIED with and is what
+#: the four variant docstrings' break-even arithmetic is stated against; it is
+#: not a description of the risk a live position now carries. The per-fill
+#: number is `breakeven_win_rate_at(entry)`, which reads the tiered stop.
 MAX_LOSS = 0.03
 
 #: Fair value must stay at least this far above the entry price. Below it the
@@ -203,6 +220,26 @@ PRICE_TICK = 0.01
 #: Windows of per-window attempt state kept. A 5m loop would otherwise grow
 #: without bound.
 STATE_WINDOWS_KEPT = 8
+
+#: The reason a NON-CRYPTO context gets, before any model input is read.
+#:
+#: It exists so that "this model was never applicable to this market" and "this
+#: model ran and could not compute a fair value" are two counters instead of
+#: one. Without it a sports market falls through to `self.estimate(ctx)`, which
+#: is handed `spot=None` and `window_open=None`, comes back unusable, and the
+#: row reads `fair_value_no_spot` - a string that says the BTC spot feed was
+#: down. A reader of the skip table would then be looking at a data-quality
+#: incident that never happened, on a market that has no spot to be missing.
+#: Convention 20: two drop causes never share one counter, and convention 11:
+#: could-not-apply is not could-not-compute.
+#:
+#: Named for the MODEL and not for the market, because that is where the
+#: constraint lives. The whole of `engine/polymarket/fair_value.py` is a
+#: probability of a crypto price move: displacement from the window open in
+#: units of realized sigma, diffused over the seconds left. There is no
+#: displacement and no sigma on "will this team win", and there is no version of
+#: that model that produces one.
+NON_CRYPTO_SKIP_REASON = 'fair_value_model_needs_crypto_spot'
 
 
 def floor_to_tick(price: float, tick: float = PRICE_TICK) -> float:
@@ -275,6 +312,36 @@ class FairValueArb(PolymarketStrategy):
     #: it holds to resolution, which is what every other strategy here does.
     manages_exits = True
 
+    #: CRYPTO PLUS EVERY GENERAL BINARY - and read the gate in `evaluate`
+    #: before reading this as "the fair value model works on a sports market".
+    #: It does not, and it is refused on the first line rather than allowed to
+    #: fail downstream.
+    #:
+    #: The two are not in tension. This declaration is about ROUTING: the loop
+    #: is allowed to hand this strategy an event, sports or political market
+    #: without that being a wiring bug, because the ENTRY MACHINERY here - the
+    #: book walk, the depth gate, the notional sizing, the tiered stop, the
+    #: whole `manage_exit` ladder - is market-agnostic and is what a future
+    #: non-crypto fair value model would be bolted onto. What is crypto-only is
+    #: the MODEL, and the model refuses under `NON_CRYPTO_SKIP_REASON` with a
+    #: reason that says so in as many words.
+    #:
+    #: The alternative - declaring crypto only - would make every non-crypto
+    #: context an `assert_supports` exception counted under
+    #: `strategy_exceptions`, which is the bucket that means "our code broke".
+    #: Being handed a sports market is not our code breaking; having no model
+    #: for one is a fact about the model, and it belongs in the skip table under
+    #: its own name where it can be counted.
+    #:
+    #: INHERITED BY ALL FOUR VARIANTS. `_wide`, `_patient` and `_hft` are thin
+    #: parameter subclasses that override no class attribute, and `_inverse`
+    #: calls `super().evaluate(ctx)` and passes every parent SKIP straight
+    #: through, so the gate below reaches all five strategies from this one
+    #: place (convention 23: a fix at one site is not a fix - unless the one
+    #: site is the only site, which a test pins).
+    supported_market_types = ((MARKET_TYPE_CRYPTO_UPDOWN,)
+                              + GENERAL_BINARY_MARKET_TYPES)
+
     def __init__(self, edge_threshold: float = EDGE_THRESHOLD,
                  min_profit: float = MIN_PROFIT,
                  max_loss: float = MAX_LOSS,
@@ -317,6 +384,39 @@ class FairValueArb(PolymarketStrategy):
         self.tape = PriceTape()
         #: window_ts -> entry ATTEMPTS. See the docstring: not fills.
         self._window_trades: Dict[int, int] = {}
+
+    # -- the stop -----------------------------------------------------------
+    #
+    # Three thin methods, all delegating to `strategies.polymarket.base`. They
+    # exist so `manage_exit` and `evaluate` never inline the rule and so a test
+    # can prove a subclass reaches the shared helper rather than a copy of it
+    # (convention 22). Nothing here re-derives a distance.
+
+    @staticmethod
+    def stop_price_for(entry_px: float,
+                       side: Optional[str] = None) -> float:
+        """The tiered stop price for a fill at `entry_px`. See base."""
+        return tiered_stop_price(entry_px, side)
+
+    @staticmethod
+    def stop_distance_for(entry_px: float,
+                          side: Optional[str] = None) -> float:
+        """`entry_px - stop_price_for(...)`: the loss the stop admits."""
+        return effective_stop_distance(entry_px, side)
+
+    def breakeven_win_rate_at(self, entry_px: float,
+                              side: Optional[str] = None) -> float:
+        """Break-even for THIS fill: `loss / (gain + loss)` at the tiered stop.
+
+        The `breakeven_win_rate` property answers the same question against the
+        SPECIFIED `max_loss`, which no longer sets the stop. Where the two
+        disagree, this one describes the position and that one describes the
+        spec. Both are on the entry row so a reader is never left guessing which
+        number a docstring meant.
+        """
+        loss = self.stop_distance_for(entry_px, side)
+        denom = self.min_profit + loss
+        return float('nan') if denom <= 0 else loss / denom
 
     # -- per-window state ---------------------------------------------------
 
@@ -423,6 +523,27 @@ class FairValueArb(PolymarketStrategy):
 
         if ctx.market is None:
             return decide('SKIP', 'no_market')
+
+        if not ctx.is_crypto_window:
+            # THE MODEL WAS NEVER APPLICABLE HERE. Ranked above the clock gate
+            # deliberately: on a non-crypto context `seconds_remaining` is also
+            # None, so without this line every sports market would come back
+            # `no_window_clock` - which reads as "the crypto window clock was
+            # missing", a transient wiring fault, on a market that has no
+            # 5-minute window for a clock to be missing from.
+            #
+            # Further down it is worse still. `self.estimate(ctx)` would be
+            # handed `spot=None` and `window_open=None`, return unusable, and
+            # emit `fair_value_no_spot` - which is the string a real BTC feed
+            # outage produces. One counter would then hold a genuine data
+            # incident and a permanent structural refusal, and the structural
+            # one would dominate it by volume forever.
+            #
+            # Conventions 11 and 20, in one gate: could-not-apply is its own
+            # fact and gets its own name.
+            return decide('SKIP', NON_CRYPTO_SKIP_REASON,
+                          market_type=ctx.market_type,
+                          fair_value_model_is_a_crypto_price_model=True)
 
         remaining = ctx.seconds_remaining
         if remaining is None:
@@ -583,7 +704,16 @@ class FairValueArb(PolymarketStrategy):
         feats['realized_edge_bps'] = (round(realized_edge / effective * 10_000, 1)
                                       if effective > 0 else None)
         feats['profit_target_price'] = round(effective + self.min_profit, 4)
-        feats['stop_price'] = round(effective - self.max_loss, 4)
+        # The tiered stop, computed from the WALKED fill rather than from the
+        # cap: the cap is what we were willing to pay and `effective` is what
+        # the book charged, and a stop keyed to the wrong one of those is a
+        # stop at the wrong price on every entry that filled inside its limit.
+        feats.update(tiered_stop_features(effective, side))
+        feats['breakeven_win_rate_at_tiered_stop'] = round(
+            self.breakeven_win_rate_at(effective, side), 6)
+        feats['breakeven_win_rate_at_specified_max_loss'] = round(
+            self.max_loss / (self.min_profit + self.max_loss), 6) \
+            if (self.min_profit + self.max_loss) > 0 else None
         feats['breakeven_win_rate_if_held'] = round(effective, 4)
         feats['notional_usdc'] = round(shares * effective, 4)
         feats['attempt_number'] = self._note_attempt(ctx.window_ts)
@@ -612,9 +742,14 @@ class FairValueArb(PolymarketStrategy):
           1. `window_close`   Under 30s left the position stops being a
                               mispricing trade and becomes a directional bet on
                               the resolution. Cut regardless of PnL.
-          2. `price_stop`     The bid has fallen MAX_LOSS below entry. Take the
-                              loss at whatever the book pays; a stop that
-                              refuses a bad price is not a stop.
+          2. `price_stop`     The bid has reached the TIERED stop for this
+                              fill - `base.tiered_stop_price(avg_price)`, not a
+                              fixed `max_loss`. Take the loss at whatever the
+                              book pays; a stop that refuses a bad price is not
+                              a stop. On a fill at or below its own tier
+                              distance the stop is 0.00, this rule can never
+                              fire, and the row says so via
+                              `stop_is_structural_floor`.
           3. `profit_target`  The bid pays entry + MIN_PROFIT or better. Booked
                               ahead of the model stop on purpose: if both fire,
                               taking money is right.
@@ -640,6 +775,7 @@ class FairValueArb(PolymarketStrategy):
         shares = float(getattr(position, 'shares', 0.0) or 0.0)
         opened_ts = getattr(position, 'opened_ts', None)
         window_ts = getattr(position, 'window_ts', None)
+        outcome_side = getattr(position, 'outcome_side', None)
 
         age = (None if opened_ts is None else float(now) - float(opened_ts))
         seconds_remaining = (None if window_ts is None
@@ -659,9 +795,24 @@ class FairValueArb(PolymarketStrategy):
             'unrealized_at_bid': (None if best_bid is None
                                   else round((best_bid - entry) * shares, 4)),
             'profit_target_price': round(entry + self.min_profit, 4),
-            'stop_price': round(entry - self.max_loss, 4),
             'exits_before_resolution': True,
         }
+
+        # The tiered stop. Computed from the REAL fill (`position.avg_price`)
+        # on the REAL side, before the unreadable-position guard below can send
+        # us home, so that every row carries either a stop or a named reason it
+        # has none. `stop_price` used to be `entry - self.max_loss` here, which
+        # is the line that made a 3c stop a 60% loss on a 0.05 fill.
+        stop_px: Optional[float] = None
+        if entry > 0.0:
+            stop_px = self.stop_price_for(entry, outcome_side)
+            feats.update(tiered_stop_features(entry, outcome_side))
+        else:
+            # Convention 11 and 20: a stop we could not compute is its own
+            # fact, not a stop of 0.00 and not a missing key.
+            feats['stop_price'] = None
+            feats['stop_is_tiered'] = True
+            feats['stop_uncomputable_reason'] = 'entry_price_not_positive'
 
         def hold(reason, **extra):
             return ExitDecision('HOLD', reason, position_id=pid,
@@ -691,9 +842,15 @@ class FairValueArb(PolymarketStrategy):
             return exit_now('window_close', URGENT_SELL_LIMIT,
                             window_close_exit_sec=self.window_close_exit_sec)
 
-        if best_bid <= entry - self.max_loss + 1e-12:
+        if stop_px is not None and best_bid <= stop_px + 1e-12:
+            # `max_loss` is kept on the row under its old key so an existing
+            # reader of `sell:price_stop` rows does not silently lose the
+            # column - but it is now the TIERED distance for this fill, not the
+            # instance constant. `stop_distance_nominal` says what the tier
+            # asked for, `stop_is_structural_floor` says when the two differ.
             return exit_now('price_stop', URGENT_SELL_LIMIT,
-                            max_loss=self.max_loss)
+                            max_loss=round(entry - stop_px, 6),
+                            max_loss_specified_not_used=self.max_loss)
 
         if best_bid >= entry + self.min_profit - 1e-12:
             # Limit at the target, not at the bid: if walking depth for our

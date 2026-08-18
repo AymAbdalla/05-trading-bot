@@ -6,9 +6,29 @@ module does the parts that must not drift: loading the evidence, computing the
 gaps, enforcing what little of the proposal schema still binds, and refusing
 anything that would put a false or unfalsifiable number into the record.
 
-Evidence comes from two places now:
+Evidence comes from three places now:
   - the graveyard (backtest): summary.json, judge_evidence_pack.json, pooled
   - the shadow loop (live paper): db/trading.db, via agents/forge_shadow_eval.py
+  - the Obsidian vault (durable memory between cycles): lessons, blowup
+    reports, strategy cards and cycle summaries, via agents/vault_reader.py
+
+## Where the CANDIDATES come from (two paths, one validator)
+
+By default the candidate list is `agents/forge_candidates.py`, hand written and
+rewritten each cycle. With `--reasoner` it is instead an Opus turn, run by
+`agents/forge_reasoner.py`, which reads the same evidence plus the hypothesis
+graph and the vault and returns JSON candidates.
+
+The model does NOT write the proposal files. It returns candidates and they go
+through the SAME `validate()` and `write_proposal()` path as a hand written
+one. That is the whole point: this module's contract is that the deterministic
+half enforces the schema and refuses anything unfalsifiable, and that contract
+only holds while Python holds the pen. See `agents/forge_reasoner.py` for the
+longer argument.
+
+When the reasoner CANNOT RUN, the run log records NOT_TESTED (convention 11)
+and the deterministic candidate list is used instead. It never crashes and it
+never writes zero proposals without saying why.
 
 Forge proposes. Forge does not build and does not grade. This module therefore
 writes ONLY under `strategies/proposals/` plus its own run log. It never writes
@@ -309,7 +329,44 @@ def find_pooled_losers(pooled: Optional[Dict[str, Any]],
     return rows[:limit]
 
 
-def analyse_gaps(bundle: Dict[str, Any]) -> Dict[str, Any]:
+def load_vault_summary(budget_chars: Optional[int] = None) -> Dict[str, Any]:
+    """The Obsidian vault, summarised for the gap picture.
+
+    A SUMMARY, not the notes themselves: this ends up in `--gaps-only` output
+    and in the run log, and pasting 60k chars of lessons into both would make
+    neither readable. The full rendered text goes to the reasoning prompt via
+    `agents/forge_reasoner.py`, which budgets it explicitly.
+
+    Convention 11 at the evidence layer: a vault that could not be read is
+    status='unreadable' with the error, never a clean zero that would read as
+    "no lessons have been written".
+    """
+    try:
+        from agents import vault_reader
+    except ImportError as exc:  # pragma: no cover - the module ships with this
+        return {'status': 'unavailable', 'error': f'{type(exc).__name__}: {exc}'}
+    try:
+        kwargs = {} if budget_chars is None else {'budget_chars': budget_chars}
+        context = vault_reader.load_context(**kwargs)
+        return {
+            'status': 'ok',
+            'vault_root': context['vault_root'],
+            'total_notes': context['total_notes'],
+            'total_chars': context['total_chars'],
+            'total_dropped': context['total_dropped'],
+            'notes_by_section': {
+                key: [note.name for note in section['notes']]
+                for key, section in context['sections'].items()},
+            'known_failure_modes': vault_reader.known_failure_modes(context),
+        }
+    except OSError as exc:
+        return {'status': 'unreadable',
+                'error': f'{type(exc).__name__}: {exc}',
+                'note': 'NOT_TESTED, not empty. Convention 11.'}
+
+
+def analyse_gaps(bundle: Dict[str, Any],
+                 include_vault: bool = True) -> Dict[str, Any]:
     """The full gap picture Forge proposes against."""
     evidence = bundle.get('evidence')
     summary = bundle.get('summary')
@@ -334,6 +391,12 @@ def analyse_gaps(bundle: Dict[str, Any]) -> Dict[str, Any]:
         gaps['distinct_findings'] = summary.get('distinct_findings')
         gaps['not_tested_breakdown'] = summary.get('not_tested_breakdown')
         gaps['tested_rows_with_trades'] = summary.get('tested_rows_with_trades')
+
+    if include_vault:
+        # The durable memory between cycles. A proposal that repeats a lesson
+        # already written into the vault should be refused by argument, and
+        # that is only possible if Forge has read the vault first.
+        gaps['vault'] = load_vault_summary()
     return gaps
 
 
@@ -546,7 +609,7 @@ def render(candidate: Dict[str, Any],
 def write_proposal(candidate: Dict[str, Any], index: int,
                    warnings: Optional[List[Dict[str, str]]] = None) -> str:
     """Write one proposal and return its path."""
-    slug = candidate['name'].replace('_', '-')
+    slug = proposal_slug(candidate['name'])
     path = os.path.join(PROPOSALS_DIR, f'{index:03d}-{slug}.md')
     with open(path, 'w') as fh:
         fh.write(render(candidate, warnings))
@@ -554,12 +617,174 @@ def write_proposal(candidate: Dict[str, Any], index: int,
 
 
 # ---------------------------------------------------------------------------
+# Where candidates come from
+# ---------------------------------------------------------------------------
+
+# Convention 20: the reasoner's outcomes are a closed vocabulary and every one
+# of them is a DIFFERENT fact about what happened, so they get different names
+# and the fallback reason is recorded rather than flattened to a boolean.
+REASONER_FALLBACK_REASONS = (
+    'NOT_TESTED',       # the turn could not run at all (convention 11)
+    'unusable_reply',   # it ran and we could not read what it said
+    'no_candidates',    # it ran, we read it, and it proposed nothing
+)
+
+
+def collect_candidates(gaps: Dict[str, Any],
+                       shadow_candidates: Optional[List[Dict[str, Any]]] = None,
+                       *,
+                       use_reasoner: bool = False,
+                       n_proposals: int = 3,
+                       db_path: Optional[str] = None,
+                       paper_log: Optional[str] = None,
+                       shadow_evaluation: Optional[Dict[str, Any]] = None,
+                       ) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """The candidate list, and the reasoner record when one was asked for.
+
+    Returns `(candidates, reasoner_record_or_None)`.
+
+    `use_reasoner=False` is the default and it is EXACTLY the old behaviour:
+    the hand written list from `agents/forge_candidates.py` plus whatever the
+    shadow evaluator produced, and a `None` record so nothing new appears in
+    the run log.
+
+    `use_reasoner=True` replaces the hand written list with an Opus turn. It
+    does NOT replace the shadow repairs: those come from a measurement, not
+    from an idea, and the flag says nothing about them. When the turn cannot
+    run, or returns nothing usable, the hand written list is used instead and
+    the record says which of `REASONER_FALLBACK_REASONS` happened.
+    """
+    from agents.forge_candidates import CANDIDATES
+    shadow_candidates = list(shadow_candidates or [])
+
+    if not use_reasoner:
+        return list(CANDIDATES) + shadow_candidates, None
+
+    # Imported lazily: forge_reasoner imports THIS module at module level, so
+    # a top level import here would be a cycle.
+    from agents import forge_reasoner
+
+    brief = forge_reasoner.gather_evidence(
+        db_path=db_path or forge_reasoner.DEFAULT_DB,
+        paper_log=paper_log,
+        gaps=gaps,
+        shadow_evaluation=shadow_evaluation,
+        include_shadow=True,
+    )
+    outcome = forge_reasoner.reason(brief, n_proposals=n_proposals,
+                                    db_path=db_path
+                                    or forge_reasoner.DEFAULT_DB,
+                                    paper_log=paper_log)
+
+    record: Dict[str, Any] = dict(outcome.to_dict())
+    record['requested'] = True
+    record['n_proposals_requested'] = n_proposals
+    record['task'] = forge_reasoner.TASK
+
+    if outcome.candidates:
+        record['fell_back_to_deterministic'] = False
+        record['fallback_reason'] = None
+        return list(outcome.candidates) + shadow_candidates, record
+
+    # Nothing usable came back. Fall back rather than write zero proposals
+    # with no explanation, and say WHY in the record (convention 20).
+    assert outcome.status in REASONER_FALLBACK_REASONS, (
+        f'unknown reasoner status {outcome.status!r}')
+    record['fell_back_to_deterministic'] = True
+    record['fallback_reason'] = outcome.status
+    record['not_tested'] = outcome.status == 'NOT_TESTED'
+    return list(CANDIDATES) + shadow_candidates, record
+
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 
+def proposal_slug(name: str) -> str:
+    """The filename slug for a proposal name.
+
+    Single definition, because `write_proposal` and the number allocator must
+    agree about what "the same proposal" means. Two definitions of a slug is
+    two opinions about identity (convention 23).
+    """
+    return str(name).replace('_', '-')
+
+
+def existing_numbers_by_slug(proposals_dir: Optional[str] = None
+                             ) -> Dict[str, int]:
+    """`{slug: number}` for every proposal already on disk.
+
+    A proposal's number is a property of the proposal, not of where it landed
+    in one run's candidate list. Re-running Forge must rewrite `007-foo.md`,
+    never add `024-foo.md` beside it.
+
+    A slug carrying two numbers (which the 001-vs-024 episode created) resolves
+    to the LOWEST, so a repair collapses the duplicates onto the original
+    rather than onto the accident.
+    """
+    if proposals_dir is None:
+        proposals_dir = PROPOSALS_DIR
+    out: Dict[str, int] = {}
+    try:
+        names = os.listdir(proposals_dir)
+    except OSError:
+        return out
+    for name in sorted(names):
+        if not name.endswith('.md'):
+            continue
+        head, _, tail = name[:-3].partition('-')
+        if len(head) == 3 and head.isdigit() and tail:
+            number = int(head)
+            if tail not in out or number < out[tail]:
+                out[tail] = number
+    return out
+
+
+def next_free_index(proposals_dir: Optional[str] = None) -> int:
+    """One past the highest proposal number already on disk.
+
+    `proposals_dir` defaults to `PROPOSALS_DIR` resolved AT CALL TIME, not as
+    a default argument. A default argument would bind the module global once
+    at import and then ignore anyone who monkeypatches it, which is exactly
+    how the tests point this at a temporary directory. `write_proposal` reads
+    the global inside its body for the same reason; these two must agree about
+    which directory they are talking about or a test passes while the numbers
+    come from the real repo.
+
+    `start_index` used to default to 1, which meant that every run that forgot
+    to pass `--start-index` restarted the numbering. Nothing was overwritten,
+    because the filename carries the slug as well as the number, so the actual
+    damage was quieter than a clobber and worse to live with: on 2026-08-18 a
+    run produced a second 001 through 007 beside the existing ones, and
+    "proposal 005" stopped identifying a document. `corridor_pair_live.py`
+    cites proposal 005 by number in its docstring.
+
+    So the default is now derived rather than assumed. `--start-index` is kept
+    as an explicit override, because a caller who is deliberately renumbering
+    needs it, but the safe thing is what happens when nobody thinks about it.
+
+    An empty or unreadable directory gives 1, which is the correct first
+    number and not a fallback to the old bug.
+    """
+    if proposals_dir is None:
+        proposals_dir = PROPOSALS_DIR
+    highest = 0
+    try:
+        names = os.listdir(proposals_dir)
+    except OSError:
+        return 1
+    for name in names:
+        if not name.endswith('.md'):
+            continue
+        head = name.split('-', 1)[0]
+        if len(head) == 3 and head.isdigit():
+            highest = max(highest, int(head))
+    return highest + 1
+
+
 def generate(candidates: List[Dict[str, Any]],
              gaps: Dict[str, Any],
-             start_index: int = 1) -> Dict[str, Any]:
+             start_index: Optional[int] = None) -> Dict[str, Any]:
     """Validate and write every candidate. Returns the run record.
 
     Convention 20: refusals are counted BY CATEGORY, warnings are counted BY
@@ -573,7 +798,25 @@ def generate(candidates: List[Dict[str, Any]],
     refused: List[Dict[str, str]] = []
     warned: List[Dict[str, str]] = []
 
-    index = start_index
+    # A proposal's number belongs to its IDENTITY, not to its position in this
+    # run's candidate list.
+    #
+    # This has now been wrong in two different directions in one day. It began
+    # as `start_index=1`, so the reasoner's first real run produced a second
+    # 001 through 007 beside the existing ones and "proposal 005" stopped
+    # naming a document. Changing the default to next-free fixed that and broke
+    # the other half: the DETERMINISTIC path re-emits the same hand written
+    # list every run, and it used to rewrite 001-005 in place. Appending
+    # instead produced 024-028 carrying the identical five slugs three minutes
+    # later.
+    #
+    # Both failures are the same mistake, which is numbering by position. Keyed
+    # on the slug, a re-run of the same proposal overwrites itself and a
+    # genuinely new proposal takes the next free number. Neither duplicate can
+    # happen. `--start-index` still forces sequential numbering for a
+    # deliberate renumbering.
+    existing = existing_numbers_by_slug()
+    index = next_free_index() if start_index is None else start_index
     for candidate in candidates:
         try:
             warnings = validate(candidate, known)
@@ -586,7 +829,14 @@ def generate(candidates: List[Dict[str, Any]],
             continue
         for w in warnings:
             warned.append({'name': candidate['name'], **w})
-        path = write_proposal(candidate, index, warnings)
+        slug = proposal_slug(candidate['name'])
+        if start_index is None and slug in existing:
+            number = existing[slug]
+        else:
+            number = index
+            index += 1
+            existing[slug] = number
+        path = write_proposal(candidate, number, warnings)
         written.append({
             'name': candidate['name'],
             'path': os.path.relpath(path, ROOT),
@@ -594,8 +844,8 @@ def generate(candidates: List[Dict[str, Any]],
             'asset_class': candidate['asset_class'],
             'expected_edge_bps': candidate['expected_edge_bps'],
             'warnings': [w['category'] for w in warnings],
+            'number': number,
         })
-        index += 1
 
     seen_refusals = collections.Counter(r['category'] for r in refused)
     seen_warnings = collections.Counter(w['category'] for w in warned)
@@ -642,6 +892,7 @@ def generate(candidates: List[Dict[str, Any]],
             'distinct_findings': gaps.get('distinct_findings'),
             'shadow': gaps.get('shadow'),
             'shadow_error': gaps.get('shadow_error'),
+            'vault': gaps.get('vault'),
         },
     }
 
@@ -657,8 +908,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--gaps-only', action='store_true',
                         help='print the gap analysis and write nothing')
-    parser.add_argument('--start-index', type=int, default=1,
-                        help='first proposal number (default 1)')
+    parser.add_argument('--start-index', type=int, default=None,
+                        help='first proposal number. Default is one past the '
+                             'highest number already in strategies/proposals/,'
+                             ' so a run cannot silently produce a second 001')
     parser.add_argument('--shadow-results', metavar='DB_PATH', default=None,
                         help='read live shadow-trading results from this '
                              'SQLite DB (e.g. db/trading.db) and propose '
@@ -667,11 +920,23 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help='Polymarket paper log CSV; defaults to '
                              'research/polymarket_paper/'
                              'polymarket_paper_log.csv')
+    parser.add_argument('--reasoner', '--opus', action='store_true',
+                        dest='reasoner',
+                        help='ask Opus for the candidates instead of using the '
+                             'hand written list in agents/forge_candidates.py. '
+                             'The model returns JSON; PYTHON still validates '
+                             'and writes every proposal. If the turn cannot '
+                             'run, the run log records NOT_TESTED and the hand '
+                             'written list is used instead.')
+    parser.add_argument('--n-proposals', type=int, default=3,
+                        help='how many candidates to ask the reasoner for '
+                             '(default 3). Ignored without --reasoner.')
     args = parser.parse_args(argv)
 
     bundle = load_evidence()
     gaps = analyse_gaps(bundle)
 
+    shadow = None
     shadow_candidates: List[Dict[str, Any]] = []
     if args.shadow_results:
         from agents import forge_shadow_eval as shadow_eval
@@ -700,13 +965,33 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(json.dumps(gaps, indent=2, allow_nan=False, sort_keys=True))
         return 0
 
-    from agents.forge_candidates import CANDIDATES
+    candidates, reasoner_record = collect_candidates(
+        gaps, shadow_candidates,
+        use_reasoner=args.reasoner,
+        n_proposals=args.n_proposals,
+        db_path=args.shadow_results,
+        paper_log=args.paper_log,
+        shadow_evaluation=shadow,
+    )
+
+    if reasoner_record and reasoner_record['fell_back_to_deterministic']:
+        # Loud, and on stderr, because "Forge wrote the template proposals
+        # again" looks identical to a normal run in the output below.
+        why = reasoner_record['fallback_reason']
+        note = ('the Opus turn COULD NOT RUN, so this is NOT_TESTED and not '
+                '"the model had no ideas" (convention 11)'
+                if why == 'NOT_TESTED' else
+                'the Opus turn ran but produced nothing usable')
+        print(f'WARN reasoner fell back to the deterministic candidate list: '
+              f'{why} ({note}); error={reasoner_record.get("error")}',
+              file=sys.stderr)
 
     os.makedirs(PROPOSALS_DIR, exist_ok=True)
-    record = generate(list(CANDIDATES) + shadow_candidates, gaps,
-                      start_index=args.start_index)
+    record = generate(candidates, gaps, start_index=args.start_index)
     record['shadow_results_path'] = args.shadow_results
     record['shadow_candidates_added'] = len(shadow_candidates)
+    if reasoner_record is not None:
+        record['reasoner'] = reasoner_record
     log_run(record)
 
     print(f"screened {record['candidates_screened']}, "

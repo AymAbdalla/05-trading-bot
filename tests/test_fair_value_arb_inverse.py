@@ -310,7 +310,10 @@ class TestStopsComeFromTheActualFill:
 
         assert f['effective_ask'] == pytest.approx(0.42)
         assert f['profit_target_price'] == pytest.approx(0.42 + s.min_profit)
-        assert f['stop_price'] == pytest.approx(0.42 - s.max_loss)
+        # The TIERED stop: 0.42 is in the [0.10, 0.50) tier, so 0.08 away.
+        # It was `0.42 - s.max_loss` while `max_loss` was the stop.
+        assert f['stop_price'] == pytest.approx(0.34)
+        assert f['stop_price'] == pytest.approx(s.stop_price_for(0.42))
         assert f['stop_and_target_from_actual_fill_not_mirrored'] is True
 
     def test_they_are_NOT_the_parents_numbers_mirrored(self):
@@ -331,7 +334,8 @@ class TestStopsComeFromTheActualFill:
         d = s.manage_exit(_position(entry=0.42), book, now=WINDOW_TS + 150)
 
         assert d.features['entry_price'] == pytest.approx(0.42)
-        assert d.features['stop_price'] == pytest.approx(0.39)
+        # Tiered: 0.42 - 0.08. Was 0.39 under the flat 3c stop.
+        assert d.features['stop_price'] == pytest.approx(0.34)
         assert d.features['profit_target_price'] == pytest.approx(0.43)
 
     def test_a_different_fill_moves_the_stop_with_it(self):
@@ -340,12 +344,16 @@ class TestStopsComeFromTheActualFill:
         book = _book(DOWN_TOK, asks=[(0.80, 100)], bids=[(0.78, 100)])
         d = s.manage_exit(_position(entry=0.79), book, now=WINDOW_TS + 150)
 
-        assert d.features['stop_price'] == pytest.approx(0.76)
+        # 0.79 sits in the >= 0.50 tier, so the stop is 0.10 away, not 0.03.
+        # The point of the test is unchanged: only the fill moved.
+        assert d.features['stop_price'] == pytest.approx(0.69)
         assert d.features['profit_target_price'] == pytest.approx(0.80)
 
     def test_the_price_stop_fires_off_the_flipped_entry(self):
         s = FairValueArbInverse()
-        book = _book(DOWN_TOK, asks=[(0.40, 100)], bids=[(0.38, 100)])
+        # bid 0.34 is the TIERED stop for a 0.42 entry. It was 0.38 against
+        # the flat 3c stop at 0.39.
+        book = _book(DOWN_TOK, asks=[(0.36, 100)], bids=[(0.34, 100)])
         d = s.manage_exit(_position(entry=0.42), book, now=WINDOW_TS + 150)
 
         assert d.action == 'EXIT'

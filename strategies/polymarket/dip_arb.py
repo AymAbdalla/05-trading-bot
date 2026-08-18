@@ -109,9 +109,14 @@ import math
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-from strategies.polymarket.base import (WINDOW_SECONDS, Decision, Leg,
+from strategies.polymarket.base import (GENERAL_BINARY_MARKET_TYPES,
+                                        MARKET_TYPE_CRYPTO_UPDOWN,
+                                        WINDOW_SECONDS, Decision, Leg,
                                         MarketContext, PolymarketStrategy,
-                                        effective_ask_for)
+                                        effective_ask_for,
+                                        effective_stop_distance,
+                                        tiered_stop_features,
+                                        tiered_stop_price)
 from strategies.polymarket.fair_value_arb import (URGENT_SELL_LIMIT,
                                                   ExitDecision, floor_to_tick)
 
@@ -147,7 +152,15 @@ DIP_THRESHOLD = 0.10
 #: the target: the target is the rolling mean, which is normally further away.
 MIN_PROFIT = 0.02
 
-#: Bid decline from entry that closes the position at a loss.
+#: NOMINAL payoff geometry ONLY. **This is no longer the stop.**
+#:
+#: The stop is `strategies.polymarket.base.tiered_stop_price`, shared with the
+#: fair-value family and defined in exactly one place. This constant survives
+#: only as the input to `breakeven_win_rate`, the WORST-CASE property the
+#: docstring's kill condition is stated against. Its old role was worse here
+#: than anywhere else in the package: `PM_dip_arb`'s cheapest recorded fill is
+#: 0.0200, and `0.0200 - 0.05` is negative, so this strategy has been booking
+#: entries whose declared 5c stop was unreachable by construction.
 MAX_LOSS = 0.05
 
 #: The rolling mean falling to within this of entry is `mean_collapsed_to_entry`
@@ -486,6 +499,41 @@ class DipArb(PolymarketStrategy):
     #: decide whether to poll `manage_exit` for a position.
     manages_exits = True
 
+    #: CRYPTO PLUS EVERY GENERAL BINARY, and the reason is structural rather
+    #: than optimistic.
+    #:
+    #: This strategy reads THE OUTCOME'S OWN PRICE TAPE and nothing else. Grep
+    #: `evaluate`: it touches `ctx.market`, `ctx.books` and the clock, and it
+    #: touches `ctx.spot`, `ctx.strike`, `ctx.windows` and `ctx.atr14` exactly
+    #: never. `reference_price` reads a midpoint off an orderbook. That is the
+    #: entire input set, and every binary market on Polymarket has a book. So
+    #: unlike `fair_value_arb` - which is a probability model OF A CRYPTO PRICE
+    #: MOVE and is meaningless without a spot - this one is genuinely
+    #: market-agnostic. `CANDIDATE_SIDES` already carries Yes/No alongside
+    #: Up/Down for exactly this reason.
+    #:
+    #: AND THE MODULE DOCSTRING'S HARDEST LIMIT IS A CRYPTO LIMIT, NOT A
+    #: STRATEGY LIMIT. "THE TAPE IS SHORT, AND THAT IS A HARD LIMIT ON THIS
+    #: VENUE" is a statement about the BTC Up/Down 5-minute markets: their token
+    #: ids are new every window, so a tape starts EMPTY at every window open,
+    #: `MIN_OBSERVATIONS = 20` at a ~5s poll eats ~100 seconds of it, and what
+    #: is left is a "historical average" spanning a couple of minutes. On an
+    #: event, sports or political market the token id lives for DAYS. The tape
+    #: is continuous across polls, `TAPE_MAX_AGE_SEC` (900s) rather than the
+    #: window becomes the binding horizon, and the mean is finally an average of
+    #: a market rather than of one window's noise. That is a genuine improvement
+    #: in the quality of the reference price, and it is the strongest argument
+    #: for widening this declaration at all.
+    #:
+    #: WHAT IT IS NOT. It is not evidence. Nothing has scored a single dip_arb
+    #: trade on a non-crypto market, the mean-reversion hypothesis on a
+    #: multi-day event book is a DIFFERENT hypothesis from the one on a
+    #: five-minute window, and the two populations must be scored apart rather
+    #: than pooled (convention 7, and the same no-pooling rule the module
+    #: docstring already applies against the fair-value family).
+    supported_market_types = ((MARKET_TYPE_CRYPTO_UPDOWN,)
+                              + GENERAL_BINARY_MARKET_TYPES)
+
     def __init__(self, dip_threshold: float = DIP_THRESHOLD,
                  min_observations: int = MIN_OBSERVATIONS,
                  tape_len: int = TAPE_LEN,
@@ -549,6 +597,27 @@ class DipArb(PolymarketStrategy):
         """
         denom = self.min_profit + self.max_loss
         return float('nan') if denom <= 0 else self.max_loss / denom
+
+    # -- the stop -----------------------------------------------------------
+    #
+    # Delegated to `strategies.polymarket.base`, the same helper the five
+    # fair-value strategies use. Two thin methods, no arithmetic, so a wiring
+    # test can prove this strategy reaches the shared rule and not a copy of it
+    # (convention 22). Sharing the STOP rule is not pooling the POPULATIONS:
+    # this strategy's reference is a tape mean and the family's is a model, and
+    # the module docstring's no-pooling rule is untouched.
+
+    @staticmethod
+    def stop_price_for(entry_px: float,
+                       side: Optional[str] = None) -> float:
+        """The tiered stop price for a fill at `entry_px`. See base."""
+        return tiered_stop_price(entry_px, side)
+
+    @staticmethod
+    def stop_distance_for(entry_px: float,
+                          side: Optional[str] = None) -> float:
+        """`entry_px - stop_price_for(...)`: the loss the stop admits."""
+        return effective_stop_distance(entry_px, side)
 
     @staticmethod
     def breakeven_win_rate_for(entry: float, target: float,
@@ -886,9 +955,12 @@ class DipArb(PolymarketStrategy):
                                      else None)
         feats['profit_target_price'] = round(mean, 4)
         feats['profit_target_floor_price'] = round(effective + self.min_profit, 4)
-        feats['stop_price'] = round(effective - self.max_loss, 4)
+        # Tiered, and computed from the WALKED fill rather than the cap. The
+        # target here is the rolling mean, not a fixed distance, so this is the
+        # only leg of the geometry that the change touches.
+        feats.update(tiered_stop_features(effective, side))
         feats['breakeven_win_rate_this_trade'] = self.breakeven_win_rate_for(
-            effective, mean, effective - self.max_loss)
+            effective, mean, self.stop_price_for(effective, side))
         feats['breakeven_win_rate_if_held_to_resolution'] = round(effective, 4)
         feats['notional_usdc'] = round(shares * effective, 4)
         # Confidence is the size of the dip we are taking, clamped into [0, 1].
@@ -931,7 +1003,9 @@ class DipArb(PolymarketStrategy):
           3. `window_close`         Under 30s left the position stops being a
                                     mean-reversion trade and becomes a
                                     directional bet on the resolution.
-          4. `price_stop`           The bid has fallen MAX_LOSS below entry.
+          4. `price_stop`           The bid has reached the TIERED stop for
+                                    this fill (`base.tiered_stop_price`), not a
+                                    fixed MAX_LOSS below entry.
                                     Take the loss at whatever the book pays; a
                                     stop that refuses a bad price is not a stop.
                                     Ranked ABOVE the mean rules on purpose: it
@@ -966,6 +1040,7 @@ class DipArb(PolymarketStrategy):
         opened_ts = getattr(position, 'opened_ts', None)
         window_ts = getattr(position, 'window_ts', None)
         token_id = getattr(position, 'token_id', None)
+        outcome_side = getattr(position, 'outcome_side', None)
 
         mean = fair_value if fair_value is not None else self.mean_for(token_id)
 
@@ -991,10 +1066,21 @@ class DipArb(PolymarketStrategy):
                                   else round((best_bid - entry) * shares, 4)),
             'profit_target_price': (None if mean is None else round(mean, 4)),
             'profit_target_floor_price': round(entry + self.min_profit, 4),
-            'stop_price': round(entry - self.max_loss, 4),
             'exits_before_resolution': True,
             'reference_is_historical_mean_not_model': True,
         }
+
+        # The tiered stop, from the REAL fill on the REAL side. Computed before
+        # the unreadable-position guard below so every row carries either a
+        # stop or a named reason it has none (conventions 11 and 20).
+        stop_px: Optional[float] = None
+        if entry > 0.0:
+            stop_px = self.stop_price_for(entry, outcome_side)
+            feats.update(tiered_stop_features(entry, outcome_side))
+        else:
+            feats['stop_price'] = None
+            feats['stop_is_tiered'] = True
+            feats['stop_uncomputable_reason'] = 'entry_price_not_positive'
 
         def hold(reason, **extra):
             return ExitDecision('HOLD', reason, position_id=pid,
@@ -1024,9 +1110,13 @@ class DipArb(PolymarketStrategy):
             return exit_now('window_close', URGENT_SELL_LIMIT,
                             window_close_exit_sec=self.window_close_exit_sec)
 
-        if best_bid <= entry - self.max_loss + 1e-12:
+        if stop_px is not None and best_bid <= stop_px + 1e-12:
+            # `max_loss` keeps its old key so an existing reader of
+            # `sell:price_stop` rows does not lose the column, but it is the
+            # TIERED distance for this fill now, not the instance constant.
             return exit_now('price_stop', URGENT_SELL_LIMIT,
-                            max_loss=self.max_loss)
+                            max_loss=round(entry - stop_px, 6),
+                            max_loss_specified_not_used=self.max_loss)
 
         if mean is not None:
             if (best_bid >= mean - self.mean_reversion_eps - 1e-12

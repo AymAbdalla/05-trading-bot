@@ -28,6 +28,7 @@ outstanding defects recorded here; a green suite now means what it says.
 import ast
 import calendar
 import csv
+import json
 import os
 import sys
 import time
@@ -37,8 +38,11 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from engine.polymarket import paper_adapter as pa_module
-from engine.polymarket.paper_adapter import (LOG_COLUMNS, PaperPosition,
-                                             PolymarketPaperAdapter)
+from engine.polymarket.paper_adapter import (LOG_COLUMNS, ORDER_CANCELLED,
+                                             ORDER_EXPIRED, ORDER_FILLED,
+                                             ORDER_RESTING, PaperPosition,
+                                             PolymarketPaperAdapter,
+                                             RestingOrder)
 from engine.polymarket.types import (LOSING_REDEMPTION, MIN_SHARES,
                                      WINNING_REDEMPTION, Orderbook, PriceLevel)
 
@@ -692,3 +696,932 @@ class TestFillRecord:
                                                            abs=1e-9)
         expected = (3 * 0.47 + 7 * 0.49 + 11 * 0.53 + 4 * 0.61) / 25
         assert pos.avg_price == pytest.approx(expected, abs=1e-12)
+
+
+# ===========================================================================
+# The maker fill model
+# ===========================================================================
+#
+# `box_builder` and `grid_hedge` were both blocked on the same missing thing:
+# the adapter simulated marketable orders only, so a resting bid had no fill
+# model at all and both strategies returned QUOTE with the reason
+# `maker_fill_not_simulated`.
+#
+# Every test below exists to stop that model from being loosened. The failure
+# mode here is NOT a rounding error. A maker strategy's entire claimed edge is
+# "our resting order got hit at our own price", so a fill rule that is one
+# comparison operator too generous does not make the backtest slightly
+# optimistic - it manufactures the P&L from nothing. The most important tests in
+# this file are the ones that assert a fill did NOT happen:
+# `test_a_touch_at_our_price_is_not_a_fill` and
+# `test_the_queue_ahead_of_us_has_to_be_cleared_first`.
+
+
+def make_maker_adapter(tmp_path, **cfg):
+    """Adapter whose caps never mask a maker result. TTL long by default."""
+    cfg.setdefault('notional_cap_usdc', 100.0)
+    cfg.setdefault('starting_equity_usdc', 2000.0)
+    cfg.setdefault('maker_ttl_seconds', 300)
+    return make_adapter(tmp_path, **cfg)
+
+
+def rest_a_bid(adapter, limit=0.45, shares=20, bids=((0.45, 30.0),),
+               asks=((0.55, 50.0),), **kw):
+    """Rest a BUY at `limit` into a book with `bids` already at that price."""
+    book = make_book(asks, bids=bids)
+    return adapter.simulate_maker_buy('strat', 'slug-1', 'tok-1', 'Up',
+                                      limit_price=limit, shares=shares,
+                                      book=book, **kw)
+
+
+def crossing_book(price=0.40, size=60.0):
+    """A book that has traded DOWN through 0.45: offers resting under it.
+
+    Bids are kept below the asks so the snapshot is a legal uncrossed book. Our
+    own order is not in it - we are paper - which is exactly why an offer
+    resting below our bid is evidence that our bid is gone.
+    """
+    return make_book(((price, size),), bids=((price - 0.05, 10.0),))
+
+
+class TestMakerResting:
+    """Resting is not filling, and the return type says so."""
+
+    def test_a_rested_order_opens_no_position(self, tmp_path):
+        a = make_maker_adapter(tmp_path)
+        order = rest_a_bid(a)
+        assert isinstance(order, RestingOrder)
+        assert order.status == ORDER_RESTING
+        assert a.positions == {}
+        assert a.open_positions() == []
+        assert a.summary()['entries'] == 0
+
+    def test_resting_writes_a_row_and_a_counter(self, tmp_path):
+        a = make_maker_adapter(tmp_path)
+        rest_a_bid(a)
+        rows = log_rows(a)
+        assert [r['action'] for r in rows] == ['REST']
+        assert rows[0]['reason'] == 'maker_buy_resting'
+        assert a.decision_counts == {'REST:maker_buy_resting': 1}
+
+    def test_the_queue_ahead_is_measured_at_rest_time(self, tmp_path):
+        """Everyone already bidding our price or better is in front of us."""
+        a = make_maker_adapter(tmp_path)
+        order = rest_a_bid(a, limit=0.45,
+                           bids=((0.50, 12.0), (0.45, 30.0), (0.40, 99.0)))
+        # 12 at a better price plus 30 at ours. The 99 below us is behind us.
+        assert order.queue_ahead_shares == pytest.approx(42.0)
+
+    def test_joining_an_empty_price_level_is_the_front_of_the_queue(self,
+                                                                   tmp_path):
+        a = make_maker_adapter(tmp_path)
+        order = rest_a_bid(a, limit=0.45, bids=((0.30, 50.0),))
+        assert order.queue_ahead_shares == pytest.approx(0.0)
+
+    def test_a_crossing_bid_is_a_post_only_reject_not_a_fill(self, tmp_path):
+        """A bid at or above the ask is a taker order with a maker label on it.
+
+        Filling it here is the single most attractive bug available: the
+        strategy books a maker fill while actually paying the spread, which is
+        precisely the number box_builder exists to claim.
+        """
+        a = make_maker_adapter(tmp_path)
+        order = a.simulate_maker_buy('strat', 'slug-1', 'tok-1', 'Up',
+                                     limit_price=0.55, shares=20,
+                                     book=make_book(((0.55, 50.0),),
+                                                    bids=((0.45, 30.0),)))
+        assert order is None
+        assert a.decision_counts == {'SKIP:maker_would_cross_book': 1}
+        assert a.resting_orders == {}
+
+    def test_a_bid_above_the_ask_is_also_refused(self, tmp_path):
+        a = make_maker_adapter(tmp_path)
+        assert a.simulate_maker_buy(
+            'strat', 'slug-1', 'tok-1', 'Up', limit_price=0.60, shares=20,
+            book=make_book(((0.55, 50.0),), bids=((0.45, 30.0),))) is None
+        assert 'SKIP:maker_would_cross_book' in a.decision_counts
+
+    def test_resting_needs_a_book_to_measure_the_queue_against(self, tmp_path):
+        """No book means assuming we are at the FRONT, which is optimistic."""
+        a = make_maker_adapter(tmp_path)
+        assert a.simulate_maker_buy('strat', 'slug-1', 'tok-1', 'Up',
+                                    limit_price=0.45, shares=20) is None
+        assert a.decision_counts == {'SKIP:no_orderbook': 1}
+
+
+class TestMakerRestGates:
+    """The rest-time gates mirror the taker's, name for name."""
+
+    def test_an_unsizable_order_is_a_cannot_run_not_a_loss(self, tmp_path):
+        a = make_maker_adapter(tmp_path)
+        assert rest_a_bid(a, shares=2) is None
+        assert a.decision_counts == {'SKIP:unsizable_at_cap': 1}
+
+    def test_the_notional_cap_is_enforced_before_anything_rests(self, tmp_path):
+        a = make_maker_adapter(tmp_path, notional_cap_usdc=5.0)
+        assert rest_a_bid(a, limit=0.45, shares=20) is None
+        assert a.decision_counts == {'SKIP:over_notional_cap': 1}
+
+    def test_a_price_outside_the_unit_interval_is_refused(self, tmp_path):
+        a = make_maker_adapter(tmp_path)
+        assert rest_a_bid(a, limit=1.40) is None
+        assert rest_a_bid(a, limit=0.0) is None
+        assert a.decision_counts == {'SKIP:limit_price_out_of_range': 2}
+
+    def test_a_halt_refuses_to_rest_anything(self, tmp_path, monkeypatch):
+        a = make_maker_adapter(tmp_path)
+        monkeypatch.setattr(pa_module, 'is_halted', lambda: True)
+        assert rest_a_bid(a) is None
+        assert a.decision_counts == {'SKIP:halted': 1}
+
+    def test_resting_orders_count_against_the_concurrency_cap(self, tmp_path):
+        """A resting bid is a position the moment it is crossed into.
+
+        Counting only filled positions would let a strategy rest twenty orders
+        under a cap of five and discover the cap was decorative exactly once.
+        """
+        a = make_maker_adapter(tmp_path, max_concurrent_positions=2)
+        assert rest_a_bid(a) is not None
+        assert rest_a_bid(a) is not None
+        assert rest_a_bid(a) is None
+        assert a.decision_counts['SKIP:max_concurrent_positions'] == 1
+
+    def test_a_resting_bid_blocks_a_taker_entry_too(self, tmp_path):
+        """Both entry paths share one slot count, so the cap is one cap."""
+        a = make_maker_adapter(tmp_path, max_concurrent_positions=1)
+        assert rest_a_bid(a) is not None
+        assert a.simulate_taker_buy('strat', 'slug-1', 'tok-1', 'Up',
+                                    limit_price=0.60, shares=20,
+                                    book=make_book(((0.50, 500.0),))) is None
+        assert a.decision_counts['SKIP:max_concurrent_positions'] == 1
+
+    def test_with_no_resting_orders_the_slot_count_is_the_old_one(self,
+                                                                 tmp_path):
+        """Convention 23's opposite: prove the taker path did NOT change."""
+        a = make_maker_adapter(tmp_path)
+        assert a.committed_slots() == len(a.open_positions()) == 0
+        a.simulate_taker_buy('strat', 'slug-1', 'tok-1', 'Up', limit_price=0.60,
+                             shares=20, book=make_book(((0.50, 500.0),)))
+        assert a.committed_slots() == len(a.open_positions()) == 1
+
+
+class TestTheFillRule:
+    """A strict cross, minus the queue. The heart of the whole path."""
+
+    def test_a_touch_at_our_price_is_not_a_fill(self, tmp_path):
+        """THE test. An offer sitting exactly AT our bid is a locked market.
+
+        Touch-means-fill is the model that books all of the good fills and none
+        of the adverse selection. moondevonyt's own logs record the gap it
+        cannot reproduce: a fable maker filled 57% at T-240 while a v5 bot armed
+        35 times at 0.89 and got ZERO fills.
+        """
+        a = make_maker_adapter(tmp_path)
+        order = rest_a_bid(a, limit=0.45, bids=((0.30, 50.0),))
+        touching = make_book(((0.45, 500.0),), bids=((0.44, 10.0),))
+        a.observe_resting_orders({'tok-1': touching})
+        assert order.status == ORDER_RESTING
+        assert order.filled_shares == 0.0
+        assert order.touched is True
+        assert order.max_through_shares == 0.0
+        assert a.positions == {}
+        assert a.maker_counts == {'observed:touched_not_crossed': 1}
+
+    def test_a_strict_cross_fills_at_our_own_price(self, tmp_path):
+        """The economic point: a maker is PAID the spread, not charged it."""
+        a = make_maker_adapter(tmp_path)
+        order = rest_a_bid(a, limit=0.45, shares=20, bids=((0.30, 50.0),))
+        a.observe_resting_orders({'tok-1': crossing_book(0.40, 60.0)})
+        assert order.status == ORDER_FILLED
+        assert order.fill_price == pytest.approx(0.45)
+        assert order.filled_shares == pytest.approx(20.0)
+        pos = a.positions[order.position_id]
+        assert pos.avg_price == pytest.approx(0.45)
+        assert pos.cost_usdc == pytest.approx(9.0)
+        assert pos.entry_liquidity == 'maker'
+
+    def test_the_fill_price_is_our_limit_and_never_the_offer(self, tmp_path):
+        """Filling at 0.40 would invent an edge; at 0.55 it would delete one."""
+        a = make_maker_adapter(tmp_path)
+        order = rest_a_bid(a, limit=0.45, bids=((0.30, 50.0),))
+        a.observe_resting_orders({'tok-1': crossing_book(0.40, 60.0)})
+        assert order.fill_price == pytest.approx(0.45)
+        assert order.fill_price != pytest.approx(0.40)
+
+    def test_a_maker_fill_is_adverse_and_the_log_says_so(self, tmp_path):
+        """The two spread numbers are different and must not be pooled.
+
+        The flattering one is `spread_declined_usdc`: at rest time the offer was
+        0.55 and we quoted 0.45, so resting instead of lifting was worth 10c a
+        share IF the fill is not adverse. It usually is. By the time our bid was
+        crossed the offer had come down to 0.40, so we own shares 5c above the
+        current market, and `slippage_vs_top` records that as POSITIVE.
+
+        An earlier draft of this adapter asserted the opposite in a comment -
+        "negative by construction, we filled below the offer" - which is the
+        exact optimistic reading a maker backtest dies of. It is wrong: the
+        offer at fill time is not the offer we declined.
+        """
+        a = make_maker_adapter(tmp_path)
+        order = rest_a_bid(a, limit=0.45, bids=((0.30, 50.0),))
+        a.observe_resting_orders({'tok-1': crossing_book(0.40, 60.0)})
+        enter = [r for r in log_rows(a) if r['action'] == 'ENTER'][0]
+        assert enter['reason'] == 'maker_fill'
+        assert float(enter['slippage_vs_top']) == pytest.approx(0.05)
+        assert order.spread_declined_usdc == pytest.approx(0.10)
+        assert 'spread_declined_usdc=0.1' in enter['features']
+
+    def test_the_queue_ahead_of_us_has_to_be_cleared_first(self, tmp_path):
+        """30 shares of flow into a 30 share queue reaches us with nothing."""
+        a = make_maker_adapter(tmp_path)
+        order = rest_a_bid(a, limit=0.45, shares=20, bids=((0.45, 30.0),))
+        a.observe_resting_orders({'tok-1': crossing_book(0.40, 30.0)})
+        assert order.status == ORDER_RESTING
+        assert order.max_through_shares == pytest.approx(30.0)
+        assert order.fillable_shares == pytest.approx(0.0)
+        assert a.positions == {}
+
+    def test_clearing_the_queue_and_then_some_does_fill(self, tmp_path):
+        a = make_maker_adapter(tmp_path)
+        order = rest_a_bid(a, limit=0.45, shares=20, bids=((0.45, 30.0),))
+        a.observe_resting_orders({'tok-1': crossing_book(0.40, 55.0)})
+        assert order.status == ORDER_FILLED
+        assert order.filled_shares == pytest.approx(20.0)
+
+    def test_a_cross_below_the_exchange_minimum_is_not_a_fill(self, tmp_path):
+        a = make_maker_adapter(tmp_path)
+        order = rest_a_bid(a, limit=0.45, shares=20, bids=((0.30, 50.0),))
+        a.observe_resting_orders({'tok-1': crossing_book(0.40, 3.0)})
+        assert order.status == ORDER_RESTING
+        assert a.maker_counts == {'observed:crossed_below_min_shares': 1}
+
+    def test_a_partial_cross_fills_partially_and_cancels_the_rest(self,
+                                                                 tmp_path):
+        """8 shares of flow, 20 rested. The other 12 never traded."""
+        a = make_maker_adapter(tmp_path)
+        order = rest_a_bid(a, limit=0.45, shares=20, bids=((0.30, 50.0),))
+        a.observe_resting_orders({'tok-1': crossing_book(0.40, 8.0)})
+        assert order.status == ORDER_FILLED
+        assert order.terminal_reason == 'maker_partial_fill'
+        assert order.filled_shares == pytest.approx(8.0)
+        assert order.unfilled_shares == pytest.approx(12.0)
+        pos = a.positions[order.position_id]
+        assert pos.shares == pytest.approx(8.0)
+        assert pos.cost_usdc == pytest.approx(3.6)
+
+    def test_snapshots_are_maxed_and_never_summed(self, tmp_path):
+        """Two snapshots showing the same 3 shares are 3 shares, not 6.
+
+        Summing them would invent depth the way top-of-book fills invent price,
+        and it would do it silently: 3 is under the exchange minimum and 6 is
+        over it, so a sum would turn an impossible order into a filled one.
+        """
+        a = make_maker_adapter(tmp_path)
+        order = rest_a_bid(a, limit=0.45, shares=20, bids=((0.30, 50.0),))
+        for _ in range(2):
+            a.observe_resting_orders({'tok-1': crossing_book(0.40, 3.0)})
+        assert order.max_through_shares == pytest.approx(3.0)
+        assert order.status == ORDER_RESTING
+        assert a.positions == {}
+
+    def test_a_token_with_no_book_is_not_an_observation(self, tmp_path):
+        """Could-not-look is not looked-and-found-nothing (convention 11)."""
+        a = make_maker_adapter(tmp_path)
+        order = rest_a_bid(a)
+        a.observe_resting_orders({})
+        a.observe_resting_orders({'other-token': crossing_book()})
+        assert order.observations == 0
+        assert a.maker_counts == {}
+
+    def test_a_terminated_order_is_never_observed_again(self, tmp_path):
+        a = make_maker_adapter(tmp_path)
+        order = rest_a_bid(a, limit=0.45, bids=((0.30, 50.0),))
+        a.observe_resting_orders({'tok-1': crossing_book(0.40, 60.0)})
+        seen = order.observations
+        a.observe_resting_orders({'tok-1': crossing_book(0.40, 60.0)})
+        assert order.observations == seen
+        assert len(a.positions) == 1
+
+
+class TestUnfilledIsAnOutcome:
+    """A resting order that never fills is a number, not an absence."""
+
+    def test_expiry_writes_a_row_with_a_named_reason(self, tmp_path):
+        a = make_maker_adapter(tmp_path, maker_ttl_seconds=60)
+        order = rest_a_bid(a, limit=0.45, bids=((0.30, 50.0),))
+        a.observe_resting_orders({'tok-1': make_book(((0.55, 50.0),))},
+                                 now_ts=order.placed_ts + 999)
+        assert order.status == ORDER_EXPIRED
+        assert order.terminal_reason == 'maker_never_touched'
+        row = [r for r in log_rows(a) if r['action'] == 'EXPIRE'][0]
+        assert row['reason'] == 'maker_never_touched'
+        assert a.decision_counts['EXPIRE:maker_never_touched'] == 1
+
+    def test_never_observed_is_not_never_touched(self, tmp_path):
+        """Two different facts about a strategy, two different fixes."""
+        a = make_maker_adapter(tmp_path, maker_ttl_seconds=1)
+        order = rest_a_bid(a)
+        a.expire_resting_orders(now_ts=order.placed_ts + 999)
+        assert order.terminal_reason == 'maker_never_observed'
+
+    def test_touched_but_never_crossed_has_its_own_reason(self, tmp_path):
+        """The bucket an optimistic fill model steals every fill from."""
+        a = make_maker_adapter(tmp_path, maker_ttl_seconds=60)
+        order = rest_a_bid(a, limit=0.45, bids=((0.30, 50.0),))
+        touching = make_book(((0.45, 500.0),), bids=((0.44, 10.0),))
+        a.observe_resting_orders({'tok-1': touching},
+                                 now_ts=order.placed_ts + 999)
+        assert order.terminal_reason == 'maker_touched_not_crossed'
+
+    def test_a_small_cross_and_a_big_queue_are_different_reasons(self,
+                                                                tmp_path):
+        """An order that could not be legal alone at the front was not beaten
+        by the queue, so the two never share a counter (convention 20)."""
+        a = make_maker_adapter(tmp_path, maker_ttl_seconds=60)
+        small = rest_a_bid(a, limit=0.45, shares=20, bids=((0.30, 50.0),))
+        a.observe_resting_orders({'tok-1': crossing_book(0.40, 3.0)},
+                                 now_ts=small.placed_ts + 999)
+        assert small.terminal_reason == 'maker_cross_below_min_shares'
+
+        b = make_maker_adapter(tmp_path, maker_ttl_seconds=60)
+        queued = rest_a_bid(b, limit=0.45, shares=20, bids=((0.45, 40.0),))
+        b.observe_resting_orders({'tok-1': crossing_book(0.40, 30.0)},
+                                 now_ts=queued.placed_ts + 999)
+        assert queued.terminal_reason == 'maker_queue_ahead_not_cleared'
+
+    def test_a_cancel_is_not_an_expiry(self, tmp_path):
+        a = make_maker_adapter(tmp_path)
+        order = rest_a_bid(a)
+        a.cancel_resting_order(order.order_id)
+        assert order.status == ORDER_CANCELLED
+        assert order.terminal_reason == 'cancelled_by_strategy'
+        assert a.decision_counts['CANCEL:cancelled_by_strategy'] == 1
+
+    def test_cancelling_twice_is_refused_and_logged(self, tmp_path):
+        a = make_maker_adapter(tmp_path)
+        order = rest_a_bid(a)
+        a.cancel_resting_order(order.order_id)
+        assert a.cancel_resting_order(order.order_id) is None
+        assert a.decision_counts['SKIP:resting_order_not_open'] == 1
+
+    def test_an_unknown_order_id_still_leaves_a_row(self, tmp_path):
+        a = make_maker_adapter(tmp_path)
+        assert a.cancel_resting_order('no-such-order') is None
+        assert a.decision_counts == {'SKIP:unknown_resting_order': 1}
+
+    def test_a_dead_feed_does_not_make_an_order_immortal(self, tmp_path):
+        """No book arrived, but the window still closed."""
+        a = make_maker_adapter(tmp_path, maker_ttl_seconds=60)
+        order = rest_a_bid(a)
+        a.observe_resting_orders({}, now_ts=order.placed_ts + 999)
+        assert order.status == ORDER_EXPIRED
+
+    def test_every_declared_no_fill_reason_is_reachable(self, tmp_path):
+        """Convention 22: the tuple is a claim until something produces each.
+
+        Built by exercising the paths rather than by reading the constant, so a
+        reason that becomes unreachable fails here instead of living on as a
+        string nothing can emit.
+        """
+        seen = set()
+
+        a = make_maker_adapter(tmp_path, maker_ttl_seconds=1)
+        o = rest_a_bid(a)
+        a.expire_resting_orders(now_ts=o.placed_ts + 99)
+        seen.add(o.terminal_reason)                       # never_observed
+
+        for shares_through, bids, expected in (
+                (0.0, ((0.30, 50.0),), 'maker_never_touched'),
+                (3.0, ((0.30, 50.0),), 'maker_cross_below_min_shares'),
+                (30.0, ((0.45, 40.0),), 'maker_queue_ahead_not_cleared')):
+            b = make_maker_adapter(tmp_path, maker_ttl_seconds=1)
+            order = rest_a_bid(b, limit=0.45, shares=20, bids=bids)
+            book = (make_book(((0.55, 50.0),)) if shares_through == 0
+                    else crossing_book(0.40, shares_through))
+            b.observe_resting_orders({'tok-1': book},
+                                     now_ts=order.placed_ts + 99)
+            assert order.terminal_reason == expected
+            seen.add(order.terminal_reason)
+
+        c = make_maker_adapter(tmp_path, maker_ttl_seconds=1)
+        order = rest_a_bid(c, limit=0.45, shares=20, bids=((0.30, 50.0),))
+        touching = make_book(((0.45, 500.0),), bids=((0.44, 10.0),))
+        c.observe_resting_orders({'tok-1': touching},
+                                 now_ts=order.placed_ts + 99)
+        seen.add(order.terminal_reason)                   # touched_not_crossed
+
+        d = make_maker_adapter(tmp_path)
+        seen.add(d.cancel_resting_order(rest_a_bid(d).order_id).terminal_reason)
+
+        e = make_maker_adapter(tmp_path)
+        halted_order = rest_a_bid(e, limit=0.45, bids=((0.30, 50.0),))
+        e_halt = {'v': False}
+        pa_module_is_halted = pa_module.is_halted
+        try:
+            pa_module.is_halted = lambda: e_halt['v']
+            e_halt['v'] = True
+            e.observe_resting_orders({'tok-1': crossing_book(0.40, 60.0)})
+        finally:
+            pa_module.is_halted = pa_module_is_halted
+        seen.add(halted_order.terminal_reason)            # cancelled_by_halt
+
+        f = make_maker_adapter(tmp_path)
+        bad = rest_a_bid(f, limit=0.45, bids=((0.30, 50.0),))
+        bad.stop_price = 0.45           # not STRICTLY below entry
+        f.observe_resting_orders({'tok-1': crossing_book(0.40, 60.0)})
+        seen.add(bad.terminal_reason)                     # stop_not_below_entry
+
+        g = make_maker_adapter(tmp_path, maker_ttl_seconds=1)
+        pos = g.simulate_taker_buy('strat', 'slug-1', 'tok-1', 'Up',
+                                   limit_price=0.60, shares=20,
+                                   book=make_book(((0.50, 500.0),)))
+        sell = g.simulate_maker_sell(pos.position_id, limit_price=0.60,
+                                     book=make_book(((0.65, 50.0),),
+                                                    bids=((0.55, 30.0),)))
+        g.observe_resting_orders(
+            {'tok-1': make_book(((0.75, 10.0),), bids=((0.70, 10.0),))},
+            now_ts=sell.placed_ts + 99)
+        seen.add(sell.terminal_reason)                    # sell_partial_only
+
+        h = make_maker_adapter(tmp_path)
+        pos = h.simulate_taker_buy('strat', 'slug-1', 'tok-1', 'Up',
+                                   limit_price=0.60, shares=20,
+                                   book=make_book(((0.50, 500.0),)))
+        sell = h.simulate_maker_sell(pos.position_id, limit_price=0.60,
+                                     book=make_book(((0.65, 50.0),),
+                                                    bids=((0.55, 30.0),)))
+        pos.resolution = 'WIN'          # resolved out from under the order
+        h.observe_resting_orders(
+            {'tok-1': make_book(((0.95, 10.0),), bids=((0.90, 90.0),))})
+        seen.add(sell.terminal_reason)                    # position_not_open
+
+        assert seen == set(pa_module.MAKER_NO_FILL_REASONS)
+
+
+class TestMakerAndTheHalt:
+    """Entries blocked, exits not. The same asymmetry the taker pair has."""
+
+    def test_a_halt_cancels_a_resting_buy_instead_of_filling_it(self, tmp_path,
+                                                               monkeypatch):
+        """A resting bid that fills is a NEW ENTRY, and a halt blocks entries."""
+        a = make_maker_adapter(tmp_path)
+        order = rest_a_bid(a, limit=0.45, bids=((0.30, 50.0),))
+        monkeypatch.setattr(pa_module, 'is_halted', lambda: True)
+        a.observe_resting_orders({'tok-1': crossing_book(0.40, 60.0)})
+        assert order.status == ORDER_CANCELLED
+        assert order.terminal_reason == 'maker_cancelled_by_halt'
+        assert a.positions == {}
+
+    def test_a_halt_does_not_block_a_resting_sell(self, tmp_path, monkeypatch):
+        """A stop that stops working when the kill switch is pulled is not a
+        stop. An ask over an open position REDUCES risk."""
+        a = make_maker_adapter(tmp_path)
+        pos = a.simulate_taker_buy('strat', 'slug-1', 'tok-1', 'Up',
+                                   limit_price=0.60, shares=20,
+                                   book=make_book(((0.50, 500.0),)))
+        order = a.simulate_maker_sell(pos.position_id, limit_price=0.60,
+                                      book=make_book(((0.65, 50.0),),
+                                                     bids=((0.55, 30.0),)))
+        monkeypatch.setattr(pa_module, 'is_halted', lambda: True)
+        a.observe_resting_orders(
+            {'tok-1': make_book(((0.75, 10.0),), bids=((0.70, 40.0),))})
+        assert order.status == ORDER_FILLED
+        assert pos.is_open is False
+
+
+class TestMakerSell:
+    """The exit mirror. All or nothing, exactly as the taker sell is."""
+
+    def _open(self, adapter, price=0.50, shares=20):
+        return adapter.simulate_taker_buy(
+            'strat', 'slug-1', 'tok-1', 'Up', limit_price=price + 0.10,
+            shares=shares, book=make_book(((price, 500.0),)))
+
+    def test_a_resting_ask_fills_at_our_own_price(self, tmp_path):
+        a = make_maker_adapter(tmp_path)
+        pos = self._open(a)
+        order = a.simulate_maker_sell(pos.position_id, limit_price=0.60,
+                                      reason='profit_target',
+                                      book=make_book(((0.65, 50.0),),
+                                                     bids=((0.55, 30.0),)))
+        a.observe_resting_orders(
+            {'tok-1': make_book(((0.75, 10.0),), bids=((0.70, 40.0),))})
+        assert order.status == ORDER_FILLED
+        assert pos.exit_price == pytest.approx(0.60)
+        assert pos.exit_kind == 'sell'
+        assert pos.exit_liquidity == 'maker'
+        assert pos.exit_reason == 'profit_target'
+        # 20 shares bought at 0.50, sold at 0.60.
+        assert pos.pnl_usdc == pytest.approx(2.0)
+        assert pos.resolution == 'WIN'
+
+    def test_a_partial_sell_is_refused_and_keeps_resting(self, tmp_path):
+        """Same rule the taker sell already has, for the same reason: a
+        strategy whose thesis is "we exit before resolution" has to make the
+        case where it CANNOT exit loud rather than rounding it smaller."""
+        a = make_maker_adapter(tmp_path)
+        pos = self._open(a)
+        order = a.simulate_maker_sell(pos.position_id, limit_price=0.60,
+                                      book=make_book(((0.65, 50.0),),
+                                                     bids=((0.55, 30.0),)))
+        a.observe_resting_orders(
+            {'tok-1': make_book(((0.75, 10.0),), bids=((0.70, 9.0),))})
+        assert order.status == ORDER_RESTING
+        assert pos.is_open is True
+        assert a.maker_counts == {'observed:sell_partial_refused': 1}
+
+    def test_a_marketable_ask_is_a_post_only_reject(self, tmp_path):
+        """An ask at or below the bid is a taker sell wearing a maker label."""
+        a = make_maker_adapter(tmp_path)
+        pos = self._open(a)
+        assert a.simulate_maker_sell(
+            pos.position_id, limit_price=0.55,
+            book=make_book(((0.65, 50.0),), bids=((0.55, 30.0),))) is None
+        assert a.decision_counts['SKIP:maker_would_cross_book'] == 1
+
+    def test_only_one_resting_sell_per_position(self, tmp_path):
+        """Two would sell the same shares twice the moment both crossed."""
+        a = make_maker_adapter(tmp_path)
+        pos = self._open(a)
+        book = make_book(((0.65, 50.0),), bids=((0.55, 30.0),))
+        assert a.simulate_maker_sell(pos.position_id, 0.60, book=book)
+        assert a.simulate_maker_sell(pos.position_id, 0.61, book=book) is None
+        assert a.decision_counts['SKIP:sell_already_resting'] == 1
+
+    def test_selling_more_than_we_hold_is_refused(self, tmp_path):
+        a = make_maker_adapter(tmp_path)
+        pos = self._open(a, shares=20)
+        assert a.simulate_maker_sell(
+            pos.position_id, 0.60, shares=50,
+            book=make_book(((0.65, 50.0),), bids=((0.55, 30.0),))) is None
+        assert a.decision_counts['SKIP:invalid_sell_size'] == 1
+
+    def test_selling_a_closed_position_is_refused(self, tmp_path, monkeypatch):
+        a = make_maker_adapter(tmp_path)
+        pos = self._open(a)
+        monkeypatch.setattr(pa_module, 'resolution_price',
+                            lambda c, s, o: WINNING_REDEMPTION)
+        a.resolve_positions()
+        assert a.simulate_maker_sell(
+            pos.position_id, 0.60,
+            book=make_book(((0.65, 50.0),), bids=((0.55, 30.0),))) is None
+        assert a.decision_counts['SKIP:position_not_open'] == 1
+
+    def test_an_unknown_position_still_leaves_a_row(self, tmp_path):
+        a = make_maker_adapter(tmp_path)
+        assert a.simulate_maker_sell('nope', 0.60) is None
+        assert a.decision_counts == {'SKIP:unknown_position': 1}
+
+
+class TestMakerAccountingIsTheSamePlumbing:
+    """A maker fill must feed the P&L the taker path already feeds."""
+
+    def _filled(self, tmp_path, **cfg):
+        a = make_maker_adapter(tmp_path, **cfg)
+        order = rest_a_bid(a, limit=0.45, shares=20, bids=((0.30, 50.0),))
+        a.observe_resting_orders({'tok-1': crossing_book(0.40, 60.0)})
+        return a, order, a.positions[order.position_id]
+
+    def test_a_maker_position_resolves_like_any_other(self, tmp_path,
+                                                      monkeypatch):
+        a, _, pos = self._filled(tmp_path)
+        monkeypatch.setattr(pa_module, 'resolution_price',
+                            lambda c, s, o: WINNING_REDEMPTION)
+        assert a.resolve_positions() == [pos]
+        assert pos.pnl_usdc == pytest.approx(20 * 1.00 - 9.0)
+        assert pos.exit_kind == 'resolution'
+
+    def test_a_maker_loss_costs_exactly_the_premium(self, tmp_path,
+                                                    monkeypatch):
+        a, _, pos = self._filled(tmp_path)
+        monkeypatch.setattr(pa_module, 'resolution_price',
+                            lambda c, s, o: LOSING_REDEMPTION)
+        a.resolve_positions()
+        assert pos.pnl_usdc == pytest.approx(-9.0)
+
+    def test_equity_and_capital_at_risk_see_a_maker_position(self, tmp_path):
+        a, _, pos = self._filled(tmp_path)
+        assert a.capital_at_risk() == pytest.approx(9.0)
+        assert a.get_equity() == pytest.approx(2000.0 - 9.0)
+
+    def test_an_unfilled_bid_is_committed_capital_and_not_risk(self, tmp_path):
+        """It cannot lose anything, so calling it risk overstates exposure."""
+        a = make_maker_adapter(tmp_path)
+        rest_a_bid(a, limit=0.45, shares=20)
+        assert a.capital_at_risk() == pytest.approx(0.0)
+        assert a.capital_committed_to_resting_orders() == pytest.approx(9.0)
+        assert a.get_equity() == pytest.approx(2000.0)
+
+    def test_build_fill_works_on_a_maker_position(self, tmp_path):
+        _, _, pos = self._filled(tmp_path)
+        fill = pa_module.PolymarketPaperAdapter.build_fill(
+            PolymarketPaperAdapter(client=StubClient()), pos)
+        assert fill.avg_price == pytest.approx(0.45)
+        assert fill.max_loss_usdc == pytest.approx(9.0)
+
+    def test_a_maker_fee_is_its_own_knob(self, tmp_path):
+        """Zero today. `taker_fee_rate` is a different number by construction
+        the day a fee schedule exists (convention 17)."""
+        a, _, pos = self._filled(tmp_path, maker_fee_rate=0.01)
+        assert a.taker_fee_rate == 0.0
+        assert pos.fee_usdc == pytest.approx(0.09)
+        assert pos.max_loss_usdc == pytest.approx(9.09)
+
+    def test_taker_positions_are_still_labelled_taker(self, tmp_path):
+        a = make_maker_adapter(tmp_path)
+        pos = a.simulate_taker_buy('strat', 'slug-1', 'tok-1', 'Up',
+                                   limit_price=0.60, shares=20,
+                                   book=make_book(((0.50, 500.0),)))
+        assert pos.entry_liquidity == 'taker'
+        assert pos.exit_liquidity is None
+
+    def test_convention_8_the_stop_is_strictly_below_the_entry(self, tmp_path):
+        """A losing binary share redeems at exactly 0.00 and the premium IS the
+        stop. Strictly below, because a stop equal to the entry is not a stop."""
+        _, order, pos = self._filled(tmp_path)
+        assert order.stop_price == LOSING_REDEMPTION
+        assert order.stop_is_below_entry is True
+        assert pos.stop_price < pos.avg_price
+
+    def test_a_stop_not_below_entry_refuses_the_fill(self, tmp_path):
+        """Re-checked at fill time, not trusted from the rest-time validation.
+        Convention 23: a fix at one site is not a fix."""
+        a = make_maker_adapter(tmp_path)
+        order = rest_a_bid(a, limit=0.45, bids=((0.30, 50.0),))
+        order.stop_price = 0.45
+        a.observe_resting_orders({'tok-1': crossing_book(0.40, 60.0)})
+        assert order.status == ORDER_CANCELLED
+        assert order.terminal_reason == 'stop_not_below_entry'
+        assert a.positions == {}
+
+
+class TestMakerLogging:
+    """Convention 20 across the new path."""
+
+    def test_decision_counts_and_row_count_still_agree(self, tmp_path):
+        """The accounting identity survives the maker rows."""
+        a = make_maker_adapter(tmp_path, maker_ttl_seconds=1)
+        order = rest_a_bid(a, limit=0.45, shares=20, bids=((0.30, 50.0),))
+        a.observe_resting_orders({'tok-1': crossing_book(0.40, 60.0)})
+        dead = rest_a_bid(a, limit=0.44, shares=20, bids=((0.30, 50.0),))
+        a.expire_resting_orders(now_ts=dead.placed_ts + 99)
+        a.log_skip('strat', 'slug-1', 'no_signal')
+        assert order.status == ORDER_FILLED
+        assert sum(a.decision_counts.values()) == len(log_rows(a))
+
+    def test_observation_counts_are_not_in_the_decision_counts(self, tmp_path):
+        """A resting order is looked at every cycle without anything happening
+        to it. Folding those looks into decision_counts would break the CSV
+        identity and bury the terminal outcomes under thousands of no-ops."""
+        a = make_maker_adapter(tmp_path)
+        rest_a_bid(a, limit=0.45, bids=((0.30, 50.0),))
+        for _ in range(5):
+            a.observe_resting_orders({'tok-1': make_book(((0.55, 50.0),))})
+        assert a.maker_counts == {'observed:not_touched': 5}
+        assert sum(a.decision_counts.values()) == len(log_rows(a)) == 1
+
+    def test_every_maker_row_carries_the_fill_model_name(self, tmp_path):
+        """A log row and the rule that produced it must be matchable later."""
+        a = make_maker_adapter(tmp_path)
+        rest_a_bid(a, limit=0.45, bids=((0.30, 50.0),))
+        a.observe_resting_orders({'tok-1': crossing_book(0.40, 60.0)})
+        for row in log_rows(a):
+            assert pa_module.MAKER_FILL_MODEL in row['features']
+            assert 'order_kind=maker' in row['features']
+
+    def test_no_new_columns_were_added_to_the_log(self, tmp_path):
+        """LOG_COLUMNS is the header of a file already on disk and already
+        being read. A new column would misalign every historical row."""
+        a = make_maker_adapter(tmp_path)
+        rest_a_bid(a, limit=0.45, bids=((0.30, 50.0),))
+        a.observe_resting_orders({'tok-1': crossing_book(0.40, 60.0)})
+        with open(a.log_path, newline='') as f:
+            assert next(csv.reader(f)) == LOG_COLUMNS
+
+    def test_the_maker_dispositions_all_reach_the_log(self, tmp_path):
+        a = make_maker_adapter(tmp_path, maker_ttl_seconds=1)
+        filled = rest_a_bid(a, limit=0.45, shares=20, bids=((0.30, 50.0),))
+        a.observe_resting_orders({'tok-1': crossing_book(0.40, 60.0)})
+        dead = rest_a_bid(a, limit=0.44, shares=20, bids=((0.30, 50.0),))
+        a.expire_resting_orders(now_ts=dead.placed_ts + 99)
+        pulled = rest_a_bid(a, limit=0.43, shares=20, bids=((0.30, 50.0),))
+        a.cancel_resting_order(pulled.order_id)
+        assert filled.status == ORDER_FILLED
+        assert [r['action'] for r in log_rows(a)] == [
+            'REST', 'ENTER', 'REST', 'EXPIRE', 'REST', 'CANCEL']
+
+
+class TestMakerSerialisation:
+    """Convention 19: `allow_nan=False`, and it is load bearing."""
+
+    def test_a_resting_order_round_trips_through_json(self, tmp_path):
+        a = make_maker_adapter(tmp_path)
+        order = rest_a_bid(a)
+        loaded = json.loads(order.to_json())
+        assert loaded['order_id'] == order.order_id
+        assert loaded['fill_model'] == pa_module.MAKER_FILL_MODEL
+        assert loaded['stop_is_below_entry'] is True
+        assert json.loads(a.resting_orders_json())[0]['side'] == 'BUY'
+
+    def test_a_nan_raises_instead_of_writing_a_file_only_python_can_read(
+            self, tmp_path):
+        """`json.dumps` happily emits a bare NaN token that is not JSON."""
+        a = make_maker_adapter(tmp_path)
+        order = rest_a_bid(a)
+        order.max_through_shares = float('nan')
+        with pytest.raises(ValueError):
+            order.to_json()
+        with pytest.raises(ValueError):
+            a.resting_orders_json()
+
+
+class TestMakerSummary:
+    """The maker block is reported apart from the taker numbers."""
+
+    def test_nothing_rested_reports_no_fill_rate_either_way(self, tmp_path):
+        """Convention 11 at the summary layer: a strategy that never quoted did
+        not fail to get filled."""
+        a = make_maker_adapter(tmp_path)
+        block = a.summary()['maker']
+        assert block['orders_rested'] == 0
+        assert block['fill_rate'] is None
+        assert block['no_fill_reasons'] == {}
+
+    def test_the_fill_rate_counts_orders_and_the_reasons_are_broken_out(
+            self, tmp_path):
+        a = make_maker_adapter(tmp_path, maker_ttl_seconds=1)
+        filled = rest_a_bid(a, limit=0.45, shares=20, bids=((0.30, 50.0),))
+        a.observe_resting_orders({'tok-1': crossing_book(0.40, 60.0)})
+        for limit in (0.44, 0.43, 0.42):
+            dead = rest_a_bid(a, limit=limit, shares=20, bids=((0.30, 50.0),))
+            a.expire_resting_orders(now_ts=dead.placed_ts + 99)
+        block = a.summary()['maker']
+        assert filled.status == ORDER_FILLED
+        assert block['orders_rested'] == 4
+        assert block['orders_filled'] == 1
+        assert block['fill_rate'] == pytest.approx(0.25)
+        assert block['no_fill_reasons'] == {'maker_never_observed': 3}
+        assert block['maker_entries'] == 1
+        assert block['fill_model'] == pa_module.MAKER_FILL_MODEL
+
+    def test_the_taker_summary_keys_are_untouched(self, tmp_path):
+        """Existing readers keep working: the maker block is purely additive."""
+        a = make_maker_adapter(tmp_path)
+        s = a.summary()
+        for key in ('mode', 'halted', 'entries', 'resolved', 'pending', 'wins',
+                    'losses', 'win_rate', 'share_weighted_entry_price',
+                    'breakeven_win_rate', 'realized_pnl_usdc',
+                    'capital_at_risk_usdc', 'equity_usdc', 'closed_early',
+                    'by_exit_kind', 'decision_counts', 'log_path', 'note'):
+            assert key in s
+
+
+class TestTheBlockedMakerStrategies:
+    """box_builder and grid_hedge, end to end through the new path.
+
+    This is the only evidence that matters for the reason those two files were
+    written: their QUOTE legs, unmodified, rested and then filled by the real
+    fill rule. Nothing here reaches into the strategies - the legs come out of
+    `evaluate()` exactly as the shadow loop would receive them.
+    """
+
+    @staticmethod
+    def _box_ctx():
+        from strategies.polymarket.base import MarketContext
+        from engine.polymarket.types import Market, Outcome
+        market = Market(id='m', question='q', slug='btc-updown-5m-1000',
+                        condition_id='c',
+                        outcomes=(Outcome('Up', 'UP'), Outcome('Down', 'DN')))
+        books = {'UP': make_book(((0.55, 50.0),), bids=((0.45, 50.0),),
+                                 token_id='UP'),
+                 'DN': make_book(((0.50, 50.0),), bids=((0.44, 50.0),),
+                                 token_id='DN')}
+        return MarketContext(window_ts=1000, market=market, books=books,
+                             seconds_into_window=10.0)
+
+    def test_box_builder_still_returns_quote_and_never_enter(self):
+        """A maker does not enter at decision time. It rests, and finds out."""
+        from strategies.polymarket import BoxBuilder
+        decision = BoxBuilder().evaluate(self._box_ctx())
+        assert decision.action == 'QUOTE'
+        assert decision.is_entry is False
+
+    def test_box_builder_legs_now_declare_a_fill_model(self):
+        from strategies.polymarket import BoxBuilder
+        feats = BoxBuilder().evaluate(self._box_ctx()).features
+        assert feats['maker_quote_is_restable'] is True
+        assert feats['maker_fill_model_available'] == pa_module.MAKER_FILL_MODEL
+
+    @staticmethod
+    def _grid_ctx():
+        """The book shape that clears every one of grid_hedge's gates."""
+        from strategies.polymarket.base import MarketContext
+        from engine.polymarket.types import Market, Outcome
+        market = Market(id='m', question='q', slug='btc-updown-5m-1699999800',
+                        condition_id='c',
+                        outcomes=(Outcome('Up', 'UP'), Outcome('Down', 'DN')))
+        books = {'UP': make_book(((0.55, 100.0),), bids=((0.53, 100.0),),
+                                 token_id='UP'),
+                 'DN': make_book(((0.47, 100.0),), bids=((0.45, 100.0),),
+                                 token_id='DN')}
+        return MarketContext(window_ts=1699999800, market=market, books=books,
+                             seconds_into_window=60.0, atr14=5.0,
+                             lead_bps=20.0)
+
+    def test_grid_hedge_still_returns_quote_and_never_enter(self):
+        from strategies.polymarket import GridHedge
+        decision = GridHedge().evaluate(self._grid_ctx())
+        assert decision.action == 'QUOTE'
+        assert decision.is_entry is False
+
+    def test_grid_hedge_legs_now_declare_a_fill_model(self):
+        from strategies.polymarket import GridHedge
+        feats = GridHedge().evaluate(self._grid_ctx()).features
+        assert feats['maker_quote_is_restable'] is True
+        assert feats['maker_fill_model_available'] == pa_module.MAKER_FILL_MODEL
+        # NOT cleared. The kill condition needs 50 grid FILLS, and a fill model
+        # existing is not 50 fills (convention 11).
+        assert feats['kill_condition_blocked_by'] == 'maker_fills_not_simulated'
+
+    def test_a_grid_hedge_rung_rests_and_then_fills(self, tmp_path):
+        """A ladder rung, unmodified, through the real fill rule."""
+        from strategies.polymarket import GridHedge
+        a = make_maker_adapter(tmp_path, notional_cap_usdc=100.0,
+                               max_concurrent_positions=20)
+        ctx = self._grid_ctx()
+        decision = GridHedge().evaluate(ctx)
+        assert decision.legs, decision.reason
+
+        rested, refused = [], []
+        for leg in decision.legs:
+            token = ctx.market.token_id(leg.outcome_side)
+            order = a.simulate_maker_buy(
+                decision.strategy, decision.market_slug, token,
+                leg.outcome_side, limit_price=leg.limit_price,
+                shares=leg.shares, window_ts=decision.window_ts,
+                book=ctx.books[token])
+            (rested if order is not None else refused).append(leg)
+            if order is not None and leg.outcome_side == 'Up':
+                deep = order
+        assert rested, 'no grid rung could rest at all'
+        assert a.positions == {}
+
+        # Trade the Up book strictly through the deepest rung we rested.
+        a.observe_resting_orders({
+            'UP': make_book(((deep.limit_price - 0.02, 500.0),),
+                            bids=((deep.limit_price - 0.05, 10.0),),
+                            token_id='UP')})
+        assert deep.status == ORDER_FILLED
+        pos = a.positions[deep.position_id]
+        assert pos.strategy == 'PM_grid_hedge'
+        assert pos.entry_liquidity == 'maker'
+        assert pos.avg_price == pytest.approx(deep.limit_price)
+
+    def test_a_box_builder_quote_rests_and_then_fills(self, tmp_path):
+        """The end of `maker_fill_not_simulated` at the adapter layer.
+
+        Both legs rest at the prices box_builder actually quoted, and each fills
+        only once its own book trades STRICTLY through that price with more size
+        than the queue that was ahead of it.
+        """
+        from strategies.polymarket import BoxBuilder
+        a = make_maker_adapter(tmp_path)
+        ctx = self._box_ctx()
+        decision = BoxBuilder().evaluate(ctx)
+        assert decision.reason == 'maker_fill_not_simulated'
+
+        orders = {}
+        for leg in decision.legs:
+            token = ctx.market.token_id(leg.outcome_side)
+            order = a.simulate_maker_buy(
+                decision.strategy, decision.market_slug, token,
+                leg.outcome_side, limit_price=leg.limit_price,
+                shares=leg.shares, window_ts=decision.window_ts,
+                book=ctx.books[token])
+            assert order is not None, leg
+            orders[leg.outcome_side] = order
+
+        # Nothing has filled yet. A quote is not a fill.
+        assert a.positions == {}
+
+        # The Up book touches the quote and never goes through it. The Down book
+        # trades through with more size than the queue ahead. One fill, not two.
+        up, down = orders['Up'], orders['Down']
+        a.observe_resting_orders({
+            'UP': make_book(((up.limit_price, 200.0),),
+                            bids=((up.limit_price - 0.01, 10.0),),
+                            token_id='UP'),
+            'DN': make_book(((down.limit_price - 0.05, 200.0),),
+                            bids=((down.limit_price - 0.10, 10.0),),
+                            token_id='DN'),
+        })
+        assert up.status == ORDER_RESTING
+        assert up.touched is True
+        assert down.status == ORDER_FILLED
+        assert down.fill_price == pytest.approx(down.limit_price)
+
+        pos = a.positions[down.position_id]
+        assert pos.strategy == 'PM_box_builder'
+        assert pos.entry_liquidity == 'maker'
+        assert pos.stop_price < pos.avg_price
+        assert a.summary()['maker']['orders_filled'] == 1

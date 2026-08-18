@@ -746,7 +746,10 @@ class TestExit:
 
     def test_a_bid_at_the_stop_closes_at_any_price(self):
         s = FairValueArb()
-        book = _book(UP_TOK, asks=[(0.60, 100)], bids=[(0.57, 100)])
+        # 0.50 is the TIERED stop for a 0.60 entry (>= 0.50 tier, 0.10 away).
+        # It was 0.57 while `MAX_LOSS = 0.03` was the stop; see
+        # `tests/test_tiered_stop_loss.py` and `base.tiered_stop_price`.
+        book = _book(UP_TOK, asks=[(0.60, 100)], bids=[(0.50, 100)])
         d = s.manage_exit(_position(entry=0.60), book, now=WINDOW_TS + 110)
 
         assert d.reason == 'price_stop'
@@ -813,9 +816,11 @@ class TestExit:
         assert d.reason == 'profit_target'
 
     def test_the_stop_is_checked_before_the_profit_target(self):
-        assert fva.MAX_LOSS > fva.MIN_PROFIT   # they cannot both be true anyway
         s = FairValueArb()
-        book = _book(UP_TOK, asks=[(0.60, 100)], bids=[(0.55, 100)])
+        # Read against the TIERED stop distance now, not `fva.MAX_LOSS`, which
+        # no longer sets the stop. They still cannot both be true anyway.
+        assert s.stop_distance_for(0.60) > s.min_profit
+        book = _book(UP_TOK, asks=[(0.60, 100)], bids=[(0.49, 100)])
         d = s.manage_exit(_position(entry=0.60), book, now=WINDOW_TS + 110)
         assert d.reason == 'price_stop'
 

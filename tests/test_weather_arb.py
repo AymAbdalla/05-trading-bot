@@ -54,7 +54,15 @@ from strategies.polymarket.weather_arb import (AirportWeatherFeed,  # noqa: E402
                                                resolution_station_checked)
 
 # A fixed clock so every test is deterministic and nothing reads time.time().
-NOW = 1787000000
+#
+# 2026-08-18T15:00:00Z, and the DATE is load-bearing now rather than arbitrary:
+# every ladder question in this file says "on August 18", and the daily-extreme
+# model resolves that against the station's LOCAL calendar day. At 15:00Z on the
+# 18th that day is OPEN, which is the branch where the station's running extreme
+# exists and acts as a hard floor. The previous value sat at 20:53Z on the 17th,
+# three hours before the window it was being tested against had even started, so
+# every daily-extreme test silently exercised the no-floor branch.
+NOW = 1787065200
 HOT_F = 92.0
 COLD_F = 70.0
 
@@ -123,12 +131,23 @@ class FakeAirportFeed(object):
     """Stands in for aviationweather.gov. Records every ICAO it was asked for."""
 
     def __init__(self, temp_f=HOT_F, obs_ts=NOW - 300, status='ok',
-                 station=None):
+                 station=None, lat=40.7794, lon=-73.8803,
+                 observed_extreme_f='same', history_status='ok',
+                 observations=6):
         self.temp_f = temp_f
         self.obs_ts = obs_ts
         self.status = status
         self.station = station
+        self.lat = lat
+        self.lon = lon
+        #: 'same' means "the running extreme equals the current reading", which
+        #: is the normal state at the moment of the day's peak. A number pins it
+        #: explicitly; `None` with `history_status` set exercises the refusal.
+        self.observed_extreme_f = observed_extreme_f
+        self.history_status = history_status
+        self.observations = observations
         self.calls = []
+        self.history_calls = []
 
     def observation(self, icao):
         self.calls.append(icao)
@@ -136,7 +155,88 @@ class FakeAirportFeed(object):
             return None, self.status
         return Reading(source='airport_metar',
                        station=self.station or str(icao).upper(),
-                       temp_f=self.temp_f, observed_ts=self.obs_ts), 'ok'
+                       temp_f=self.temp_f, observed_ts=self.obs_ts,
+                       lat=self.lat, lon=self.lon), 'ok'
+
+    def daily_extreme_checked(self, icao, metric, window_start_ts,
+                              window_end_ts):
+        self.history_calls.append((icao, metric, window_start_ts,
+                                   window_end_ts))
+        if self.history_status != 'ok':
+            return None, self.history_status
+        extreme = (self.temp_f if self.observed_extreme_f == 'same'
+                   else self.observed_extreme_f)
+        if extreme is None:
+            return None, 'airport_history_no_observation_in_window'
+        return wx.DailyObserved(
+            station=str(icao).upper(), metric=metric, extreme_f=float(extreme),
+            observations=self.observations,
+            first_ts=int(window_start_ts) + 60,
+            last_ts=int(self.obs_ts or window_start_ts),
+            window_start_ts=int(window_start_ts),
+            window_end_ts=int(window_end_ts)), 'ok'
+
+
+#: The local calendar day that CONTAINS `NOW`, used by every daily-extreme fake.
+#: `NOW` is 2026-08-18T15:00:00Z, so this window is OPEN and there are 9 hours
+#: left in it. Derived rather than typed: a hand-written epoch that is quietly
+#: eight hours off is exactly the bug that made the first version of these
+#: fixtures test the wrong branch.
+DAY_START = int(datetime.fromtimestamp(NOW, tz=timezone.utc).replace(
+    hour=0, minute=0, second=0, microsecond=0).timestamp())
+DAY_END = DAY_START + 86400
+LOCAL_DATE = datetime.fromtimestamp(NOW, tz=timezone.utc).strftime('%Y-%m-%d')
+assert LOCAL_DATE == '2026-08-18', LOCAL_DATE
+
+
+class FakeForecastFeed(object):
+    """Stands in for open-meteo's station forecast. Records every call.
+
+    Built from the SHAPE MEASURED live on 2026-08-18 for KLGA's own coordinates
+    (40.7794, -73.8803): `timezone: America/New_York`, `utc_offset_seconds`
+    -14400, a three-day `daily` block and 72 hourly points. The offset here is 0
+    so the local day is the UTC day and the arithmetic in the tests is readable
+    by eye; `test_weather_daily_extreme.py` exercises a genuinely offset station.
+    """
+
+    def __init__(self, daily_max_f=95.0, daily_min_f=68.0, grid_now_f=None,
+                 status='ok', utc_offset_sec=0, dates=(LOCAL_DATE,),
+                 hourly_shift_sec=0):
+        #: Shifts ONLY the hourly grid, never the daily dates. That separation
+        #: is what lets a test starve the bias lookup without also moving the
+        #: observation window it is inside - two knobs for two facts.
+        self.hourly_shift_sec = int(hourly_shift_sec)
+        self.daily_max_f = daily_max_f
+        self.daily_min_f = daily_min_f
+        #: The hourly value AT the observation time. Defaults to the airport
+        #: reading itself so the station-minus-grid bias is exactly zero and a
+        #: test asserting on the model can ignore it.
+        self.grid_now_f = grid_now_f
+        self.status = status
+        self.utc_offset_sec = utc_offset_sec
+        self.dates = tuple(dates)
+        self.calls = []
+
+    def forecast_checked(self, lat, lon):
+        self.calls.append((lat, lon))
+        if self.status != 'ok':
+            return None, self.status
+        grid = HOT_F if self.grid_now_f is None else self.grid_now_f
+        n = len(self.dates)
+        # One hourly point per hour of the day, so `hourly_at` always finds one
+        # within tolerance whatever hour the test's clock sits at.
+        hourly_ts = tuple(DAY_START + self.hourly_shift_sec + 3600 * h
+                          for h in range(48))
+        return wx.StationForecast(
+            req_lat=lat, req_lon=lon, grid_lat=lat, grid_lon=lon,
+            utc_offset_sec=self.utc_offset_sec,
+            timezone_name='UTC',
+            daily_dates=self.dates,
+            daily_max_f=tuple([self.daily_max_f] * n),
+            daily_min_f=tuple([self.daily_min_f] * n),
+            hourly_ts=hourly_ts,
+            hourly_f=tuple([grid] * len(hourly_ts)),
+            fetched_ts=float(NOW)), 'ok'
 
 
 class FakeDowntownFeed(object):
@@ -154,21 +254,27 @@ class FakeDowntownFeed(object):
 
 
 def _strategy(temp_f=HOT_F, obs_ts=NOW - 300, airport_status='ok',
-              downtown_status='ok', **kwargs):
+              downtown_status='ok', airport_feed=None, forecast_feed=None,
+              **kwargs):
     return WeatherArb(
-        airport_feed=FakeAirportFeed(temp_f, obs_ts, airport_status),
+        airport_feed=(airport_feed if airport_feed is not None
+                      else FakeAirportFeed(temp_f, obs_ts, airport_status)),
         downtown_feed=FakeDowntownFeed(status=downtown_status),
+        forecast_feed=(forecast_feed if forecast_feed is not None
+                       else FakeForecastFeed()),
         **kwargs)
 
 
 def _ladder_strategy(**kwargs):
     """A strategy allowed to price a daily-extreme market.
 
-    OFF by default in production because the model prices a single reading at
-    settlement and these markets resolve on the day's extreme; see gate 2c.
-    Tests of everything DOWNSTREAM of that gate have to get past it, and doing
-    that with an explicit flag beats doing it with a question shape that no
-    live market uses.
+    OFF by default in production, and the flag now selects the DAILY EXTREME
+    model rather than letting the point-in-time model loose on a variable it
+    cannot price. So a ladder strategy needs a forecast feed and a station
+    history as well as a METAR reading, and `_strategy` injects fakes for all
+    three. Tests of everything DOWNSTREAM of gate 2c still get past it with one
+    explicit flag, which beats doing it with a question shape no live market
+    uses.
     """
     return _strategy(allow_daily_extreme_markets=True, **kwargs)
 
@@ -734,7 +840,13 @@ def test_a_market_that_is_not_a_daily_extreme_is_not_caught_by_the_gate():
 
 def test_the_market_metric_is_recorded_so_the_two_ladders_are_not_pooled():
     """A point-in-time model is biased in OPPOSITE directions on a daily-high
-    ladder and a daily-low one. Pooling them averages the bias away on paper."""
+    ladder and a daily-low one. Pooling them averages the bias away on paper.
+
+    The metric is still recorded now that the daily-extreme model exists,
+    because the two ladders are still two different populations: `daily_low`
+    takes a MIN against the observed floor and `daily_high` takes a MAX, so a
+    pooled win rate would still be a rate over two different questions.
+    """
     high = _ladder_strategy().evaluate(_ctx(
         market=_market(question=LADDER_TAIL_F, rules=WHOLE_DEGREE_F_RULES)))
     low = _ladder_strategy().evaluate(_ctx(market=_market(
@@ -742,7 +854,22 @@ def test_the_market_metric_is_recorded_so_the_two_ladders_are_not_pooled():
                  'August 18?', rules=WHOLE_DEGREE_F_RULES)))
     assert high.features['market_metric'] == 'daily_high'
     assert low.features['market_metric'] == 'daily_low'
-    assert high.features['model_prices_point_in_time_not_daily_extreme'] is True
+    # The flag now says which model actually ran, and on this path it is the
+    # daily-extreme one. Its being False here is the fix, not a regression.
+    assert high.features['model_prices_point_in_time_not_daily_extreme'] is False
+    assert high.features['pricing_model'] == \
+        'daily_extreme_forecast_anchored_normal'
+    assert high.features['daily_extreme_metric'] == 'daily_high'
+    assert low.features['daily_extreme_metric'] == 'daily_low'
+
+
+def test_a_point_in_time_market_still_says_it_priced_a_point_in_time():
+    """The other side of the same flag. Nothing about the unchanged path moved,
+    so the existing tape stays comparable (convention 17)."""
+    feats = _strategy().evaluate(_ctx()).features
+    assert feats['market_metric'] is None
+    assert feats['pricing_model'] == 'point_in_time_normal'
+    assert feats['model_prices_point_in_time_not_daily_extreme'] is True
 
 
 def test_direction_is_not_hardcoded_a_below_market_prices_the_other_way():
@@ -853,6 +980,82 @@ def _all_decisions():
         max_notional_usdc=1.0).evaluate(_ctx())
     out['unfillable_at_cap'] = _strategy().evaluate(_ctx(yes_asks=((0.40, 3),)))
     out['edge_below_min'] = _strategy(min_edge=0.99).evaluate(_ctx())
+
+    # -- the wrong product entirely. A BTC Up/Down 5m market is what the shadow
+    # loop handed this strategy 57 times a cycle before the weather cycle
+    # existed, and it came back `resolution_station_unknown`.
+    out['not_a_temperature_market'] = _strategy().evaluate(_ctx(
+        market=_market(question='Bitcoin Up or Down - August 18, 2PM ET?',
+                       slug='btc-updown-5m-1787000000', rules=None)))
+
+    # -- the DAILY EXTREME path's own refusals, one construction each.
+    ladder = dict(market=_market(question=LADDER_TAIL_F,
+                                 rules=WHOLE_DEGREE_F_RULES))
+    out['station_coordinates_unknown'] = _ladder_strategy(
+        airport_feed=FakeAirportFeed(lat=None, lon=None)).evaluate(_ctx(**ladder))
+    out['station_forecast_unavailable'] = _ladder_strategy(
+        forecast_feed=FakeForecastFeed(status='feed_network_failure')
+    ).evaluate(_ctx(**ladder))
+    out['resolution_date_unparseable'] = _ladder_strategy().evaluate(_ctx(
+        market=_market(question='Will the highest temperature in NYC be 85°F '
+                                'or below today?',
+                       rules=WHOLE_DEGREE_F_RULES)))
+    out['resolution_date_outside_forecast_window'] = _ladder_strategy(
+        forecast_feed=FakeForecastFeed(dates=('2026-12-25',))
+    ).evaluate(_ctx(**ladder))
+    out['forecast_extreme_missing_for_date'] = _ladder_strategy(
+        forecast_feed=FakeForecastFeed(daily_max_f=None)).evaluate(_ctx(**ladder))
+    out['forecast_hour_missing_for_bias'] = _ladder_strategy(
+        # The hourly grid alone is shifted 40 days away, so no point is inside
+        # `BIAS_HOUR_TOLERANCE_SEC` of the observation. The DAILY block and the
+        # window bounds are untouched, so this reaches the bias step rather than
+        # tripping the horizon gate on the way (which is what shifting the whole
+        # response's offset did).
+        forecast_feed=FakeForecastFeed(hourly_shift_sec=40 * 86400)
+    ).evaluate(_ctx(**ladder))
+    # The clock is an hour PAST the local day's close while the SETTLEMENT
+    # stamp is still two hours out. That gap is the whole point of this reason
+    # existing separately from `market_past_resolution_time`: Madrid's endDate
+    # sits at 14:00 local on the very afternoon its market is about, so the two
+    # timestamps disagree by hours in both directions and one gate cannot cover
+    # both facts.
+    # The observation moves with the clock, so this reaches the window gate
+    # rather than tripping the freshness gate on the way past it.
+    out['observation_window_closed'] = _ladder_strategy(
+        obs_ts=DAY_END + 3300).evaluate(_ctx(
+            market=_market(question=LADDER_TAIL_F, rules=WHOLE_DEGREE_F_RULES,
+                           end_ts=DAY_END + 3 * 3600),
+            window_ts=DAY_END + 3600))
+    out['observation_window_too_far_out'] = _ladder_strategy(
+        max_hours_to_window_close=0.5).evaluate(_ctx(**ladder))
+    out['daily_extreme_history_unavailable'] = _ladder_strategy(
+        airport_feed=FakeAirportFeed(
+            history_status='feed_network_failure')).evaluate(_ctx(**ladder))
+    # An INTERIOR bucket, which is where the model's sigma is wider than the
+    # rung. `LADDER_TAIL_F` is a tail and is unbounded on one side, so it has no
+    # ceiling and never reaches this gate.
+    out['rung_narrower_than_model_resolution'] = _ladder_strategy().evaluate(
+        _ctx(market=_market(question=LADDER_BUCKET_C,
+                            rules=WHOLE_DEGREE_C_RULES)))
+    # A rung whose ceiling clears 0.5 but not the 0.55 entry floor. The sigma
+    # is chosen so the 1.0F whole-degree bucket's ceiling lands in that band:
+    # `2 * Phi(1.0 / (2 * 0.71)) - 1` is 0.519.
+    out['rung_cannot_reach_entry_conviction_on_yes'] = _ladder_strategy(
+        daily_extreme_sigma_floor_f=0.71,
+        daily_extreme_sigma_per_sqrt_hour_f=0.0
+    ).evaluate(_ctx(market=_market(
+        question='Will the highest temperature in NYC be 84°F on August 18?',
+        rules=WHOLE_DEGREE_F_RULES)))
+    # The fitted sigma is switched ON and this station is not in the artifact.
+    # `{}` is an INJECTED empty calibration, not a missing file: the test must
+    # not depend on whether `research/weather_sigma_calibration.json` happens
+    # to exist on the machine running it.
+    out['daily_extreme_sigma_unfitted_for_station'] = _ladder_strategy(
+        use_fitted_sigma=True, sigma_calibration={}).evaluate(_ctx(**ladder))
+    # Conviction, not price. The floor is raised past anything the model can
+    # return, the same way `min_edge=0.99` reaches `edge_below_min`.
+    out['model_confidence_below_entry_floor'] = _strategy(
+        min_model_p_side=0.999).evaluate(_ctx())
     return out
 
 

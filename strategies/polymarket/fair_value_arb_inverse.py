@@ -189,7 +189,8 @@ None`, so the rule ORDER is untouched and this variant cannot drift away from
 it. Four rules remain live:
 
     window_close    hard deadline, unchanged
-    price_stop      3c below the ACTUAL entry, unchanged
+    price_stop      the TIERED stop on the ACTUAL entry - `base.STOP_TIERS`,
+                    which for this strategy's high entries is 10c, not 3c
     profit_target   1c above the ACTUAL entry, unchanged
     time_stop       60s, unchanged
 
@@ -269,7 +270,8 @@ are, losers. This strategy is judged against 75% and against nothing else.
 import math
 from typing import Optional
 
-from strategies.polymarket.base import Decision, Leg, MarketContext, opposite
+from strategies.polymarket.base import (Decision, Leg, MarketContext, opposite,
+                                        tiered_stop_features)
 from strategies.polymarket.fair_value_arb import (PRICE_TICK, ExitDecision,
                                                   FairValueArb)
 
@@ -567,9 +569,18 @@ class FairValueArbInverse(FairValueArb):
         feats['confidence_is_the_model_we_are_betting_against'] = True
 
         feats['profit_target_price'] = round(effective + self.min_profit, 4)
-        feats['stop_price'] = round(effective - self.max_loss, 4)
+        # The TIERED stop, from the flipped side's own walked fill. This
+        # strategy's entries cluster at the top of the book (measured mean
+        # 0.6907 over 176 fills), so it sits in the `>= 0.50` tier almost
+        # always and its stop widened from 0.03 to 0.10 - the largest change
+        # the tiering makes anywhere in the family, and the opposite direction
+        # from the one the lesson that motivated it was about. Stated here
+        # rather than discovered from a P&L column later.
+        feats.update(tiered_stop_features(effective, flipped))
         feats['stop_and_target_from_actual_fill_not_mirrored'] = True
         feats['breakeven_win_rate'] = round(self.breakeven_win_rate, 6)
+        feats['breakeven_win_rate_at_tiered_stop'] = round(
+            self.breakeven_win_rate_at(effective, flipped), 6)
         feats['breakeven_win_rate_if_held'] = round(effective, 4)
         feats['notional_usdc'] = round(shares * effective, 4)
         feats['parent_measured_win_rate'] = round(PARENT_MEASURED['win_rate'], 4)

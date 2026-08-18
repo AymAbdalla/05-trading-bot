@@ -155,8 +155,16 @@ EDGE_THRESHOLD = 0.06
 #: "spec tension" the parent's docstring names is not present here.
 MIN_PROFIT_PATIENT = 0.02
 
-#: UNCHANGED from the parent at 3c, and restated rather than inherited silently
-#: so that a reader comparing the three variants sees it did not move.
+#: NOMINAL geometry ONLY. **This is no longer the stop** (2026-08-18). The stop
+#: is `strategies.polymarket.base.tiered_stop_price`, shared by all six
+#: exit-managing Polymarket strategies and keyed to the entry price. Only
+#: `breakeven_win_rate` still reads this.
+#:
+#: The min-hold warning above is UNCHANGED and if anything sharper: for the
+#: first `min_hold_sec` the only stop a position has is the structural 0.00
+#: floor, and that is now true of the tiered stop exactly as it was of the 3c
+#: one. `manage_exit` here defers the parent's ANSWER, so it defers whichever
+#: stop the parent computed, tiered or not.
 MAX_LOSS_PATIENT = MAX_LOSS
 
 #: Two attempts per window. Attempts, not fills.

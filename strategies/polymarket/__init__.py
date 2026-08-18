@@ -136,30 +136,22 @@ resolution PnL yet (D-268). Every one of them is NOT_TESTED.
 Of the four, only `PM_weather_arb` and `PM_dip_arb` can produce an entry at all
 today. The other two are refusals, and each refuses for its own reason.
 
-  PM_smart_money_copy   **CANNOT ENTER as shipped.** All seven tracked wallet
-                        handles (bonereaper, 0x50f7, boneohio, coinfilippe,
-                        0xaaaaa, doggystyie, Sharky6999) resolve to `None`,
-                        because we have no real proxy wallet addresses for any
-                        of them. Two of those handles - `0x50f7` and `0xaaaaa` -
-                        are 4-hex PREFIXES, not addresses. They are held in a
-                        SEPARATE map (`TRACKED_WALLET_PREFIXES`) precisely so a
-                        prefix can never leak into a query string and be sent to
-                        an endpoint as if it were an address. The strategy
-                        refuses with `wallet_address_unresolved` BEFORE it makes
-                        any network request at all.
-
-                        The second blocker survives fixing the first. Even given
-                        a real address, Polymarket's public `/trades` endpoint
-                        returns FILLS, not OUTCOMES: no `won` field, no realized
-                        PnL, no redemption flag. So the >60% win rate and >50
-                        trades gate cannot be evaluated from it, and every wallet
-                        is refused with `wallet_record_unmeasured`. That refusal
-                        is deliberate. The source win rates are a blog post about
-                        somebody else's wallet, and copying them into the gate
-                        would fabricate the evidence the gate exists to check.
-                        Both of these are NOT_TESTED (convention 11), not
-                        tested-and-found-nothing.
-
+  PM_smart_money_copy   **The two blockers below are CLEARED as of 2026-08-18.**
+                        All seven handles now resolve to real proxy wallets, and
+                        `0x50f7` / `0xaaaaa` turned out to be chosen USERNAMES,
+                        not 4-hex address prefixes, so `TRACKED_WALLET_PREFIXES`
+                        is empty. Provenance and the round-trip verification:
+                        `research/polymarket_wallets.md`.
+                        The record gate is reachable too: `/trades` still
+                        carries no settlement, but
+                        `engine/polymarket/market_resolution.py` turns a
+                        `conditionId` into "which token paid $1.00" off
+                        `clob /markets/<conditionId>`, and the wallet's BUY
+                        fills are scored hold-to-resolution against it. Measured
+                        live on all 7 wallets: 3 clear the >60% bar.
+                        It can now ENTER. It has not yet, because the wallet
+                        whose fills land in the BTC 5-minute market is below the
+                        bar - which is a MEASURED rejection, not a refusal.
   PM_grid_hedge         **CANNOT ENTER, by construction.** It is a MAKER
                         strategy. It returns QUOTE and never ENTER, exactly like
                         `PM_box_builder`, and the shadow loop counts it under
@@ -314,11 +306,20 @@ today. The other two are refusals, and each refuses for its own reason.
                               to surface `min_hold_suppressed_reason` on closes,
                               because the realised loss on deferred stops is the
                               only measurement that can falsify its min-hold.
-  PM_smart_money_copy         Needs REAL wallet addresses for all seven handles,
-                              and then needs an outcome-bearing trade source -
-                              positions or redemptions, not `/trades` fills -
-                              before its win-rate gate can be evaluated at all.
-                              Without both, it emits refusals and nothing else.
+  PM_smart_money_copy         BOTH of its old blockers are cleared as of
+                              2026-08-18. All seven handles resolve to real
+                              proxy wallets (`research/polymarket_wallets.md`),
+                              and the outcome-bearing source turned out not to
+                              be needed: `engine/polymarket/market_resolution.py`
+                              reads `clob /markets/<conditionId>` and the fills
+                              are scored against it. Live: it now reaches the
+                              record gate and skips
+                              `wallet_record_below_threshold`, a MEASURED
+                              rejection, not a data blocker. What it still needs
+                              is a ruling on WHICH number to gate on - the
+                              measured win rate is very nearly a restatement of
+                              the premium paid (see
+                              `WalletRecord.edge_over_breakeven`).
   PM_weather_arb              Needs each market's rules text read and the
                               station table verified against it, and needs
                               `sigma_F` fitted to actual station history rather
@@ -353,6 +354,8 @@ from strategies.polymarket.fair_value_arb_patient import FairValueArbPatient
 from strategies.polymarket.fair_value_arb_wide import FairValueArbWide
 from strategies.polymarket.grid_hedge import GridHedge
 from strategies.polymarket.liq_cascade_chaser import LiqCascadeChaser
+from strategies.polymarket.maker_rebate_corridor_quote_ladder import \
+    MakerRebateCorridorQuoteLadder
 from strategies.polymarket.mid_price_continuation import MidPriceContinuation
 from strategies.polymarket.near_liq_trigger import NearLiqTrigger
 from strategies.polymarket.small_liq_continuation import SmallLiqContinuation
@@ -364,7 +367,7 @@ from strategies.polymarket.weather_arb import WeatherArb
 
 
 def build_strategies():
-    """Fresh instances of all nineteen. Order is stable for reproducible logs.
+    """Fresh instances of all twenty. Order is stable for reproducible logs.
 
     New strategies are APPENDED, never inserted. The shadow loop's accounting
     identity is `evaluations == cycles * len(strategies)`, so a reordering
@@ -408,6 +411,10 @@ def build_strategies():
         WeatherArb(),
         GridHedge(),
         DipArb(),
+        # APPENDED, at index 19, which is what keeps the prefix pins valid.
+        # Carries per-window resting-quote state like `GridHedge`, so it needs
+        # the same fresh-instance isolation as everything above it.
+        MakerRebateCorridorQuoteLadder(),
     ]
 
 
@@ -422,5 +429,6 @@ __all__ = [
     'FairValueArbHFT', 'FairValueArbInverse', 'ExitDecision',
     'LiqCascadeChaser', 'SmallLiqContinuation', 'NearLiqTrigger',
     'SmartMoneyCopy', 'WeatherArb', 'GridHedge', 'DipArb',
+    'MakerRebateCorridorQuoteLadder',
     'build_strategies',
 ]

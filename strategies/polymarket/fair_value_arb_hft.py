@@ -95,8 +95,20 @@ PAPER_MODE = True
 #: improve, suspect it first.
 EDGE_THRESHOLD = 0.02
 
-#: 2c, against the parent's 3c. The ONLY reason this variant's break-even is
-#: lower than the parent's - the target did not move.
+#: NOMINAL geometry ONLY. **This is no longer the stop** (2026-08-18). The stop
+#: is `strategies.polymarket.base.tiered_stop_price`, shared by all six
+#: exit-managing Polymarket strategies, and it is keyed to the entry price
+#: rather than to the strategy. Read this constant only alongside
+#: `breakeven_win_rate`, which is the only thing left that reads it.
+#:
+#: **Consequence, stated rather than left to be discovered.** The stop was this
+#: variant's ONLY differentiator from the parent on the payoff axis - the module
+#: docstring above says so in as many words: "This variant does not ask for a
+#: bigger win, it accepts a smaller loss." Under the shared rule `_hft` and the
+#: parent now have the SAME stop at the same entry price, so what remains
+#: different is `edge_threshold`, `max_trades_per_window`,
+#: `min_book_depth_shares` and `time_stop_sec`. The 66.7% break-even below no
+#: longer describes a live position; `breakeven_win_rate_at(entry)` does.
 MAX_LOSS_HFT = 0.02
 
 #: UNCHANGED at 1c. Restated rather than inherited silently so a reader

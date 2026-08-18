@@ -2143,3 +2143,463 @@ D-285's body references `noise_floor_measured_on` (renamed to
 historical records (convention 10). The rename is documented in the code,
 the drift tests, and D-297's implementation. No follow-up D-number needed.
 Leave D-285 as written.
+
+
+### D-305. One subprocess call site for every reasoning turn (CODY, needs ratifying)
+
+Raven's 2026-08-18 instruction file asked for Opus reasoning in five places:
+Forge proposals, vault lessons, blowup root cause, critic post-mortems, cycle
+takeaways. Five call sites would have meant five timeouts, five tool
+allowlists, five opinions about what a failed turn means.
+
+`agents/llm_client.py` is now the only place in the repo that spawns
+`claude -p`. It owns the timeout, the tool allowlist (`Read`/`Write`, never
+`*`, never `Bash` - a reasoning agent has no business running shell in a repo
+with a live-adjacent loop), the `PYTHONPATH` strip (convention 14), and the
+task-to-model routing table.
+
+Callers name a TASK, never a model. Re-routing anything is one edit to
+`MODEL_FOR_TASK`. Current routing, per Raven: proposals, lessons, blowup root
+cause, strategy cards, cycle takeaways, critic post-mortems -> Opus; daily and
+weekly summaries -> Sonnet. An unregistered task routes to Opus, because
+getting a pricier model is a cost mistake and getting no reasoning is a
+correctness mistake.
+
+**Where:** `agents/llm_client.py`, `tests/test_llm_reasoning_layer.py`.
+
+### D-306. The model composes, Python holds the pen (CODY, needs ratifying)
+
+Raven's file says "Opus writes the proposals to `strategies/proposals/`" and
+"spawn Opus to write the report to the vault". Implemented as: Opus composes,
+Python writes. This is a deliberate deviation and it applies in both places.
+
+For Forge, the entire contract of `agents/forge.py` is that the deterministic
+half enforces the schema and refuses anything that would put a false or
+unfalsifiable number into the record. That guarantee only holds if Python
+writes the file, so the reasoner returns JSON candidates and they go through
+the SAME `validate()` -> `write_proposal()` path as a hand written one.
+
+For the vault, writing through Python buys three things a model Write cannot:
+an empty or refusing turn is rejected before it can overwrite a good note; the
+write is atomic (tmp + `os.replace`); and every note carries a provenance
+header naming the model, so a note is never mistaken for a human judgement
+later.
+
+Same artifacts, same locations. The model's tool allowlist on these calls is
+`('Read',)`.
+
+**Where:** `agents/forge_reasoner.py`, `agents/vault_writer.py`,
+`agents/forge.py`.
+
+### D-307. A failed model turn is NOT_TESTED, and says so in the artifact (CODY, needs ratifying)
+
+Convention 11 applied to the reasoning layer. Four outcomes are tracked
+separately and never collapsed to a boolean (convention 20):
+
+  ok               the turn ran and returned usable candidates or prose
+  no_candidates    it ran, we read it, it proposed nothing. A RESULT.
+  unusable_reply   it ran and we could not read what it said. A DIFFERENT
+                   result.
+  NOT_TESTED       it could not run at all: binary missing, timeout, non-zero
+                   exit, or exit 0 with empty stdout.
+
+Only the last is NOT_TESTED. A vault note written without a model turn carries
+`model: NOT_TESTED` in its front matter plus a visible warning block saying
+the numbers are real and the analysis is absent, because vault notes are read
+back as evidence by Forge and by the critic.
+
+Nothing in this layer may raise into a caller. `shadow_runner` reaches it on
+the blowup path, which is exactly when a stack trace is least welcome.
+
+**Where:** `agents/llm_client.py` (`LLMResult.ok`), `agents/vault_writer.py`
+(`_provenance`), `agents/forge.py` (`REASONER_FALLBACK_REASONS`).
+
+### D-308. Vault notes are the OUTPUT of a script, not hand-written artifacts (CODY, needs ratifying)
+
+Raven hand-wrote the first five Trading notes on 2026-08-18. They were accurate
+when written and stale within hours, because the shadow loop never stops. At
+the first refresh the lesson file said `fair_value_arb` had 503 trades at a 21%
+win rate; the database said 255 at 32.5%, and equity was $724 rather than $850.
+
+`scripts/vault_refresh.py` is now the artifact and the note is its output.
+Every number is re-derived from `positions` and `signals`; the reasoning on top
+is composed by Opus. Each note is pinned to an explicit filename so a refresh
+REPLACES it rather than growing a dated near-duplicate beside it, which would
+then be read back as several lessons disagreeing about the same strategy.
+
+A number in a vault note that cannot be traced to the evidence block is a bug
+in the prompt, not a fact.
+
+**Where:** `scripts/vault_refresh.py`, `tests/test_vault_refresh.py`.
+
+### D-309. Proposal numbering defaults to the next free number (CODY, needs ratifying)
+
+`forge.py --start-index` defaulted to 1, so any run that forgot to pass it
+restarted the numbering. On 2026-08-18 the first real reasoner run produced a
+second 001 through 007 beside the existing ones. Nothing was overwritten (the
+slug is part of the filename) which made it quieter and worse: "proposal 005"
+stopped identifying a document, and `corridor_pair_live.py` cites proposal 005
+by number in its docstring.
+
+The seven new files were renumbered to 017-023. The default is now
+`next_free_index()`, one past the highest number on disk. `--start-index`
+survives as an explicit override for a deliberate renumbering, but the safe
+thing is what happens when nobody thinks about it.
+
+`tests/test_forge_reasoner.py` asserts the live directory has no duplicate
+numbers.
+
+**Correction, same session.** Defaulting to next-free fixed the reasoner's
+duplicate NUMBERS and immediately created duplicate SLUGS: the deterministic
+path re-emits the same hand written candidate list every run and used to
+rewrite 001-005 in place, so appending produced 024-028 carrying the identical
+five slugs three minutes later.
+
+Numbering by POSITION was wrong in both directions. Numbers are now allocated
+by SLUG (`existing_numbers_by_slug`): a re-run of the same proposal overwrites
+itself, a genuinely new proposal takes the next free number, and a slug already
+carrying two numbers resolves to the LOWEST so a repair collapses onto the
+original rather than onto the accident. `--start-index` still forces sequential
+numbering for a deliberate renumbering.
+
+Verified by re-running Forge for real: 9 written, all into existing numbers,
+directory count unchanged. The five duplicates were deleted. Tests assert the
+live directory has neither a duplicate number nor a duplicate slug, and that a
+re-run leaves the file list unchanged.
+
+**Where:** `agents/forge.py` (`next_free_index`), `strategies/proposals/`.
+
+### D-310. `vault_writer.skip_model`, formerly and dangerously `dry_run` (CODY, needs ratifying)
+
+The flag means "skip the model, still write the deterministic fallback". It was
+called `dry_run`, which every reader takes to mean "write nothing". In the two
+hours it carried that name, a `--dry-run` of `agents/critic.py` deposited a
+note built from synthetic test numbers into the real
+`~/aym/vault/Trading/Forge-Cycle-Summaries/`.
+
+That note was deleted, and the vault is read back as evidence by Forge, so a
+synthetic note there is not cosmetic.
+
+Renamed to `skip_model` across `vault_writer`, `vault_refresh` and `critic`.
+`scripts/vault_refresh.py` keeps `--dry-run` as a CLI alias with the trap
+stated in its help text. Every note-writing helper also takes `out_dir`, so a
+test cannot reach the real vault by accident. Three tests pin it, including one
+that fails if any public writer regrows a `dry_run` parameter or loses its
+`out_dir`.
+
+**Where:** `agents/vault_writer.py`, `scripts/vault_refresh.py`,
+`agents/critic.py`, `tests/test_llm_reasoning_layer.py`.
+
+### D-311. Weather markets get a daily-extreme model, a discovery cycle, and their own counters (AYM + CODY, needs ratifying)
+
+**Decided:** 2026-08-18. Aym approved `allow_daily_extreme_markets = true`.
+Cody built the model, the discovery cycle and the tests.
+
+**The problem.** `PM_weather_arb` was in the registry and was evaluated 57 times
+a cycle, and every one of those evaluations was against a BTC Up/Down 5m market.
+It returned `resolution_station_unknown`, which reads as "a weather market whose
+rules text we could not parse" and was in fact "this is not a weather market".
+Two different facts under one counter (convention 20). The feeds were never the
+blocker; the MARKETS were.
+
+Separately, the model priced a single reading at the settlement timestamp while
+100% of the live board resolves on the station's daily extreme. Those are
+different random variables. Measured 2026-08-18 over 80 live markets, the
+mismatch produced 7 entries with 45c to 99.9c of "edge", wrong in OPPOSITE
+directions on the two ladders.
+
+**What was decided.**
+
+1. **Two models, one per random variable.** `market_metric = None` keeps
+   `probability_yes` unchanged, so the existing tape stays comparable. A
+   daily-extreme market is priced as `max(O, X)` for a high and `min(O, X)` for
+   a low, where `O` is the extreme the station has ALREADY reported inside the
+   market's LOCAL observation day and is not modelled at all, and
+   `X ~ Normal(open-meteo forecast daily extreme + station-minus-grid bias,
+   sigma)`. The observed part is a HARD BOUND: a day that has produced 33.0C
+   cannot have a maximum of 30C, with probability exactly 0, no sigma involved.
+
+2. **`allow_daily_extreme_markets: true`** in `config.yaml:polymarket.weather`,
+   applied through `weather_arb.set_weather_config` from the loop's `main()`,
+   the same shape as the strike-proxy floor. The MODULE default stays False so
+   every existing caller keeps its behaviour. An unknown key or a non-boolean
+   value raises rather than being coerced.
+
+3. **A weather CYCLE in the shadow loop**, on its own 60-second cadence, with
+   its OWN counters and its OWN identity. It does not touch
+   `evaluations == cycles * strategies * assets`, because a temperature market
+   is not a (cycle, asset, strategy) triple: there is no fixed number of them
+   per poll. `check_weather_identity` asserts the thing convention 20 is
+   actually about - every evaluation lands in exactly one named bucket.
+
+4. **Discovery goes through `/events?tag_slug=weather` and sorts LOCALLY.** No
+   `order` parameter is sent anywhere in the path. Gamma sorts `order=volume` as
+   TEXT and returns the smallest markets while still answering HTTP 200 (D-302),
+   and a plain volume sort would in any case have spent the whole poll budget on
+   "Will 2026 be the hottest year on record?" at $820,702 against $9,330 for the
+   biggest genuine city ladder. `rank_weather_markets` filters first, then sorts
+   what survives.
+
+**The numbers, and every one of them is labelled.** The two sigma constants
+(`DAILY_EXTREME_SIGMA_FLOOR_F = 1.0`, `_PER_SQRT_HOUR_F = 0.35`) are
+CONVENTION 15 ESTIMATES written before any run and never fitted.
+`backtest/measure_daily_extreme_calibration.py` does not exist. Every row is
+stamped `daily_extreme_calibration_harness_exists: false`, so nothing downstream
+can score these as measured wins.
+
+**Kill condition.** The falsifier is stated on `DailyExtremeEstimate`: over at
+least 200 resolved rungs, the probability integral transform of the realised
+daily extreme must be uniform. Falsified if more than 10% land outside the
+central 90% interval, or the mean PIT differs from 0.5 by more than 0.05, or the
+histogram is visibly right-skewed for daily highs (which would be the normality
+assumption failing and would call for a Gumbel tail).
+
+**What changed about the CLAIM, and this needs Aym's eye.** The
+airport-versus-downtown thesis is a claim about a MEASUREMENT. The daily-extreme
+model's centre is open-meteo's FORECAST, so when it disagrees with the book the
+disagreement is mostly "our forecast provider expects a different afternoon peak
+than the crowd does" and only secondarily "the crowd reads the wrong
+thermometer". Those are two different claims. First live run, 25 highest-volume
+rungs: 2 ENTERs, 22 `airport_agrees_with_market`, realised edges of 0.43 and
+0.34. A 43-cent edge on a 25-market sample is the convention 17 shape and is
+labelled as such, not celebrated. The airport-versus-downtown gap is still
+unmeasured and the recorder that would measure it is still not built.
+
+**Addendum, same session: the first two live entries were arithmetic.**
+Checking them found a second defect. For a bounded rung of width `w` under a
+normal of standard deviation `sigma`, the maximum attainable Yes probability is
+`2 * Phi(w / (2 * sigma)) - 1`, which depends on nothing but the width and the
+sigma. A Celsius bucket is 1.8F wide; at a 31.5-hour horizon the sigma is 2.96F,
+giving a ceiling of 0.239. The Madrid 36C row returned 0.238 - the ceiling - and
+then "disagreed" with a book at 0.64 and booked a 0.43 edge. The model could
+never have said Yes about that rung, so it would take the No side of nine of the
+eleven rungs of every ladder, every cycle, forever.
+
+Same shape as `strike_inside_proxy_noise_floor`, same treatment: refuse where
+the instrument cannot resolve. `MIN_ATTAINABLE_P_YES = 0.5` is where "the model
+cannot prefer Yes" flips, so it is a property of the arithmetic and not a
+threshold anyone picked. Rungs below it are refused as
+`rung_narrower_than_model_resolution` (DATA_BLOCKER in the forge classification:
+the missing input is a FITTED sigma).
+
+Re-measured with the gate in, same board, 20 markets: **0 entries**, 17
+`rung_narrower_than_model_resolution`, 2 `airport_agrees_with_market`, 1
+`observation_window_too_far_out`. What survives is both ladder TAILS, which are
+unbounded and have no ceiling, and Fahrenheit range buckets inside about an hour
+of the close. A whole-degree Fahrenheit bucket has a ceiling of 0.31 even at the
+close and can never be priced by this sigma. The way to widen that reach is to
+FIT the sigma, not to lower the floor.
+
+**Where:** `strategies/polymarket/weather_arb.py`,
+`engine/polymarket/shadow_loop.py`, `config.yaml`,
+`agents/forge_shadow_eval.py` (skip classification),
+`tests/test_weather_daily_extreme.py` (76 tests),
+`tests/test_weather_shadow_wiring.py` (24 tests),
+`tests/test_weather_arb.py` (extended to 169).
+
+### D-312. A strategy joins a market universe by DECLARATION, not by a flag (CODY, needs ratifying)
+
+**Decided:** 2026-08-18. Cited in eight places across `shadow_loop.py`,
+`base.py` and `weather_arb.py` since the afternoon session. The body was never
+written. Recorded here by a later session so the citation stops being a
+dangling reference (convention 24: a cited D-number is not a decision). The
+design is not mine; the write-up is.
+
+**The problem.** The weather cycle selected its strategies on a boolean
+`needs_weather_market` flag. That worked for exactly one universe and does not
+generalise: a flag per universe is a flag somebody has to remember to add, and
+the failure mode is silent - a strategy that is never polled looks identical to
+a strategy that is polled and always skips.
+
+**What was decided.**
+
+1. `PolymarketStrategy.supported_market_types` is the routing declaration. The
+   loop selects each universe's population by asking which strategies declared
+   that `market_type`.
+2. The default is `(MARKET_TYPE_CRYPTO_UPDOWN,)` and that is load-bearing.
+   Every strategy written before this assumed a spot, a strike and a 300-second
+   clock. Inheriting "supports everything" would hand those assumptions a
+   sports market and produce a permanent, plausible-looking refusal instead of
+   a loud one. Widening is opt-in, per strategy, by someone who has read what
+   that strategy reads off the context.
+3. `assert_supports` RAISES rather than returning a skip. A strategy evaluating
+   a universe it never opted into is a ROUTING bug, and a skip reason would put
+   it in `db/trading.db` as a row that looks like a decision, get counted in
+   the identity, and eventually be read as evidence about the market rather
+   than about our wiring.
+4. **`PM_weather_arb` left the crypto cycle.** It declares only `weather`, so
+   the crypto denominator is 19 of the 20 registered strategies, not 20.
+
+**The consequence nobody wrote down, and the reason this entry exists.**
+Thirteen tests asserted the crypto denominator by taking
+`len(build_strategies())`, which is the REGISTRY total and no longer the
+crypto-cycle population. They were left red. `N_STRATEGIES` in
+`tests/test_polymarket_shadow_loop.py` and `tests/test_polymarket_multi_asset.py`
+is now the crypto-routed subset, derived rather than hardcoded.
+
+**Where:** `strategies/polymarket/base.py`,
+`engine/polymarket/shadow_loop.py`, `tests/test_polymarket_shadow_loop.py`,
+`tests/test_polymarket_multi_asset.py`, `tests/test_weather_shadow_wiring.py`.
+
+---
+
+### D-313. Event, sports and political markets get one cycle, three records (CODY, needs ratifying)
+
+**Decided:** 2026-08-18. The `MarketSpace` record, the `SPACE_*` constants and
+this D-number were written by the afternoon session; the cycle that uses them
+was not. This entry covers both halves.
+
+**The problem.** `search_event_markets`, `search_sports_markets` and
+`search_political_markets` were built, tested and called by NOTHING.
+`MarketSpace` was defined and never instantiated. `run_space_cycle` existed
+only in a comment. The bot polled BTC, ETH and SOL 5-minute markets and nothing
+else, while `PM_smart_money_copy` declared support for every market type and
+was handed crypto windows exclusively.
+
+**What was decided.**
+
+1. **One implementation, three records.** `run_space_cycle` takes a
+   `MarketSpace` and touches nothing outside it. Event, sports and political
+   differ only in their discovery query. Convention 23: three hand-copied
+   cycles are three places for the accounting to drift apart, and the weather
+   cycle already showed how much accounting a cycle carries.
+2. **Each space owns its counters and its own identity.**
+   `space.evaluations == sum(space.counts.values())`. The crypto identity
+   (`cycles * strategies * assets`) cannot apply, because the number of markets
+   polled is a property of the BOARD rather than of our configuration. A space
+   evaluation never touches the crypto identity or the weather one.
+3. **Counters are namespaced per space.** `sports_no_orderbook` and
+   `political_no_orderbook` are two counters. A shared bucket would answer
+   "which universe has no books" with a number describing neither
+   (convention 20).
+4. **60-second cadence, not the 5-second crypto poll.** The justification is
+   NOT weather's, so it is not shared with it: weather is slow because its
+   INPUTS are slow, whereas these books move continuously. The reason here is
+   that an event or sports market resolves in hours or days, so a fill one
+   minute later is the same trade, and polling three universes at 5s would
+   triple our Gamma request rate to chase a difference no strategy here can
+   use. Convention 17: an assumption with an expiry date. The measurement that
+   would move it is realised slippage between decision time and one cycle later.
+5. **A $10,000 volume floor, strictly exceeded, shared across all three.** A
+   per-category floor would mean "big enough" had a different meaning depending
+   on which scanner returned the market, and any later comparison of sports
+   against politics would be comparing two populations while looking like one
+   query. Inherited, not measured - convention 17 applies.
+6. **Ordering is local for the tag sweep and `volumeNum` for `/markets`.** That
+   asymmetry is real and is asserted in the tests rather than smoothed over.
+   `order=volume` sorts as TEXT, returns the SMALLEST markets and still answers
+   HTTP 200, so the failure is silent.
+
+**Two defects found and fixed while wiring this.**
+
+- **`build_weather_context` never stamped `market_type`.** Every weather
+  context was a weather market wearing the default `crypto_updown` label.
+  Nothing raised, because `WeatherArb` does not call `assert_supports` and the
+  one strategy in that space that does (`SmartMoneyCopy`) declares every type
+  and accepted the wrong label silently. A routing declaration is only
+  enforceable if the context carries the type the router selected on.
+- **The tagged search deduped AFTER the quality gates.** A market dropped for
+  low volume under tag A was evaluated again under tag B and dropped a second
+  time, so `volume_below_floor` counted copies rather than markets and
+  `duplicate_across_tags` never fired for it. The first thing wrong with the
+  second copy of a market is that it is the second copy.
+
+**Not done, and deliberately.** No strategy has been re-declared into these
+spaces to make them fire. The only strategies polled there are the ones that
+ALREADY declared those types, which is `PM_smart_money_copy` alone. Widening a
+strategy's `supported_market_types` is a trading decision under D-312 clause 2
+and it is Aym's, not a side effect of wiring the transport.
+
+**Where:** `engine/polymarket/shadow_loop.py`, `engine/polymarket/markets.py`,
+`tests/test_space_shadow_wiring.py` (28 tests, new),
+`tests/test_polymarket_markets.py`.
+
+---
+
+### D-314. The corridor family never traded the complementary-pair identity, so proposal 026 phase one measures a structure it does not use (CODY, needs ratifying)
+
+**Decided:** 2026-08-18. Proposal 026 asks for this code read explicitly and
+says it would rather be made redundant by it than build an instrument to
+discover something a grep would show. It was made redundant.
+
+**What the proposal assumed.** That "the corridor family's entire justification
+is a structural identity: one side of a binary resolves to 1.00, so a
+complementary pair bought for less than 1.00 combined is locked-in profit", and
+that the observed pair at 0.31 + 0.90 = 1.21 with both legs exiting at 1.00 is
+an anomaly, because "a genuine complementary pair cannot do" that.
+
+**What the code does.** `CorridorPairLive.evaluate` builds
+`Leg(lead_side, ..., market_slug=slug_15)` and `Leg(opp_side, ..., market_slug=slug)`
+- the 15m leader and the final-5m opposite. Two different MARKETS on two
+different CLOCKS that settle off the same close, not two complementary OUTCOME
+tokens of one market. Verified in the wiring, not the docstring (convention 22).
+The same file computes `worst_case_pnl_per_pair = 1.00 - pair_cost` and
+`best_case_pnl_per_pair = 2.00 - pair_cost`. `corridor_collector` is the same
+structure and its docstring states the payoff table directly.
+
+**The correction.** Both legs winning is the DESIGNED payoff, not an anomaly.
+The 1.21 pair paid 1.21 and received 2.00: a PROFIT of 0.79. The premise of the
+vault note is true and its conclusion is false - it is not a complementary pair
+and never claimed to be. The standing correction in `CLAUDE.md` that the
+family's "both legs cannot lose" identity is "contradicted by its own rows" is
+withdrawn for `corridor_pair_live`. Fair value is `1.00 + P(corridor)`, so
+paying 1.21 is correct whenever `P(corridor) > 0.21`, and the table reads 0.326
+to 0.464 inside the 5-30bps zone.
+
+**What survives, and it is narrower and real.** The $1.00 floor holds only if
+BOTH legs fill. The legs are sequential takers, so a one-legged fill has no
+floor at all and is a naked directional position - which is exactly the $4.20
+unhedged loss on the record. Proposal 026 phase two rules 7 and 8 (unwind an
+unhedged leg, and a stop strictly below entry while one-legged) address that
+and are the part worth keeping.
+
+**What was decided.**
+
+1. Proposal 026 phase one is NOT built. An `ask_yes + ask_no` pair-cost log
+   measures a structure this family does not trade.
+2. The proposal's own kill condition is met by the code read: the corridor
+   structural thesis is not FALSE AS IMPLEMENTED, it was MISREAD. Recorded
+   rather than tested.
+3. Phase two's leg-risk handling is a change to live trading behaviour on a
+   strategy with 9 closed trades. It is Aym's call and is NOT taken here.
+
+**Where:** read-only. `strategies/polymarket/corridor_pair_live.py`,
+`strategies/polymarket/corridor_collector.py`. No code changed.
+
+---
+
+### D-315. Proposals 024, 025 and 026 are three different KINDS of thing and only 024 is a strategy (CODY, needs ratifying)
+
+**Decided:** 2026-08-18. Raven's task file asks for all three to be
+"implemented as a Python strategy file in `strategies/polymarket/`, registered
+in `__init__.py`, added to the shadow loop". Two of them are not strategies and
+registering them would be wrong.
+
+**024 - registered.** `MakerRebateCorridorQuoteLadder` already existed on disk,
+656 lines, untracked and unregistered, written against the proposal by an
+earlier session. It IS a strategy: it evaluates a market and returns a `QUOTE`.
+APPENDED at index 19, so every historical log position is unchanged and the
+prefix pins still hold. Its four skip reasons are now classified
+(`already_quoted_this_window` is SIM_LIMIT, not GENUINE: our own per-window cap
+refused, the book never got a look in).
+
+**025 - not built, and not as a strategy.** The window-cap opportunity-cost
+probe books no entries by design; it is a counterfactual logger that must hook
+the loop's `max_trades_this_window` branch. A registry strategy cannot see that
+branch, because the cap fires in the loop AFTER the strategy has already
+decided. Building it as a strategy file would produce something that could not
+do the one thing it exists to do. It also writes into a `signals` table already
+producing about 78k rows a day with an open retention question, which is item
+"Retention decision on `signals`" on Aym's list.
+
+**026 - not built.** See D-314. The code read the proposal itself demanded
+first has made phase one redundant.
+
+**What was decided.** 024 is registered. 025 and 026 are documented as
+requiring loop-level instrumentation rather than registry entries, and both are
+referred to Aym: 025 because it is gated behind the signals-retention decision,
+026 because what survives of it is a live trading-behaviour change.
+
+**Where:** `strategies/polymarket/__init__.py`,
+`agents/forge_shadow_eval.py`, `tests/test_maker_fill_wiring.py`,
+`tests/test_weather_shadow_wiring.py`.

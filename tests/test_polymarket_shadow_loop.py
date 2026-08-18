@@ -36,6 +36,7 @@ from engine import halt
 from engine.polymarket import shadow_loop
 from engine.polymarket.shadow_loop import PolymarketShadowLoop, ShadowStore
 from strategies.polymarket import build_strategies
+from strategies.polymarket.base import MARKET_TYPE_CRYPTO_UPDOWN
 
 WINDOW = 300
 
@@ -43,7 +44,17 @@ WINDOW = 300
 #: `evaluations == cycles * len(strategies)`, and a literal here would turn a
 #: real accounting assertion into an assertion that nobody has added a strategy
 #: since the file was written (this is exactly what happened at 4 -> 7).
-N_STRATEGIES = len(build_strategies())
+#:
+#: The CRYPTO-ROUTED subset, not the whole registry. Since D-312 a strategy
+#: joins the crypto cycle by DECLARING `crypto_updown` in
+#: `supported_market_types`, and `PM_weather_arb` declares only `weather`, so
+#: it is polled by the weather cycle and never by this one. Using the registry
+#: total here asserted the denominator of a cycle that does not run every
+#: member of it.
+N_STRATEGIES = len([
+    s for s in build_strategies()
+    if MARKET_TYPE_CRYPTO_UPDOWN in getattr(s, 'supported_market_types',
+                                            (MARKET_TYPE_CRYPTO_UPDOWN,))])
 
 
 # ---------------------------------------------------------------------------
@@ -397,8 +408,13 @@ def test_every_evaluation_writes_a_signals_row(tmp_path, entry_time):
 
     signal_rows = rows(loop, 'SELECT strategy_id, skip_reason FROM signals')
     assert len(signal_rows) == N_STRATEGIES
+    # The crypto-routed population, for the same D-312 reason N_STRATEGIES is.
+    # `PM_weather_arb` writes its rows from the weather cycle, not this one.
     assert ({r['strategy_id'] for r in signal_rows}
-            == {s.strategy_name for s in build_strategies()})
+            == {s.strategy_name for s in build_strategies()
+                if MARKET_TYPE_CRYPTO_UPDOWN
+                in getattr(s, 'supported_market_types',
+                           (MARKET_TYPE_CRYPTO_UPDOWN,))})
     assert all(r['skip_reason'] for r in signal_rows)
 
 
@@ -650,7 +666,14 @@ def test_risk_gate_rejection_reason_is_verbatim(tmp_path, entry_time):
 
 def test_maker_quote_never_becomes_an_entry(tmp_path, entry_time):
     """box_builder rests bids. A resting fill cannot be simulated as a taker
-    lift without manufacturing the very fills its edge depends on."""
+    lift without manufacturing the very fills its edge depends on.
+
+    Updated 2026-08-18 when the maker path was wired: the quote is now RESTED
+    rather than dropped, so the disposition moved from
+    `maker_quote_not_simulable` to `maker_quote_rested`. The claim this test
+    exists to defend is unchanged and is the second assert: resting is not
+    entering, and the decision cycle must not open a position either way.
+    """
     client = FakeClient(gamma_ok(), books_ok)
     loop = build_loop(tmp_path, client, candles=streak_candles(entry_time))
 
@@ -659,11 +682,18 @@ def test_maker_quote_never_becomes_an_entry(tmp_path, entry_time):
     box = rows(loop, "SELECT * FROM signals WHERE strategy_id = 'PM_box_builder'")
     assert len(box) == 1
     assert box[0]['acted'] == 0
-    # Either it quoted (counted as not-simulable) or its own gate stopped it
-    # first. Both are skips; neither is ever an entry.
+    # Either it rested a quote, its own gate stopped it first, or a maker-path
+    # gate refused the rest. None of those is an entry.
     assert box[0]['skip_reason']
-    assert loop.counts.get(shadow_loop.SKIP_MAKER, 0) + sum(
-        v for k, v in loop.counts.items() if k.startswith('strategy:')) >= 1
+    assert loop.counts.get(shadow_loop.SKIP_MAKER_RESTED, 0) + sum(
+        v for k, v in loop.counts.items()
+        if k.startswith('strategy:') or k.startswith('maker_')
+        or k.startswith(shadow_loop.MAKER_ADAPTER_PREFIX)) >= 1
+    # And no box_builder POSITION exists after the decision cycle. Other
+    # strategies may have entered in this same cycle; this one may not, because
+    # a rest is not a fill and its fill can only be decided by a later book.
+    assert [p for p in loop.adapter.open_positions()
+            if p.strategy == 'PM_box_builder'] == []
 
 
 def test_strategies_blocked_by_missing_strike_are_named_not_silent(tmp_path,
