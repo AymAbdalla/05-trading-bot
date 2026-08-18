@@ -484,9 +484,15 @@ class FairValueArb(PolymarketStrategy):
             fair = est.for_side(side)
             book = ctx.book(side)
             best_ask = None if book is None else book.best_ask
+            best_bid = None if book is None else book.best_bid
             candidates.append({
                 'side': side, 'fair': fair, 'book': book, 'best_ask': best_ask,
+                'best_bid': best_bid,
                 'raw_edge': (None if best_ask is None else fair - best_ask),
+                # LOGGING ONLY. Nothing below reads this; it exists because the
+                # post-mortem could only reach the spread hypothesis indirectly.
+                'spread': (None if best_ask is None or best_bid is None
+                           else round(best_ask - best_bid, 6)),
             })
         feats['candidate_edges'] = {
             c['side']: (None if c['raw_edge'] is None else round(c['raw_edge'], 4))
@@ -508,6 +514,15 @@ class FairValueArb(PolymarketStrategy):
             'outcome_side': side,
             'side_fair_value': round(fair, 6),
             'best_ask': best['best_ask'],
+            # We enter by LIFTING THE ASK and every discretionary exit reads the
+            # BID, so the strategy's own quoted spread is a cost it pays on the
+            # round trip - and `max_loss` is measured against the bid, which
+            # means a wide enough spread puts the stop INSIDE the spread at the
+            # instant of entry. That was diagnosed from `best_ask` alone and had
+            # to be inferred; logging both ends makes it directly measurable.
+            # LOGGING ONLY: no threshold, gate or exit rule reads these.
+            'best_bid': best['best_bid'],
+            'spread': best['spread'],
             'raw_edge': round(best['raw_edge'], 4),
             'confidence': round(fair, 6),
             'confidence_is_model_output_not_measured_win_rate': True,

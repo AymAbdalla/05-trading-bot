@@ -1,0 +1,574 @@
+#!/bin/bash
+# aym-trading-bot conflict-check hook v1 -- THE REAL LOGIC.
+#
+# Installed as .git/hooks/pre-commit by scripts/install_conflict_hook.sh, which
+# writes a tiny shim that execs THIS file. The logic lives here, under version
+# control, so it is reviewable and diffable. .git/hooks is not.
+#
+# WHAT IT DOES
+#   1. Reports active checkouts from engine.concurrency.who_is_editing().
+#      WARNS ONLY. An agent may legitimately have finished without checkin, and
+#      a hook that blocked on that would be trained around within a day.
+#   2. Verifies every staged file's hash against what the coordination table
+#      says the last coordinated write produced. THIS is the part that refuses.
+#
+# WHAT IT DOES NOT DO
+#   It never writes to the tree, never stages, never unstages, never touches a
+#   running process. It opens db/trading.db for SELECT only.
+#
+# CONVENTION 11 / 20: every staged file lands in exactly ONE category
+# (verified / untracked-by-coordination / MISMATCH / unreadable), the categories
+# are counted and printed, and the accounting identity is asserted. A silent
+# `continue` in the classification loop would be a missing number.
+#
+# CONVENTION 14: python runs as `env -u PYTHONPATH python3`. Hermes leaks its
+# 3.11 venv onto PYTHONPATH and imports then fail in ways that look like a
+# broken install.
+#
+# RUN IT STANDALONE (this is the testable path, not a claim in a docstring):
+#     scripts/pre-commit-conflict-check
+#     SKIP_CONFLICT_CHECK=1 scripts/pre-commit-conflict-check
+#     CONFLICT_CHECK_DB=/tmp/x.db scripts/pre-commit-conflict-check
+#
+# ENVIRONMENT
+#   SKIP_CONFLICT_CHECK=1   bypass entirely, loudly
+#   CONFLICT_CHECK_DB       override the coordination database path (testing)
+#   CONFLICT_CHECK_MAX_AGE  active-checkout window in seconds (default 3600)
+#
+# EXIT CODES
+#   0  allowed (verified, or could-not-verify, or bypassed)
+#   1  REFUSED: at least one staged file changed outside the coordination module
+set -euo pipefail
+
+if [ "${SKIP_CONFLICT_CHECK:-0}" = "1" ]; then
+  echo "conflict-check: BYPASSED via SKIP_CONFLICT_CHECK=1."
+  echo "conflict-check: nothing was verified. This is a bypass, not a pass."
+  exit 0
+fi
+
+# Work from the repo root so the hook behaves identically no matter which
+# subdirectory git invoked it from.
+if ! HOOK_REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+  echo "conflict-check: WARNING -- not inside a git work tree; check COULD NOT RUN."
+  echo "conflict-check: allowing."
+  exit 0
+fi
+cd "$HOOK_REPO_ROOT"
+export HOOK_REPO_ROOT
+
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "conflict-check: WARNING -- python3 not found; check COULD NOT RUN."
+  echo "conflict-check: allowing."
+  exit 0
+fi
+
+exec env -u PYTHONPATH python3 - "$@" <<'PYCODE'
+"""Staged-file hash verification against engine.concurrency's audit table."""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import sqlite3
+import subprocess
+import sys
+
+# --------------------------------------------------------------------------
+# Policy constants. Module level, never inline literals.
+# --------------------------------------------------------------------------
+
+#: git's canonical empty tree, for the unborn-branch (first commit) case.
+EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+
+#: SQLite caps host parameters per statement. Chunk well under it.
+SQL_CHUNK = 400
+
+#: Only these actions record "the module wrote this content".
+COORDINATED_WRITE_ACTIONS = ('checkin', 'write')
+
+#: How many rows of each category to print before truncating.
+MAX_LISTED = 40
+
+DEFAULT_MAX_AGE_SEC = 3600.0
+SQLITE_BUSY_TIMEOUT_MS = 5000
+SQLITE_CONNECT_TIMEOUT_SEC = 15.0
+
+VERIFIED = 'verified'
+UNTRACKED = 'untracked-by-coordination'
+MISMATCH = 'MISMATCH'
+UNREADABLE = 'unreadable'
+CATEGORIES = (VERIFIED, UNTRACKED, MISMATCH, UNREADABLE)
+
+ROOT = os.environ.get('HOOK_REPO_ROOT') or os.getcwd()
+DB_PATH = os.environ.get('CONFLICT_CHECK_DB') or os.path.join(
+    ROOT, 'db', 'trading.db')
+try:
+    MAX_AGE_SEC = float(os.environ.get('CONFLICT_CHECK_MAX_AGE',
+                                       DEFAULT_MAX_AGE_SEC))
+except ValueError:
+    MAX_AGE_SEC = DEFAULT_MAX_AGE_SEC
+
+BYPASS_NOTE = (
+    'To commit anyway: `SKIP_CONFLICT_CHECK=1 git commit ...` or '
+    '`git commit --no-verify`. Both are bypasses, not passes.')
+
+
+def say(msg=''):
+    sys.stdout.write(msg + '\n')
+
+
+def rule(char='-'):
+    say(char * 72)
+
+
+def short(digest):
+    return digest[:12] if digest else 'none'
+
+
+# --------------------------------------------------------------------------
+# git plumbing
+# --------------------------------------------------------------------------
+
+def git(args, binary=False):
+    """Run git at the repo root. Returns (ok, out). Never raises."""
+    try:
+        proc = subprocess.run(['git'] + list(args), cwd=ROOT,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError as exc:
+        return False, ('git unavailable: %s' % exc).encode('utf-8')
+    if proc.returncode != 0:
+        return False, proc.stderr
+    return True, proc.stdout if binary else proc.stdout.decode(
+        'utf-8', 'replace')
+
+
+def has_head():
+    ok, _ = git(['rev-parse', '--verify', '--quiet', 'HEAD'])
+    return ok
+
+
+def staged_paths():
+    """Repo-relative POSIX paths staged as Added/Copied/Modified.
+
+    Returns (ok, paths). Deletions are excluded on purpose: a deleted file has
+    no content to hash, and refusing a deletion because its hash "changed"
+    would be nonsense.
+    """
+    args = ['diff', '--cached', '--name-only', '--diff-filter=ACM', '-z']
+    if not has_head():
+        args.append(EMPTY_TREE)
+    ok, out = git(args, binary=True)
+    if not ok:
+        return False, []
+    return True, [p.decode('utf-8', 'replace')
+                  for p in out.split(b'\0') if p]
+
+
+def index_blobs():
+    """path -> staged blob sha1 (stage 0 only), plus the set of unmerged paths.
+
+    Read from `git ls-files -s -z` rather than by handing each path back to git
+    as a pathspec: a filename containing a glob character would otherwise be
+    re-interpreted as a pattern.
+    """
+    ok, out = git(['ls-files', '-s', '-z'], binary=True)
+    if not ok:
+        return None, None
+    blobs, unmerged = {}, set()
+    for rec in out.split(b'\0'):
+        if not rec:
+            continue
+        try:
+            meta, path = rec.split(b'\t', 1)
+            _mode, sha, stage = meta.split()
+        except ValueError:
+            continue
+        name = path.decode('utf-8', 'replace')
+        if stage == b'0':
+            blobs[name] = sha.decode('ascii')
+        else:
+            unmerged.add(name)
+    return blobs, unmerged
+
+
+def staged_blob_hash(sha1):
+    """SHA-256 of the STAGED bytes, fetched by object id via git cat-file."""
+    ok, out = git(['cat-file', 'blob', sha1], binary=True)
+    if not ok:
+        return None, out.decode('utf-8', 'replace').strip()
+    return hashlib.sha256(out).hexdigest(), None
+
+
+# --------------------------------------------------------------------------
+# engine.concurrency
+# --------------------------------------------------------------------------
+
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+CONCURRENCY_OK = True
+CONCURRENCY_ERR = ''
+try:
+    from engine.concurrency import (  # noqa: E402
+        who_is_editing, hash_file, rel_path, format_active, LOG_FAILURES)
+except Exception as exc:                                  # noqa: BLE001
+    CONCURRENCY_OK = False
+    CONCURRENCY_ERR = '%s: %s' % (type(exc).__name__, exc)
+
+    def rel_path(p):                                      # type: ignore
+        return os.path.relpath(os.path.abspath(p), ROOT).replace(os.sep, '/')
+
+    def hash_file(p):                                     # type: ignore
+        try:
+            with open(p, 'rb') as fh:
+                return hashlib.sha256(fh.read()).hexdigest()
+        except FileNotFoundError:
+            return None
+
+    LOG_FAILURES = {}                                     # type: ignore
+
+
+def coordination_keys(git_path):
+    """Every table key this staged path might be recorded under.
+
+    `rel_path` is the normalisation the table uses, but it resolves symlinks,
+    so on a machine where the repo root is reached through one it can differ
+    from git's own path. Look up BOTH rather than silently missing a row and
+    calling a tracked file untracked.
+    """
+    keys = [git_path]
+    if CONCURRENCY_OK:
+        try:
+            alt = rel_path(os.path.join(ROOT, git_path))
+            if alt and alt not in keys:
+                keys.append(alt)
+        except Exception:                                 # noqa: BLE001
+            pass
+    return keys
+
+
+# --------------------------------------------------------------------------
+# The coordination table
+# --------------------------------------------------------------------------
+
+def last_coordinated_writes(keys):
+    """key -> (new_hash, action, ts, agent_id) for the newest checkin/write.
+
+    Returns (rows, error). `error` non-None means the table COULD NOT BE READ,
+    which is emphatically not the same fact as "no rows exist" (convention 11).
+    """
+    if not os.path.exists(DB_PATH):
+        return None, 'coordination database not found at %s' % DB_PATH
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=SQLITE_CONNECT_TIMEOUT_SEC)
+        conn.execute('PRAGMA busy_timeout=%d;' % SQLITE_BUSY_TIMEOUT_MS)
+    except sqlite3.Error as exc:
+        return None, 'cannot open %s (%s)' % (DB_PATH, exc)
+
+    latest = {}
+    try:
+        exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name='file_coordination'").fetchone()
+        if not exists:
+            return None, ('table file_coordination does not exist in %s '
+                          '(nothing has ever been written through the module)'
+                          % DB_PATH)
+        ordered = sorted(keys)
+        marks = ','.join('?' * len(COORDINATED_WRITE_ACTIONS))
+        for i in range(0, len(ordered), SQL_CHUNK):
+            chunk = ordered[i:i + SQL_CHUNK]
+            sql = ('SELECT file_path, new_hash, action, ts, agent_id, id '
+                   'FROM file_coordination '
+                   'WHERE action IN (%s) AND file_path IN (%s) '
+                   'ORDER BY ts ASC, id ASC'
+                   % (marks, ','.join('?' * len(chunk))))
+            for row in conn.execute(
+                    sql, tuple(COORDINATED_WRITE_ACTIONS) + tuple(chunk)):
+                # ORDER BY ascending, so the last write for a key wins.
+                latest[row[0]] = (row[1], row[2], row[3], row[4])
+    except sqlite3.Error as exc:
+        return None, 'query failed on %s (%s)' % (DB_PATH, exc)
+    finally:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+    return latest, None
+
+
+# --------------------------------------------------------------------------
+# Step 1: active checkouts. WARN ONLY.
+# --------------------------------------------------------------------------
+
+def report_active_checkouts():
+    """Returns True if the report ran, False if it could not."""
+    say('[1/2] active checkouts (advisory, never blocking)')
+    if not CONCURRENCY_OK:
+        say('      COULD NOT RUN: engine.concurrency did not import (%s)'
+            % CONCURRENCY_ERR)
+        return False
+    if not os.path.exists(DB_PATH):
+        say('      COULD NOT RUN: no coordination database at %s' % DB_PATH)
+        return False
+    try:
+        active = who_is_editing(db_path=DB_PATH, max_age_sec=MAX_AGE_SEC)
+    except Exception as exc:                              # noqa: BLE001
+        say('      COULD NOT RUN: who_is_editing raised %s: %s'
+            % (type(exc).__name__, exc))
+        return False
+
+    if LOG_FAILURES:
+        say('      WARNING: coordination log degraded %s -- this list '
+            'UNDER-reports.' % dict(LOG_FAILURES))
+    if not active:
+        say('      none in the last %.0fs.' % MAX_AGE_SEC)
+        return True
+
+    say('      %d open checkout(s) in the last %.0fs. This is a WARNING, not a '
+        'refusal:' % (len(active), MAX_AGE_SEC))
+    say('      an agent may have finished without calling checkin().')
+    say(format_active(active[:MAX_LISTED]))
+    if len(active) > MAX_LISTED:
+        say('      ... and %d more' % (len(active) - MAX_LISTED))
+    return True
+
+
+# --------------------------------------------------------------------------
+# Step 2: staged-file hash verification. THIS can refuse.
+# --------------------------------------------------------------------------
+
+class Finding(object):
+    __slots__ = ('path', 'category', 'expected', 'staged', 'worktree',
+                 'source', 'note')
+
+    def __init__(self, path, category, expected=None, staged=None,
+                 worktree=None, source='staged blob', note=''):
+        self.path = path
+        self.category = category
+        self.expected = expected
+        self.staged = staged
+        self.worktree = worktree
+        self.source = source
+        self.note = note
+
+
+def classify(paths, blobs, unmerged, latest, table_error):
+    """Exactly one Finding per staged path. No path may fall through."""
+    findings = []
+    for path in paths:
+        if path in unmerged:
+            findings.append(Finding(
+                path, UNREADABLE, note='unmerged in the index (stage != 0); '
+                                       'resolve the merge first'))
+            continue
+
+        sha1 = blobs.get(path)
+        if sha1 is None:
+            findings.append(Finding(
+                path, UNREADABLE,
+                note='staged but absent from `git ls-files -s` at stage 0'))
+            continue
+
+        staged, err = staged_blob_hash(sha1)
+        if staged is None:
+            findings.append(Finding(
+                path, UNREADABLE,
+                note='could not read staged blob %s (%s)' % (sha1[:12], err)))
+            continue
+
+        try:
+            worktree = hash_file(os.path.join(ROOT, path))
+        except Exception as exc:                          # noqa: BLE001
+            worktree = None
+            wt_note = ' worktree unreadable (%s)' % type(exc).__name__
+        else:
+            wt_note = ''
+
+        if table_error is not None:
+            # The table could not be read. Calling these files
+            # "untracked-by-coordination" would let COULD NOT VERIFY read as
+            # VERIFIED. It is unreadable, and it says so.
+            findings.append(Finding(
+                path, UNREADABLE, staged=staged, worktree=worktree,
+                note='coordination table unreadable' + wt_note))
+            continue
+
+        expected, action, ts, agent = None, None, None, None
+        for key in coordination_keys(path):
+            hit = latest.get(key)
+            if hit is not None:
+                expected, action, ts, agent = hit
+                break
+
+        if expected is None:
+            note = ('never written through engine.concurrency'
+                    if action is None else
+                    'last %s row by %s recorded no new_hash' % (action, agent))
+            findings.append(Finding(path, UNTRACKED, staged=staged,
+                                    worktree=worktree, note=note + wt_note))
+        elif expected == staged:
+            note = 'last coordinated %s by %s' % (action, agent)
+            if worktree is not None and worktree != staged:
+                note += ('; NOTE worktree differs from the staged blob '
+                         '(%s) -- the staged content is what was verified'
+                         % short(worktree))
+            findings.append(Finding(path, VERIFIED, expected=expected,
+                                    staged=staged, worktree=worktree,
+                                    note=note + wt_note))
+        else:
+            note = 'last coordinated %s by %s at ts=%s' % (action, agent, ts)
+            if worktree is not None and worktree == expected:
+                note += ('; the WORKTREE still matches -- it is the STAGED '
+                         'content that was never coordinated')
+            findings.append(Finding(path, MISMATCH, expected=expected,
+                                    staged=staged, worktree=worktree,
+                                    note=note + wt_note))
+    return findings
+
+
+def report(findings, total):
+    counts = dict((c, 0) for c in CATEGORIES)
+    for f in findings:
+        counts[f.category] += 1
+
+    for cat in (MISMATCH, UNREADABLE, UNTRACKED, VERIFIED):
+        rows = [f for f in findings if f.category == cat]
+        if not rows:
+            continue
+        say('      %s (%d):' % (cat, len(rows)))
+        for f in rows[:MAX_LISTED]:
+            if cat == MISMATCH:
+                say('        %s' % f.path)
+                say('          %-34s : %s'
+                    % ('expected, last coordinated write', f.expected))
+                say('          %-34s : %s'
+                    % ('found, in the %s' % f.source.upper(), f.staged))
+                if f.worktree != f.staged:
+                    say('          %-34s : %s'
+                        % ('worktree file right now',
+                           f.worktree or 'DOES NOT EXIST'))
+                say('          %s' % f.note)
+            elif cat == VERIFIED:
+                say('        %s  %s (%s)' % (short(f.staged), f.path, f.note))
+            else:
+                say('        %s  %s' % (f.path, f.note))
+        if len(rows) > MAX_LISTED:
+            say('        ... and %d more' % (len(rows) - MAX_LISTED))
+
+    total_counted = sum(counts.values())
+    say()
+    say('      summary: total=%d  %s=%d  %s=%d  %s=%d  %s=%d'
+        % (total, VERIFIED, counts[VERIFIED], UNTRACKED, counts[UNTRACKED],
+           MISMATCH, counts[MISMATCH], UNREADABLE, counts[UNREADABLE]))
+
+    # Convention 20: the accounting identity is asserted, not assumed.
+    if total_counted != total:
+        say()
+        say('conflict-check: INTERNAL ERROR -- accounting identity violated: '
+            '%d staged files but %d classified. Refusing rather than reporting '
+            'a number that does not add up.' % (total, total_counted))
+        say('conflict-check: ' + BYPASS_NOTE)
+        sys.exit(1)
+    assert total_counted == total
+    return counts
+
+
+# --------------------------------------------------------------------------
+# main
+# --------------------------------------------------------------------------
+
+def main():
+    say()
+    rule('=')
+    say('conflict-check  (engine.concurrency, convention 21)')
+    say('repo: %s' % ROOT)
+    say('db:   %s' % DB_PATH)
+    rule('=')
+
+    degraded = not report_active_checkouts()
+    say()
+
+    say('[2/2] staged-file hash verification (this step can REFUSE)')
+    ok, paths = staged_paths()
+    if not ok:
+        say('      COULD NOT RUN: `git diff --cached` failed.')
+        say()
+        say('conflict-check: WARNING -- the check COULD NOT RUN. Nothing was '
+            'verified. Allowing the commit.')
+        return 0
+    if not paths:
+        say('      nothing staged. summary: total=0  %s=0  %s=0  %s=0  %s=0'
+            % CATEGORIES)
+        say()
+        say('conflict-check: OK (nothing to verify).')
+        return 0
+
+    blobs, unmerged = index_blobs()
+    if blobs is None:
+        say('      COULD NOT RUN: `git ls-files -s` failed.')
+        say()
+        say('conflict-check: WARNING -- the check COULD NOT RUN. Nothing was '
+            'verified. Allowing the commit.')
+        return 0
+
+    keys = []
+    for p in paths:
+        keys.extend(coordination_keys(p))
+    latest, table_error = last_coordinated_writes(sorted(set(keys)))
+    if table_error is not None:
+        latest = {}
+        degraded = True
+        say('      WARNING: %s' % table_error)
+
+    findings = classify(paths, blobs, unmerged, latest, table_error)
+    counts = report(findings, len(paths))
+
+    say()
+    if LOG_FAILURES:
+        degraded = True
+        say('conflict-check: WARNING -- the coordination log is degraded %s. '
+            'Rows may be MISSING, so "%s" may be overstated.'
+            % (dict(LOG_FAILURES), UNTRACKED))
+
+    if counts[MISMATCH]:
+        rule('!')
+        say('conflict-check: REFUSED. %d staged file(s) changed after the last '
+            'write that went through engine.concurrency.' % counts[MISMATCH])
+        say('')
+        say('That means somebody wrote them OUTSIDE the module -- a plain '
+            'open(), an editor, a Write/Edit tool, or another agent session. '
+            'Convention 21: this tree is shared. Possibly you are about to '
+            'commit over another session\'s work.')
+        say('')
+        say('What to do: read the file, reconcile the two versions by hand, '
+            'then re-write it through engine.concurrency (safe_write / '
+            'safe_edit / checkout+checkin) and re-stage it.')
+        say('')
+        say('conflict-check: ' + BYPASS_NOTE)
+        rule('!')
+        return 1
+
+    if table_error is not None:
+        say('conflict-check: WARNING -- the check COULD NOT RUN against the '
+            'coordination table, so NOTHING was verified. %d staged file(s) '
+            'were classified "%s". Allowing the commit.'
+            % (counts[UNREADABLE], UNREADABLE))
+        rule()
+        return 0
+
+    if counts[UNREADABLE]:
+        say('conflict-check: WARNING -- %d staged file(s) could not be read '
+            'and were NOT verified. Allowing the commit, but "could not '
+            'verify" is not "verified".' % counts[UNREADABLE])
+
+    say('conflict-check: OK. %d verified, %d untracked-by-coordination%s.'
+        % (counts[VERIFIED], counts[UNTRACKED],
+           ' (report degraded)' if degraded else ''))
+    rule()
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
+PYCODE

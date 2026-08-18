@@ -13,10 +13,14 @@ The central distinction, and the reason this module exists rather than a
                 that strategy is NOT_TESTED. It did not look and decline.
   GENUINE       the strategy had every input, evaluated its condition, and the
                 condition was false. That IS a measurement, though a thin one.
-  SIM_LIMIT     the strategy DECIDED to act and the paper adapter could not
-                model the fill (a maker quote against a taker-only simulator).
-                Also NOT_TESTED, and for a reason that is ours, not the
-                market's.
+  SIM_LIMIT     the strategy DECIDED to act and OUR SIDE refused - the paper
+                adapter could not model the fill (a maker quote against a
+                taker-only simulator), the risk gate blocked the entry, or the
+                kill switch was engaged. Also NOT_TESTED, and for a reason that
+                is ours, not the market's. The strategy passed its own test and
+                never got to find out whether the market agreed, so counting
+                these as GENUINE would read as "it looked and declined" - the
+                exact inversion convention 11 exists to prevent.
   UNKNOWN       a reason string this module has never seen. Convention 20: it
                 is counted and surfaced, never folded into one of the three
                 above, because a silently reclassified skip is a missing number.
@@ -83,7 +87,13 @@ SKIP_CLASSIFICATION: Dict[str, Tuple[str, str]] = {
                                      'atr14'),
     'no_atr': (DATA_BLOCKER, 'atr14'),
     'no_spot': (DATA_BLOCKER, 'spot price'),
-    'no_market': (DATA_BLOCKER, 'resolved market'),
+    # Emitted from BOTH sides: ~16 strategies raise it when the context carries
+    # no market, and `shadow_loop.py` raises it when Gamma has no market for the
+    # window at all. Same missing input, so one entry - but it was written twice
+    # (here and again in the 2026-08-18 block below), and a duplicate dict key
+    # is not an error in Python: the LATER one silently won. Merged 2026-08-18.
+    'no_market': (DATA_BLOCKER, 'a market for this window (either absent from '
+                                'the context or not served by Gamma)'),
     'no_orderbook': (DATA_BLOCKER, 'CLOB orderbook'),
     'no_asks': (DATA_BLOCKER, 'ask side of the book'),
     'no_bids_to_join': (DATA_BLOCKER, 'bid side of the book'),
@@ -145,7 +155,391 @@ SKIP_CLASSIFICATION: Dict[str, Tuple[str, str]] = {
     'max_trades_this_window': (GENUINE, ''),
     'pair_complete': (GENUINE, ''),
     'unpaired_leg_held_to_resolution': (GENUINE, ''),
+
+    # === added 2026-08-18 ==================================================
+    # The 2026-08-17 grep above went stale: concurrent sessions added the
+    # fair-value INVERSE, three liquidation-fed strategies, smart-money copy,
+    # dip arb and weather arb, and none of their reasons were classified. That
+    # left 18.1% of all skips in UNKNOWN, dominated by one reason
+    # (`strike_inside_proxy_noise_floor`, 6,468 rows) that is a DATA BLOCKER -
+    # so the headline "these strategies ran and declined" was wrong about
+    # nearly a fifth of the evidence. Re-derived by walking the AST of
+    # strategies/polymarket/*.py for every SKIP literal, not by grep.
+
+    # --- the loop's own skips, not any strategy's --------------------------
+    # `engine/polymarket/shadow_loop.py` attributes cycle-level failures to
+    # each strategy individually, so these reach this table.
+    'strike_inside_proxy_noise_floor': (
+        DATA_BLOCKER, 'a strike outside the measured proxy noise floor '
+                      '(STRIKE_PROXY_NOISE_FLOOR_BPS = 5.0). The signal was '
+                      'inside our INSTRUMENT ERROR, so the window was never '
+                      'a test of the strategy'),
+    # (`no_market` lived here too until 2026-08-18; merged into the single
+    # entry in the block above rather than shadowing it.)
+    'no_liquidity': (DATA_BLOCKER, 'a two-sided, uncrossed book'),
+    'api_error': (DATA_BLOCKER, 'the venue could not be reached at all - '
+                                'never merged with no_market'),
+    'cycle_exception': (DATA_BLOCKER, 'the cycle raised; the strategy never '
+                                      'evaluated'),
+    'enter_without_legs': (DATA_BLOCKER, 'a well-formed ENTER (no legs)'),
+    'unknown_outcome_token': (DATA_BLOCKER, 'a token id resolvable to an '
+                                            'outcome side'),
+
+    # --- our side refused a decided action ---------------------------------
+    'maker_quote_not_simulable': (SIM_LIMIT, 'the paper adapter models taker '
+                                             'fills only; this is a QUOTE'),
+    'halted': (SIM_LIMIT, 'the kill switch was engaged; entry blocked'),
+
+    # --- liquidation-fed strategies ----------------------------------------
+    # `no_cascade` is flagged in its own source as "RAN and found nothing. The
+    # only result-shaped skip in this block", and `balanced_liq_tape` is a
+    # two-way squeeze actually observed - both are measurements.
+    'no_cascade': (GENUINE, ''),
+    'balanced_liq_tape': (GENUINE, ''),
+    'liq_not_dominant_enough': (GENUINE, ''),
+    'insufficient_liq_count': (GENUINE, ''),
+    'liq_clusters_balanced': (GENUINE, ''),
+    'no_liq_cluster_near_spot': (GENUINE, ''),
+    'move_not_confirming_liq_direction': (GENUINE, ''),
+    'mega_liq_belongs_to_cascade_chaser': (GENUINE, ''),
+    'spread_too_wide': (GENUINE, ''),
+    'too_early_in_window': (GENUINE, ''),
+    'no_bids_for_spread': (DATA_BLOCKER, 'bid side of the book'),
+    'no_window_open_bar': (DATA_BLOCKER, 'the window-open bar'),
+    # An unmappable venue side would default to a bearish signal downstream,
+    # which is the failure liq_cascade_chaser is written to prevent.
+    'unmappable_liquidated_side': (DATA_BLOCKER, 'a venue order side that maps '
+                                                 'to a liquidated side'),
+
+    # --- smart money copy ---------------------------------------------------
+    # The module draws this line itself: "Could not run. Never 'we looked and
+    # the whales were quiet.'" A measured record that fails IS a result.
+    'wallet_feed_unavailable': (DATA_BLOCKER, 'the tracked-wallet feed'),
+    'wallet_address_unresolved': (DATA_BLOCKER, 'a resolvable wallet address'),
+    'wallet_record_unmeasured': (DATA_BLOCKER, "the wallet's track record"),
+    'wallet_record_mixed_unmeasured_and_below': (
+        DATA_BLOCKER, 'a track record for at least one wallet (some records '
+                      'were unmeasured, some measured-and-below)'),
+    'no_trade_clock': (DATA_BLOCKER, 'a timestamp on the copied trade'),
+    'wallet_record_below_threshold': (GENUINE, ''),
+    'no_tracked_wallet_trades': (GENUINE, ''),
+    'no_tracked_wallet_buy': (GENUINE, ''),
+    'no_trade_in_this_market': (GENUINE, ''),
+    'already_copied_this_trade': (GENUINE, ''),
+    'copied_trade_stale': (GENUINE, ''),
+    'ask_above_max_entry_price': (GENUINE, ''),
+
+    # --- dip arb ------------------------------------------------------------
+    'insufficient_tape': (DATA_BLOCKER, 'enough price tape to compute a mean'),
+    'no_outcomes': (DATA_BLOCKER, 'priced outcomes on the market'),
+    'mean_outside_tradeable_band': (GENUINE, ''),
+    'dip_below_threshold': (GENUINE, ''),
+    'dip_threshold_exceeds_mean': (GENUINE, ''),
+
+    # --- weather arb --------------------------------------------------------
+    'no_clock': (DATA_BLOCKER, 'a window clock'),
+    'resolution_station_unknown': (DATA_BLOCKER, 'the resolution station'),
+    'resolution_station_ambiguous': (DATA_BLOCKER,
+                                     'an unambiguous resolution station'),
+    'threshold_unparseable': (DATA_BLOCKER,
+                              'a parseable temperature threshold'),
+    'resolution_time_unknown': (DATA_BLOCKER, 'the resolution time'),
+    'airport_reading_unavailable': (DATA_BLOCKER, 'the airport observation'),
+    'airport_obs_time_missing': (DATA_BLOCKER,
+                                 'a timestamp on the airport observation'),
+    # A stale reading is a DIFFERENT temperature, not a late one: a front can
+    # move a station 15F in twenty minutes.
+    'airport_obs_stale': (DATA_BLOCKER,
+                          'an airport observation inside max_obs_age_sec'),
+    'market_implied_direction_unreadable': (DATA_BLOCKER,
+                                            'a readable market-implied side'),
+    'airport_agrees_with_market': (GENUINE, ''),
+    'market_past_resolution_time': (GENUINE, ''),
+    'resolution_too_far_out': (GENUINE, ''),
+    'edge_below_min': (GENUINE, ''),
+    # weather_arb.py:1654, checked FIRST, before the station. A concurrent
+    # session classed this GENUINE on the reading "the question WAS read and
+    # the product was declined". D-291 RULES DATA_BLOCKER and that is what is
+    # here now: the strategy has no station for a global-anomaly market, so it
+    # cannot evaluate one. GENUINE would report "the strategy looked and found
+    # no edge" about a product it has no instrument for, which reads as a
+    # measurement and is not one - the convention 11 inversion.
+    # It still exists as its own reason precisely so these never pool into
+    # `resolution_station_unknown` above, which would read as a blocked
+    # station on a product that has no station BY DESIGN. Two causes, two
+    # names, both DATA_BLOCKER (convention 20).
+    # D-291 also notes a fourth class, OUT_OF_UNIVERSE, would be conceptually
+    # better here, and is premature for one reason. Revisit if the count grows.
+    'global_temperature_market_excluded': (
+        DATA_BLOCKER, 'a resolution station - this strategy prices CITY '
+                      'stations and a global-anomaly market has none, so the '
+                      'market type cannot be evaluated at all'),
+    # weather_arb.py:1704 and :1707, both from `reporting_step_checked`, and
+    # both DATA_BLOCKER for the same reason under two different causes: the
+    # eleven-rung ladder's edges are only defined when the source rounds to
+    # WHOLE degrees. Neither is an edge that was computed and found thin.
+    'source_reporting_precision_unknown': (
+        DATA_BLOCKER, 'a stated reporting precision in the rules text - '
+                      'without it the rung edges are a guess'),
+    # Precision IS known (0.1 native, the 66 Hong Kong markets), and that is
+    # what makes it unusable: [26.5, 27.5) and [27.0, 28.0) are both "27C"
+    # and Polymarket has not published which. The missing input is the rung
+    # EDGE, not the reading.
+    'source_precision_finer_than_ladder_step': (
+        DATA_BLOCKER, 'published ladder rung edges for a sub-degree source'),
+    # weather_arb.py:1751. The market asks about the DAY'S HIGH/LOW; this model
+    # prices a POINT IN TIME. The module's own comment invokes convention 11
+    # for it: not "there is no edge in these markets", but "this model cannot
+    # price them and will not pretend to". Gated behind the named
+    # `allow_daily_extreme_markets` flag so any override's rows stay separable.
+    'daily_extreme_not_priced_by_point_in_time_model': (
+        DATA_BLOCKER, 'a daily-extreme model - the point-in-time model cannot '
+                      'price a high/low question'),
+
+    # --- corridor pair / collector -----------------------------------------
+    'no_15m_window_open': (DATA_BLOCKER, 'the 15m window open price'),
+    'invalid_15m_window_open': (DATA_BLOCKER, 'a usable 15m window open'),
+    'not_final_third_of_15m': (GENUINE, ''),
+    'ask_5m_above_cap': (GENUINE, ''),
+    'ask_15m_above_cap': (GENUINE, ''),
+    'edge_below_floor': (GENUINE, ''),
+
+    # --- temporal arbitrage -------------------------------------------------
+    'insufficient_leg1_depth': (DATA_BLOCKER, 'book depth on leg 1'),
+    'insufficient_leg2_depth': (DATA_BLOCKER, 'book depth on leg 2'),
+    'too_late_for_leg1': (GENUINE, ''),
+    'leg1_ask_above_cap': (GENUINE, ''),
+    'leg2_ask_above_cap': (GENUINE, ''),
+    'leg1_effective_ask_above_cap': (GENUINE, ''),
+    'leg2_effective_ask_above_cap': (GENUINE, ''),
+    'leg1_unfillable_at_cap': (GENUINE, ''),
+    'leg2_unfillable_at_cap': (GENUINE, ''),
+    'leg2_deadline_passed_unpaired': (GENUINE, ''),
+    'no_leg2_budget': (GENUINE, ''),
+
+    # --- fair value arb INVERSE ---------------------------------------------
+    # `inverse_side_*` names the side it would have taken, so these do not
+    # collide with the parent's identically-shaped reasons and the two
+    # strategies stay in separate populations.
+    'inverse_side_no_orderbook': (DATA_BLOCKER, 'CLOB orderbook (inverse side)'),
+    'inverse_side_no_ask': (DATA_BLOCKER, 'ask side of the book (inverse side)'),
+    'inverse_side_unresolvable': (DATA_BLOCKER, 'a resolvable inverse side'),
+    'inverse_side_insufficient_book_depth': (DATA_BLOCKER,
+                                             'book depth (inverse side)'),
+    'inverse_side_unpriceable_cap': (DATA_BLOCKER, 'a priceable entry cap'),
+    'inverse_side_unpriceable_fill': (DATA_BLOCKER, 'a priceable fill'),
+    'inverse_entry_above_profit_target_ceiling': (GENUINE, ''),
+    'inverse_side_effective_ask_above_cap': (GENUINE, ''),
+    'inverse_side_unfillable_at_cap': (GENUINE, ''),
+    'inverse_side_unsizable_at_notional_cap': (GENUINE, ''),
+
+    # --- grid hedge (a MAKER structure; landed 2026-08-18) ------------------
+    # This module states in its own source that `implied_vol_below_realized` is
+    # "the one reason in this file that is neither a cannot-run nor a refusal".
+    # Taken at its word: everything else here is a blocker, and its entry path
+    # ends in `maker_fill_not_simulated` (already SIM_LIMIT above), so a shadow
+    # log full of grid_hedge skips is NOT_TESTED almost by construction.
+    'both_books_unavailable': (DATA_BLOCKER, 'both CLOB orderbooks'),
+    # Half a grid is a directional ladder: the self-hedge this structure needs
+    # is the OTHER side filling on the reversal. Not the same fact as missing
+    # both, and kept as its own reason for that reason.
+    'one_book_unavailable': (DATA_BLOCKER, 'one of the two CLOB orderbooks'),
+    # "A spread we cannot measure is not a narrow spread."
+    'spread_undefined_no_bid': (DATA_BLOCKER, 'a bid on both sides'),
+    'book_too_thin_for_grid': (DATA_BLOCKER,
+                               'book depth (min_grid_depth_shares)'),
+    # "The budget could not buy a grid, which is a cannot-run, not a market
+    # view" - no rung survived the price floor and the minimum size.
+    'grid_budget_exhausted': (DATA_BLOCKER,
+                              'enough budget for at least one rung'),
+    # Two vol legs, two owners, two fixes - never pooled into one number.
+    'vol_inputs_unavailable': (DATA_BLOCKER, 'atr14 (the REALISED leg)'),
+    'implied_vol_inputs_unavailable': (DATA_BLOCKER,
+                                       'lead_bps (the IMPLIED leg)'),
+    # The spread eats the rung interval before the grid does any work. A
+    # measured book condition, so a result - but see the module note above.
+    'spread_too_wide_for_grid': (GENUINE, ''),
+    'implied_vol_below_realized': (GENUINE, ''),
+
+    # === added 2026-08-18 (second pass) =====================================
+    # REASONS THE AST TEST CANNOT SEE.
+    #
+    # `test_every_skip_reason_the_strategies_emit_is_classified` walks the AST
+    # for `decide('SKIP', <string literal>)`. EIGHT call sites in the package
+    # pass a VARIABLE instead, so the reasons behind them were invisible to the
+    # test and the suite was green BY ACCIDENT over 16 unclassified strings.
+    # Enumerated by hand from the function that produces each variable. See
+    # docs/handoffs/2026-08-18-skip-classification-blind-spot.md, which asks
+    # for a D-number on whether to close the hole in the test itself.
+    #
+    # NOTE ON EVIDENCE (convention 15): at the time of writing, db/trading.db
+    # carries 41,530 skips and ZERO of them are any of the strings in this
+    # block. This is PRE-EMPTIVE - it is not correcting a miscount that has
+    # already happened. When these strategies do start logging against a live
+    # feed, the rows land classified instead of silently in UNKNOWN.
+
+    # --- grid_hedge.py:757, `decide('SKIP', implied_status)` ---------------
+    # `implied_sigma_bps()` returns exactly three statuses: 'ok' (no skip) and
+    # these two. Both are cannot-computes, and that module's own docstring
+    # keeps them apart deliberately: "different facts and get different
+    # strings". At the money Phi^-1(p) ~ 0 and EVERY sigma prices a coin flip,
+    # so there is no implied vol to compare against realised. The comparison
+    # was never made; it is not a comparison that came out false.
+    'implied_vol_undefined_at_the_money': (
+        DATA_BLOCKER, 'a lead far enough from the money for Phi^-1(p) to be '
+                      'invertible (at the money every sigma prices a coin '
+                      'flip, so the equation carries no information about '
+                      'sigma at all)'),
+    # A negative sigma is not a low volatility reading. It means the book and
+    # the strike proxy disagree about which side is ahead, which is a fact
+    # about our two INPUTS and must never be pooled with a measured vol.
+    'implied_vol_sign_inconsistent': (
+        DATA_BLOCKER, 'a book and a strike proxy that agree on which side is '
+                      'ahead (they disagreed, so the algebra returned a '
+                      'negative sigma - a data-quality fact, not a vol)'),
+
+    # --- near_liq_trigger.py:976 and :981 ----------------------------------
+    # These two ARE literals and the AST test did see them; they were simply
+    # missing from this table, and were the only genuine full-suite failure
+    # when this pass started. Both are RESULTS. They are deliberately two
+    # reasons rather than one: the module's docstring says "the tape was
+    # silent" and "the tape printed $900 and we wanted $5,000" demand
+    # different responses. Both are reached only AFTER `window.ok` is True -
+    # the liquidation recorder was alive, fresh, and had enough history - so
+    # the feed WAS observed. The not-observed cases are the four
+    # `liquidation_*` blockers immediately below and never share a counter
+    # with these (convention 20).
+    # TWO Raven instruction files landed three minutes apart asking for
+    # OPPOSITE classifications on these two keys. Both are still on disk:
+    #
+    #   06:40  docs/handoffs/from-raven/
+    #            2026-08-18-mechanical-fixes-from-review.md
+    #          asked DATA_BLOCKER, on the rationale "the feed table has 0
+    #          rows".
+    #   06:43  docs/handoffs/from-raven/
+    #            2026-08-18-classify-new-second-lock-reasons.md
+    #          asked GENUINE, on the rationale that near_liq_trigger.py's own
+    #          comments say "RAN" at both sites.
+    #
+    # GENUINE is what stands, and D-298 ruled it. Two sessions reached it
+    # independently before the ruling, and the code-path argument below is
+    # why: the 06:40 rationale describes a DIFFERENT key. With 0 rows
+    # `window.ok` is False and the strategy emits `liquidation_feed_empty`,
+    # so neither of these two is even reachable, and "cannot evaluate,
+    # feed is empty" is already carried by that key. Classifying these as
+    # DATA_BLOCKER too would put one cause under two names (convention 20).
+    #
+    # Do not read the 06:40 file as the live instruction because it is the
+    # one you happened to open. Settled by a ruling, not an open question.
+    # Measured consequence as of 2026-08-18: ZERO rows either way
+    # (`select count(*) from liquidations` == 0).
+    'no_recent_liquidation': (GENUINE, ''),
+    # A floor WE chose. Only this one moves when we change our mind, which is
+    # exactly why it is not pooled with the silent-tape case above.
+    'liquidation_below_second_lock_min': (GENUINE, ''),
+
+    # --- `decide('SKIP', <feed>.reason)`: the LIQUIDATION recorder ---------
+    # liq_cascade_chaser.py:323, small_liq_continuation.py:298 and
+    # near_liq_trigger.py:964 all forward `liquidation_feed.NO_DATA_REASONS`
+    # verbatim rather than re-spelling them (convention 20: one cause, one
+    # name, across modules). All four mean the recorder was missing, empty,
+    # short or stale. near_liq_trigger's docstring labels all four NOT_TESTED.
+    'liquidation_table_missing': (DATA_BLOCKER,
+                                  'the `liquidations` table (db absent, or '
+                                  'present with the recorder never having '
+                                  'written to it)'),
+    # Scoped to `symbol_like`: a table full of ETH rows is, for a BTC
+    # strategy, exactly as unusable as an empty one.
+    'liquidation_feed_empty': (DATA_BLOCKER,
+                               'any liquidation row matching this symbol'),
+    # A 30s span cannot answer a 120s question. Measuring the seconds it does
+    # have would look like a quiet tape and actually be a short one.
+    'liquidation_history_too_short': (DATA_BLOCKER,
+                                      'enough liquidation history to cover '
+                                      'the lookback window'),
+    'liquidation_feed_stale': (DATA_BLOCKER,
+                               'a live liquidation recorder (newest row '
+                               'older than stale_after_sec)'),
+
+    # --- near_liq_trigger.py:859, `decide('SKIP', feed.status)` ------------
+    # The HYPERLIQUID whale poller. A dead whale poller and a dead liquidation
+    # recorder are two different outages on two different processes and never
+    # share a counter, which is why these six are separate from the four
+    # above. All six are NOT_TESTED per that module's own docstring; its
+    # seventh state, `no_liq_cluster_near_spot`, is the only result and is
+    # already classified GENUINE further up.
+    'hyperliquid_db_missing': (DATA_BLOCKER, 'db/trading.db itself'),
+    'hyperliquid_db_unreadable': (DATA_BLOCKER,
+                                  'a database sqlite will open'),
+    'hyperliquid_table_missing': (DATA_BLOCKER,
+                                  'the `hyperliquid_positions` table - the '
+                                  'client has never run against this db'),
+    'hyperliquid_feed_empty': (DATA_BLOCKER,
+                               'any row in `hyperliquid_positions`'),
+    # The age in seconds rides in `detail`, NOT in the reason string, so this
+    # stays one exact key rather than becoming a prefix family.
+    'hyperliquid_feed_stale': (DATA_BLOCKER,
+                               'a live whale poller (newest row older than '
+                               'FEED_MAX_AGE_SEC)'),
+    'hyperliquid_single_snapshot_only': (
+        DATA_BLOCKER, 'a second distinct snapshot ts - one poll is not proof '
+                      'the poller is cycling'),
+
+    # --- spread_harvest_maker.py:288, an IfExp over two literals -----------
+    # `_underdog()` could not name an underdog. Which of the two strings comes
+    # out is decided inline in the call, so neither was ever a visible literal.
+    'no_cushion_data': (DATA_BLOCKER,
+                        'spot, strike and atr14 for the cushion/ATR gate, '
+                        'with the book-implied fallback switched off'),
+    # SPLIT 2026-08-18. `no_underdog` pooled two causes; the strategy now emits
+    # one of the two names below instead. Convention 20: two drop causes never
+    # share one number.
+    'no_book_midpoint': (DATA_BLOCKER,
+                         'two midpoints - a one-sided book, or an absent bid '
+                         'on either leg, leaves no midpoint to compare, so no '
+                         'underdog could be named'),
+    # The book WAS observed and both mids were present. The market is genuinely
+    # tied at the midpoint, which is a condition that was evaluated and found
+    # true, not an input that was missing.
+    'book_implied_exact_tie': (GENUINE, ''),
+    # RETIRED, kept for historical rows. The strategy no longer emits this;
+    # rows logged before the split above still carry it and would otherwise
+    # fall through to UNKNOWN. Its old pooled reading stands for those rows.
+    'no_underdog': (DATA_BLOCKER,
+                    'two midpoints that differ (a one-sided book has no '
+                    'midpoint). HISTORICAL: rows before 2026-08-18 pool the '
+                    'missing-midpoint and exact-tie causes under this one '
+                    'name; see no_book_midpoint / book_implied_exact_tie'),
 }
+
+#: Reasons NO STRATEGY CAN EMIT ANY MORE, kept because rows logged before the
+#: change still carry them. Without this list they would fall through to
+#: UNKNOWN and a historical row would stop being classifiable at all.
+#:
+#: D-290's reverse check reads this. Every OTHER key in the table above must be
+#: reachable from a `decide('SKIP', ...)` somewhere, so the table cannot
+#: silently accumulate entries for code that no longer exists - and a name on
+#: this list that a strategy STARTS emitting again is also red, because a live
+#: reason filed under "historical" is a worse lie than an unclassified one.
+#:
+#: Same shape as `forge.RETIRED_REFUSAL_CATEGORIES`: retired is reported, never
+#: deleted (convention 20).
+RETIRED_SKIP_REASONS: Tuple[str, ...] = (
+    # Split 2026-08-18 into `no_book_midpoint` + `book_implied_exact_tie`.
+    'no_underdog',
+)
+
+#: Reasons the loop emits with a VARIABLE tail - the blocking gate's own
+#: message, verbatim, numbers and market slug included ("risk_gate:
+#: daily_loss_breaker: realized loss today =$30.08 > limit=$30.00"). They can
+#: never be dict keys: every distinct number would be its own unclassified
+#: reason, which is exactly how 20-odd of them ended up in UNKNOWN one row at a
+#: time. Matched by PREFIX, and only for prefixes actually observed in the data.
+SKIP_PREFIX_CLASSIFICATION: Tuple[Tuple[str, str, str], ...] = (
+    ('risk_gate:', SIM_LIMIT, 'the risk gate blocked an entry the strategy '
+                              'had already decided on'),
+    ('adapter:', SIM_LIMIT, 'the paper adapter refused a decided entry'),
+)
 
 
 def classify_skip_reason(reason: Optional[str]) -> Tuple[str, str]:
@@ -158,13 +552,18 @@ def classify_skip_reason(reason: Optional[str]) -> Tuple[str, str]:
     if reason is None or reason == '':
         return UNKNOWN, 'skip with no reason recorded'
     hit = SKIP_CLASSIFICATION.get(reason)
-    if hit is None:
-        # `fair_value_*` is a family emitted with a suffix. Match the prefix
-        # rather than guessing, and only for prefixes we have actually seen.
-        if reason.startswith('fair_value_'):
-            return GENUINE, ''
-        return UNKNOWN, f'reason {reason!r} is not in SKIP_CLASSIFICATION'
-    return hit
+    if hit is not None:
+        return hit
+    # `fair_value_*` is a family emitted with a suffix. Match the prefix
+    # rather than guessing, and only for prefixes we have actually seen.
+    if reason.startswith('fair_value_'):
+        return GENUINE, ''
+    # Gates that embed their own numbers in the reason string. Checked AFTER
+    # the exact table so a specific entry always wins over a prefix.
+    for prefix, cls, missing in SKIP_PREFIX_CLASSIFICATION:
+        if reason.startswith(prefix):
+            return cls, missing
+    return UNKNOWN, f'reason {reason!r} is not in SKIP_CLASSIFICATION'
 
 
 # ---------------------------------------------------------------------------

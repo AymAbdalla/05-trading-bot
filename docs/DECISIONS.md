@@ -551,6 +551,107 @@ baseline for convention 17 comparison. Do NOT promote it over
 finishes, with the intraday off-by-one fix (R-010) and rising_three_methods
 retirement (D-284) applied.
 
+### D-285. Multi-asset shadow loop: BTC, ETH, SOL (RAVEN RULING, approves Cody proposal)
+
+The Polymarket shadow loop now polls BTC, ETH, and SOL 5m Up/Down markets. All
+three carry an identical `*-5m-twap-60` Chainlink settlement, verified live
+2026-08-18, which is what makes the BTC strategies applicable unchanged. Each
+asset runs its OWN strategy instances, strike proxy, and candle source, because
+strategy state is per-window and per-asset (a shared PriceTape would mix BTC
+64,000 and SOL 76 into one series). The bankroll, adapter, and risk gate stay
+shared because the money is shared. The accounting identity becomes
+`cycles * strategies_per_asset * assets`.
+
+Exit routing is keyed on `(asset, strategy_name)`, not `strategy_name` alone,
+because every asset runs an instance called `PM_fair_value_arb` and a dict keyed
+on name alone would collapse to whichever was written last. A position on an
+unregistered slug is counted as `unroutable_position` and left alone.
+
+The 5bp strike noise floor (`STRIKE_PROXY_NOISE_FLOOR_BPS = 5.0`) is INHERITED
+from the BTC measurement (199 windows) and stamped `noise_floor_measured_on:
+'btc'` on every gated row. It is NOT re-measured for ETH/SOL; generalising
+`measure_strike_proxy.py` is the honest next step. xrp and doge markets exist
+and are deliberately not wired (exchange symbols unverified).
+
+The shadow loop (PID 27030) was NOT restarted. It still runs 11-strategy BTC-only
+code (convention 13). Aym restarts when ready. CLI default is now
+`--assets btc,eth,sol`.
+
+Source: `docs/handoffs/2026-08-18-eth-sol-shadow-and-noncrypto-proposals.md`,
+`engine/polymarket/assets.py`, `engine/polymarket/shadow_loop.py`,
+`tests/test_polymarket_multi_asset.py` (23 tests).
+
+### D-286. Inverse FVA deviations approved: replaced entry cap, withheld model_stop (RAVEN RULING)
+
+`FairValueArbInverse` (PM_fair_value_arb_inverse) inverts the parent's side
+selection. Two deviations from the parent were required by the inversion and
+are both provably correct:
+
+1. **Entry cap replaced.** The parent picks the side with the largest
+   `fair - ask`, so the rejected side is rich by that edge plus the overround.
+   A model-derived cap on the flipped side is therefore always below the
+   flipped ask (measured: fair(Down) 0.29, cap 0.25, actual ask 0.42, 17c
+   unreachable). Inheriting it would produce a strategy that fires exactly
+   never. Replaced with a book-derived cap. Consequence: the inverse has no
+   price-based entry filter of its own, but the fair-value band [0.10, 0.90] IS
+   inherited and is provably symmetric about 0.5 (`p in band` implies
+   `1-p in band`).
+
+2. **`model_stop` withheld from the exit chain.** It fires when
+   `fair_value <= entry + margin`. An inverse position is by definition on the
+   side the model prices below the entry, so it would fire on the first poll of
+   every position ever opened, closing at the spread, and the hypothesis would
+   never be tested. The observed value is still recorded as
+   `model_fair_value_observed_not_acted_on` so "seen and refused" stays
+   countable. Consequence: 4 live exit rules vs the parent's 6, so exit
+   populations are not comparable across the two.
+
+A new gate `inverse_entry_above_profit_target_ceiling` refuses entries above
+0.98, where a 1c target stops existing. Fired twice in 2 cycles.
+
+Key finding: **inverting a loser does not flip its sign.** On live data the
+parent and the inverse BOTH stopped out on the same SOL window (-1.10 and
+-0.55). The spread is paid in both directions and does not invert. Measured
+overround on inverse entries was 1c to 5.75c against a profit target of 1c.
+Naive inverse EV is +16bps, already below convention 5's 30bps DOA floor before
+costs. Aym's premise ("79% loss becomes 79% win") does not hold: the arithmetic
+is `0.79*0.01 - 0.21*0.03 = +0.0016/share` = 16 bps, and the parent's 21% wins
+were +1c moves that flip to -1c, inside the 3c stop, so they do not stop out.
+The inverse's loss population is not the parent's win population reflected. It
+is still worth shadowing (free, testable, kill condition) but should not be
+expected to print money.
+
+Source: `docs/handoffs/2026-08-18-inverse-fva-and-liquidation-strategies-live.md`,
+`strategies/polymarket/fair_value_arb_inverse.py` (616 lines),
+`tests/test_fair_value_arb_inverse.py` (66 tests).
+
+### D-287. Hyperliquid feed does NOT obey HALT (RAVEN RULING)
+
+The Hyperliquid whale-position poller (`engine/feeds/hyperliquid_client.py`)
+continues recording regardless of the trading HALT state. Halting trading is not
+a reason to stop recording market data. The feed writes to `hyperliquid_positions`,
+a separate table that does not affect the trading loop. This is the correct
+default: you want to keep collecting data even when trading is paused.
+
+Source: `docs/handoffs/2026-08-18-hyperliquid-whale-feed.md`.
+
+### D-288. near_liq_trigger MAX_ENTRY_PRICE tightened 0.95 to 0.60 (RAVEN RULING)
+
+At 0.95 the entry price cap IS the break-even for a binary outcome (a losing
+share is worth $0.00), so it is not a useful filter. Tightened to 0.60, which is
+the conservative direction (convention 17: tightening). The vendor's value is
+preserved as `VENDOR_MAX_ENTRY_PRICE = 0.95` for reference.
+
+The vendor's second lock (arm on whale position, then require a real
+liquidation print within 120s) is NOT yet wired. `liquidation_feed.py` exists as
+the shared read-only reader for the `liquidations` table. Wiring it as the
+second lock is the highest-value next change. Currently stamped
+`second_lock_wired = False` on every row.
+
+Source: `docs/handoffs/2026-08-18-inverse-fva-and-liquidation-strategies-live.md`,
+`strategies/polymarket/near_liq_trigger.py` (871 lines),
+`tests/test_near_liq_trigger.py` (41 tests).
+
 
 ## v10 - 2026-08-14 (D-226 duplicate_strategies superseded)
 
@@ -1678,3 +1779,114 @@ never tested-and-failed. Graveyard truthfulness over graveyard completeness.
 
 ### D-110. Alpaca key rotation owed by Aym (SECURITY)
 Key was hardcoded in source (now removed, .env-only). Rotate at Alpaca.
+
+## v12 - 2026-08-18 (Raven technical rulings: skip classification, concurrency, strike proxy, per-asset breaker, second lock)
+
+### D-289. strike_inside_proxy_noise_floor stays DATA_BLOCKER (RAVEN RULING, resolves Cody handoff dispute)
+
+Cody's handoff `2026-08-18-skip-classification-gap-closed.md` disputed Raven's
+prior instruction to classify this as GENUINE. Cody kept DATA_BLOCKER. Raven
+confirms: DATA_BLOCKER is correct. The strike proxy is a measured instrument
+with known error. STRIKE_PROXY_NOISE_FLOOR_BPS = 5.0 is the floor below which
+the signal is inside our own measurement error. The strategy was not offered
+an edge and declined; it was refused an input it could trust. The module's
+own tie-break rule agrees: "when a reason could be read either way, it goes to
+DATA_BLOCKER, because over-reporting NOT_TESTED costs a re-test and
+under-reporting it puts a fabricated verdict in the record." Moving it to
+GENUINE would flip PM_corridor_collector and PM_mid_price_continuation from
+NOT_TESTED to RAN_NO_ENTRY, which is the convention 11 inversion. No code
+change needed; the existing classification is correct.
+
+### D-290. AST skip-reason test: Option A, resolve indirection with loud failure (RAVEN RULING)
+
+The AST-walking test `test_every_skip_reason_the_strategies_emit_is_classified`
+cannot see skip reasons passed as variables (8 call sites, 16 invisible
+reasons). Option A: teach the test to resolve simple indirection (module-level
+constant tuples like NO_DATA_REASONS, local variables assigned from string
+constants, IfExp over two literals) with a loud failure on unresolvable sites.
+Option B: ban non-literal arguments, forcing strategies to re-spell shared
+reasons (violates convention 20, "one cause, one name, across modules").
+
+Option A is correct. It preserves the code property (convention 20) while
+converting an invisible gap into a named red test. The load-bearing part is
+the unresolvable-site failure clause: without it, Option A is just a bigger
+version of the same blind spot. The loud failure MUST be implemented. Also
+add the reverse check: every key in SKIP_CLASSIFICATION must be reachable
+from some strategy, so the table does not silently accumulate dead entries.
+
+### D-291. global_temperature_market_excluded = DATA_BLOCKER (RAVEN RULING)
+
+A concurrent session classified this as GENUINE ("the question WAS read and
+the product was declined"). Raven rules DATA_BLOCKER. The strategy has no
+station for global-anomaly markets, so it cannot evaluate them. GENUINE would
+count as "the strategy looked and found no edge" on a product it has no
+station for, which reads as a measurement and is not one. The OUT_OF_UNIVERSE
+fourth class is conceptually better but premature for one reason; revisit if
+the count grows. Change the existing GENUINE entry to DATA_BLOCKER in
+SKIP_CLASSIFICATION.
+
+### D-292. Convention 26 stays as Convention 26 (RAVEN RULING)
+
+Cody added hash-before-write as Convention 26 because 22 was already taken
+("A claim in a docstring is not a wiring test"). Keep 26. Renumbering is a
+one-line change if Aym wants it, but silently overwriting an existing
+convention was the worse failure.
+
+### D-293. Per-asset split lives inside check_adapter_order (RAVEN RULING)
+
+Cody placed the asset routing inside `check_adapter_order` (one site that
+decides which bucket a slug belongs to) rather than deriving it a second
+time in `shadow_loop.py`. This is correct per convention 23 (one cause, one
+name, one site). Deriving the asset a second time in the loop is the
+convention 23 failure mode in reverse: two places that agree today and drift
+silently. Keep as built.
+
+### D-294. portfolio_daily_loss_limit_usdc = $150 approved (RAVEN RULING)
+
+5x the per-asset limit ($30), strictly above the sum of 3 assets ($90). A
+portfolio cap set at the sum of its parts can only ever trip at the same
+instant as the last per-asset cap and would never bind on its own. The
+inequality test (fails if SHADOW_ASSETS grows past 5) is correct. Keep $150.
+
+### D-295. Second-lock $5,000 floor kept as vendor spec (RAVEN RULING)
+
+D-288 wires the vendor's second lock, which the module docstring documents
+as requiring a >= $5,000 liquidation print. Keep the vendor number. It is a
+separate named constant (SECOND_LOCK_MIN_USD) with its own skip reason, so
+setting it to 0.0 reverts to "any print at all" with a one-line change. The
+two-result split (no_recent_liquidation vs liquidation_below_second_lock_min)
+is correct: "tape was silent" and "tape printed under our floor" demand
+different responses.
+
+### D-296. near_liq_trigger kill-condition clock deferred until liquidation tape has data (RAVEN RULING)
+
+The 30-day / 10-entry kill condition clause must not start counting while the
+liquidation tape is empty. The liquidations table has 0 rows (Binance
+geoblocked, Bybit quiet). Starting the clock now would kill the strategy for
+lack of a sample caused by a dead feed, recording it as a verdict about the
+idea. The kill clock starts only after the liquidations table has >= 1 row.
+Implementation: add a guard in the kill-condition check that defers if the
+liquidation feed has produced zero rows to date.
+
+### D-297. Strike gate rows get per-asset measured-error field (RAVEN RULING)
+
+The `noise_floor_measured_on: 'btc'` stamp is now under-descriptive. We have
+ETH and SOL measurements (research/strike_proxy_by_asset.json). Add a
+per-asset field `strike_proxy_error_at_floor_pct` to the gated row's
+features_json, populated from the measured data. Keep the existing
+`noise_floor_measured_on` field (it is still BTC-derived; the floor value
+itself is unchanged). The new field records what we KNOW about each asset's
+error rate at that floor. n=84 for SOL is under the convention 7 threshold
+of 100; stamp it as a strong hint, not a verdict.
+
+### D-298. no_recent_liquidation and liquidation_below_second_lock_min stay GENUINE (RAVEN RULING, resolves Cody handoff dispute)
+
+Cody kept both GENUINE against Raven's instruction file, with a code-path
+argument. Verified: both reasons are emitted at near_liq_trigger.py:976 and :981,
+AFTER `if not window.ok: return decide('SKIP', window.reason, ...)` at line 964.
+When the feed table has 0 rows, `window.ok` is False and the strategy returns
+`liquidation_feed_empty` (already DATA_BLOCKER at line 420). Neither of these
+two keys is reachable in the state Raven's instruction described. Classifying
+them DATA_BLOCKER would report "could not run" for a lock that ran and returned
+false, which is the convention 11 inversion pointing the other way. Cody is
+correct. Keep GENUINE. Two independent readings agreed.

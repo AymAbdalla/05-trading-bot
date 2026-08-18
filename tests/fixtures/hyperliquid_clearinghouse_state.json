@@ -1,0 +1,103 @@
+{
+  "marginSummary": {
+    "accountValue": "1162079.5955759999",
+    "totalNtlPos": "502849.786803",
+    "totalRawUsd": "1253334.347019",
+    "totalMarginUsed": "167616.595598"
+  },
+  "assetPositions": [
+    {
+      "type": "oneWay",
+      "position": {
+        "coin": "BTC",
+        "szi": "-4.16563",
+        "leverage": {
+          "type": "cross",
+          "value": 3
+        },
+        "entryPx": "64210.5",
+        "positionValue": "267333.47088",
+        "unrealizedPnl": "144.085785",
+        "returnOnEquity": "0.0016160509",
+        "liquidationPx": "337346.1049949524",
+        "marginUsed": "89111.15696",
+        "maxLeverage": 40,
+        "cumFunding": {
+          "allTime": "-23173.832281",
+          "sinceOpen": "0.836192",
+          "sinceChange": "0.0"
+        }
+      }
+    },
+    {
+      "type": "oneWay",
+      "position": {
+        "coin": "ETH",
+        "szi": "81.4769",
+        "leverage": {
+          "type": "cross",
+          "value": 3
+        },
+        "entryPx": "1897.82",
+        "positionValue": "154558.420224",
+        "unrealizedPnl": "-70.136168",
+        "returnOnEquity": "-0.0013607351",
+        "liquidationPx": null,
+        "marginUsed": "51519.473408",
+        "maxLeverage": 25,
+        "cumFunding": {
+          "allTime": "-189.049889",
+          "sinceOpen": "0.074281",
+          "sinceChange": "0.0"
+        }
+      }
+    },
+    {
+      "type": "oneWay",
+      "position": {
+        "coin": "SOL",
+        "szi": "199.28",
+        "leverage": {
+          "type": "cross",
+          "value": 3
+        },
+        "entryPx": "76.0045",
+        "positionValue": "15146.07712",
+        "unrealizedPnl": "-0.10201",
+        "returnOnEquity": "-0.0000202051",
+        "liquidationPx": null,
+        "marginUsed": "5048.692373",
+        "maxLeverage": 20,
+        "cumFunding": {
+          "allTime": "-121.619834",
+          "sinceOpen": "0.0",
+          "sinceChange": "0.0"
+        }
+      }
+    },
+    {
+      "type": "oneWay",
+      "position": {
+        "coin": "BNB",
+        "szi": "-0.02",
+        "leverage": {
+          "type": "cross",
+          "value": 3
+        },
+        "entryPx": "590.08",
+        "positionValue": "12.0446",
+        "unrealizedPnl": "-0.243",
+        "returnOnEquity": "-0.0617712852",
+        "liquidationPx": "54864871.481238097",
+        "marginUsed": "4.014866",
+        "maxLeverage": 10,
+        "cumFunding": {
+          "allTime": "-0.721206",
+          "sinceOpen": "-0.02965",
+          "sinceChange": "-0.02965"
+        }
+      }
+    }
+  ],
+  "time": 1787044653574
+}

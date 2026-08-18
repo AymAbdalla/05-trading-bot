@@ -23,11 +23,14 @@ from typing import Dict, List, Optional, Tuple
 
 import requests
 
+from engine.polymarket.assets import get_asset
 from engine.polymarket.client import PolymarketClient
 from engine.polymarket.markets import (BTC_UPDOWN_5M_DURATION, btc_updown_slug,
                                        current_window_ts, get_btc_updown_5m,
                                        get_btc_updown_5m_checked,
-                                       get_market_by_slug)
+                                       get_market_by_slug, get_updown_5m,
+                                       get_updown_5m_checked,
+                                       updown_15m_slug)
 from engine.polymarket.orderbook import fetch_orderbook
 from engine.polymarket.types import safe_float
 from strategies.polymarket.base import MarketContext, Window
@@ -48,6 +51,27 @@ SPOT_SOURCES = (
     ('binance_us', 'https://api.binance.us/api/v3/ticker/price?symbol=BTCUSDT', 'price'),
     ('coinbase', 'https://api.coinbase.com/v2/prices/BTC-USD/spot', None),
 )
+
+
+def spot_sources_for(asset: str):
+    """`SPOT_SOURCES` for one asset, in the same preference order.
+
+    The symbols come from `engine.polymarket.assets`, which is the single place
+    the ticker-to-exchange-symbol mapping is written down. Both endpoints were
+    verified live for btc, eth and sol on 2026-08-18.
+
+    This is a function rather than a per-asset constant because the BTC tuple
+    above is imported by name elsewhere and had to keep working unchanged.
+    """
+    row = get_asset(asset)
+    return (
+        ('binance_us',
+         'https://api.binance.us/api/v3/ticker/price?symbol={}'.format(
+             row.binance_symbol), 'price'),
+        ('coinbase',
+         'https://api.coinbase.com/v2/prices/{}/spot'.format(row.coinbase_pair),
+         None),
+    )
 
 # What these markets actually settle against. Read off `cryptoMarketConfig` on
 # a live btc-updown-5m market, 2026-08-17: {'id': 'btc-5m-twap-60', 'asset':
@@ -77,13 +101,19 @@ CRYPTO_CONFIG_KEY = 'cryptoMarketConfig'
 STRIKE_KEYS = ('openPrice', 'open_price', 'strikePrice')
 
 
-def fetch_btc_spot_checked(client: PolymarketClient) -> Dict[str, object]:
-    """Live BTC spot from a public exchange, with per-source failure reasons.
+def fetch_spot_checked(client: PolymarketClient,
+                       asset: str = 'btc') -> Dict[str, object]:
+    """Live spot for one asset from a public exchange, with failure reasons.
 
-    Returns `{'spot', 'source', 'failures'}`. `spot=None` means every source
-    failed and `failures` names why each one did, rather than leaving a bare
-    "all sources failed" line that cannot distinguish a geo-block from a
+    Returns `{'spot', 'source', 'failures', 'asset'}`. `spot=None` means every
+    source failed and `failures` names why each one did, rather than leaving a
+    bare "all sources failed" line that cannot distinguish a geo-block from a
     timeout from a schema change.
+
+    `asset` carries in the result because with three assets in flight a bare
+    spot number is no longer self-describing: an ETH price of 1897 handed to a
+    BTC strike comparison produces a lead of -97%, which every gate rejects, so
+    the failure would look like a quiet market rather than crossed wires.
 
     The returned price is validated finite and strictly positive. It is NOT
     bounded above: any plausible-range constant would be a hardcoded threshold
@@ -95,7 +125,7 @@ def fetch_btc_spot_checked(client: PolymarketClient) -> Dict[str, object]:
     apply. It reuses only the session's connection pool.
     """
     failures: Dict[str, str] = {}
-    for name, url, key in SPOT_SOURCES:
+    for name, url, key in spot_sources_for(asset):
         try:
             resp = client.session.get(url, timeout=client.timeout)
         except requests.RequestException as exc:
@@ -129,27 +159,40 @@ def fetch_btc_spot_checked(client: PolymarketClient) -> Dict[str, object]:
             continue
 
         if failures:
-            logger.info('BTC spot from %s after %d failed source(s): %s',
-                        name, len(failures), failures)
-        return {'spot': spot, 'source': name, 'failures': failures}
+            logger.info('%s spot from %s after %d failed source(s): %s',
+                        asset.upper(), name, len(failures), failures)
+        return {'spot': spot, 'source': name, 'failures': failures,
+                'asset': asset}
 
-    logger.warning('all %d BTC spot sources failed; spot is unknown: %s',
-                   len(SPOT_SOURCES), failures)
-    return {'spot': None, 'source': None, 'failures': failures}
+    logger.warning('all %d %s spot sources failed; spot is unknown: %s',
+                   len(spot_sources_for(asset)), asset.upper(), failures)
+    return {'spot': None, 'source': None, 'failures': failures, 'asset': asset}
 
 
-def fetch_btc_spot(client: PolymarketClient) -> Optional[float]:
-    """Live BTC spot from a public exchange. None if every source fails.
+def fetch_spot(client: PolymarketClient,
+               asset: str = 'btc') -> Optional[float]:
+    """Live spot for one asset. None if every source fails.
 
     None means "we do not know the price", and every strategy that needs spot
     skips on it. A stale or invented price here would flow straight into the
     strike comparison that decides which side is leading.
     """
-    return fetch_btc_spot_checked(client)['spot']
+    return fetch_spot_checked(client, asset)['spot']
+
+
+def fetch_btc_spot_checked(client: PolymarketClient) -> Dict[str, object]:
+    """`fetch_spot_checked` pinned to BTC. Kept for existing callers."""
+    return fetch_spot_checked(client, 'btc')
+
+
+def fetch_btc_spot(client: PolymarketClient) -> Optional[float]:
+    """`fetch_spot` pinned to BTC. Kept for existing callers."""
+    return fetch_spot_checked(client, 'btc')['spot']
 
 
 def resolved_windows_checked(client: PolymarketClient, window_ts: int,
-                             lookback: int = 16) -> Dict[str, object]:
+                             lookback: int = 16,
+                             asset: str = 'btc') -> Dict[str, object]:
     """The last `lookback` COMPLETED 5m windows the oracle has resolved.
 
     Returns `{'windows', 'requested', 'skips'}` with windows oldest-first and
@@ -166,7 +209,7 @@ def resolved_windows_checked(client: PolymarketClient, window_ts: int,
 
     for i in range(lookback, 0, -1):
         ts = window_ts - i * BTC_UPDOWN_5M_DURATION
-        market, status = get_btc_updown_5m_checked(client, ts)
+        market, status = get_updown_5m_checked(client, asset, ts)
         if market is None:
             skips['not_listed' if status == 'not_found' else status] += 1
             continue
@@ -193,14 +236,16 @@ def resolved_windows_checked(client: PolymarketClient, window_ts: int,
 
 
 def resolved_windows(client: PolymarketClient, window_ts: int,
-                     lookback: int = 16) -> List[Window]:
+                     lookback: int = 16,
+                     asset: str = 'btc') -> List[Window]:
     """Oracle-resolved completed 5m windows, oldest first.
 
     Unresolved windows are omitted rather than guessed, so a short list means
     "the oracle is behind" or "the read failed", never "the market was quiet".
     Use `resolved_windows_checked` when you need to tell those apart.
     """
-    return resolved_windows_checked(client, window_ts, lookback)['windows']
+    return resolved_windows_checked(client, window_ts, lookback,
+                                    asset)['windows']
 
 
 def price_windows_checked(candles: dict, lookback: int = 16) -> Dict[str, object]:
@@ -275,8 +320,15 @@ def build_context(client: PolymarketClient,
                   include_15m: bool = False,
                   spot: Optional[float] = None,
                   strike: Optional[float] = None,
-                  atr14: Optional[float] = None) -> MarketContext:
-    """Assemble a full live context for one 5-minute window.
+                  atr14: Optional[float] = None,
+                  asset: str = 'btc') -> MarketContext:
+    """Assemble a full live context for ONE asset's 5-minute window.
+
+    One context describes one asset, and there is deliberately no multi-asset
+    context. Every field here (spot, strike, lead_bps, windows, books) is a
+    statement about a single underlying, and a context holding three of each
+    would let a strategy read BTC's spot against ETH's strike with nothing in
+    the type system to stop it. The shadow loop builds three contexts instead.
 
     Pass `windows` (from `price_windows`) when a strategy needs USD magnitudes;
     otherwise oracle-resolved directions are fetched. Pass `strike` when you
@@ -289,7 +341,7 @@ def build_context(client: PolymarketClient,
     window_ts = current_window_ts() if window_ts is None else window_ts
     now = time.time()
 
-    market = get_btc_updown_5m(client, window_ts)
+    market = get_updown_5m(client, asset, window_ts)
     books = {}
     if market is not None:
         for outcome in market.outcomes:
@@ -300,14 +352,13 @@ def build_context(client: PolymarketClient,
             strike = _probe_strike(market.raw)
 
     if windows is None:
-        windows = resolved_windows(client, window_ts, lookback)
+        windows = resolved_windows(client, window_ts, lookback, asset)
 
     market_15m = None
     books_15m = {}
     if include_15m:
-        ts15 = (window_ts // BTC_UPDOWN_15M_DURATION) * BTC_UPDOWN_15M_DURATION
         market_15m = get_market_by_slug(
-            client, BTC_UPDOWN_15M_SLUG.format(ts=ts15))
+            client, updown_15m_slug(asset, window_ts))
         if market_15m is not None:
             for outcome in market_15m.outcomes:
                 book = fetch_orderbook(client, outcome.token_id)
@@ -315,7 +366,7 @@ def build_context(client: PolymarketClient,
                     books_15m[outcome.token_id] = book
 
     if spot is None:
-        spot = fetch_btc_spot(client)
+        spot = fetch_spot(client, asset)
 
     lead_bps = None
     if spot is not None and strike:  # `strike` truthy also guards strike == 0

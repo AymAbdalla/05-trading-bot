@@ -49,3 +49,8 @@ docs/handoffs/from-cody/
 research/moondevonyt-ai-trading-battles/
 research/moondevonyt-polymarket-examples/
 trading_bot.db
+
+# Third-party repos cloned for study 2026-08-18. Not ours, not vendored.
+research/cloddsbot/
+research/mrfadiai-polymarket-bot/
+research/polymarket_lp_tool/

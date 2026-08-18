@@ -133,3 +133,89 @@ CREATE INDEX IF NOT EXISTS idx_positions_open ON positions(closed_ts) WHERE clos
 CREATE INDEX IF NOT EXISTS idx_equity_ts ON equity_snapshots(ts);
 CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
 CREATE INDEX IF NOT EXISTS idx_risk_events_ts ON risk_events(ts);
+
+-- ---------------------------------------------------------------------------
+-- Research feeds (read-only inputs; nothing here is part of the order path)
+--
+-- These two tables are ALSO declared as SCHEMA_SQL inside their own modules,
+-- which apply them with CREATE ... IF NOT EXISTS at startup. That is what let
+-- them exist before this file knew about them. The module copies remain so a
+-- feed can bootstrap its own storage; this file is the copy a fresh db is
+-- built from. If you change one, change both - they are asserted to agree by
+-- tests/test_liquidation_recorder.py and tests/test_hyperliquid_client.py.
+-- ---------------------------------------------------------------------------
+
+-- Liquidations: forced-order feed. BYBIT ONLY, 3 symbols, as of 2026-08-18.
+-- The `exchange` column is not aspirational: Binance is geoblocked from this
+-- machine (HTTP 451, and its socket connects while delivering nothing), and
+-- Hyperliquid has no public venue-wide liquidation feed at all. Both are
+-- refused by the recorder with the measurement attached. So a query over this
+-- table is a query over Bybit, not over "the market" - see the docstring of
+-- engine/feeds/liquidation_recorder.py before drawing a conclusion from it.
+-- `side` is the side that was LIQUIDATED, not the side of the liquidating
+-- order (a forced SELL closes a LONG). The recorder inverts it on the way in;
+-- nothing downstream may translate it again.
+-- `id` is deterministic so a websocket reconnect replaying events is an
+-- INSERT OR IGNORE no-op rather than a double count.
+CREATE TABLE IF NOT EXISTS liquidations (
+    id TEXT PRIMARY KEY,
+    ts INTEGER NOT NULL,
+    exchange TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL,
+    price REAL NOT NULL,
+    qty REAL NOT NULL,
+    value_usd REAL NOT NULL
+);
+
+-- Hyperliquid whale positions: periodic snapshots of large open positions.
+-- Append-only SNAPSHOTS, not a position ledger: there is no primary key and
+-- the same (wallet, symbol) recurs at every poll. Query it with a ts filter.
+CREATE TABLE IF NOT EXISTS hyperliquid_positions (
+    ts          INTEGER NOT NULL,
+    wallet      TEXT NOT NULL,
+    symbol      TEXT NOT NULL,
+    side        TEXT NOT NULL,
+    size_usd    REAL NOT NULL,
+    entry_price REAL NOT NULL,
+    liq_price   REAL,
+    leverage    REAL
+);
+
+-- ---------------------------------------------------------------------------
+-- Agent coordination (not market data, not part of the order path)
+--
+-- Optimistic concurrency control for a working tree that several agent
+-- sessions share. Written by engine/concurrency.py, which also declares this
+-- DDL as its own SCHEMA_SQL - same two-copy arrangement as the feeds above,
+-- and asserted to agree by tests/test_schema_matches_feed_modules.py.
+--
+-- Append-only audit trail. `action` is one of checkout / checkin / conflict /
+-- write / release. It is a RECORD, not the correctness mechanism: the SHA-256
+-- comparison is what prevents a lost edit, and a failure to insert here never
+-- blocks a write. So a gap in this table means the log was degraded, never
+-- that the write did not happen.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS file_coordination (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts INTEGER NOT NULL,
+    file_path TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    old_hash TEXT,
+    new_hash TEXT,
+    conflict_diff TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_file_coordination_ts
+    ON file_coordination(ts);
+CREATE INDEX IF NOT EXISTS idx_file_coordination_path_ts
+    ON file_coordination(file_path, ts);
+
+-- Indexes for the research feeds
+CREATE INDEX IF NOT EXISTS idx_liquidations_ts ON liquidations (ts);
+CREATE INDEX IF NOT EXISTS idx_liquidations_symbol_ts ON liquidations (symbol, ts);
+CREATE INDEX IF NOT EXISTS idx_hyperliquid_positions_ts
+    ON hyperliquid_positions(ts);
+CREATE INDEX IF NOT EXISTS idx_hyperliquid_positions_symbol_ts
+    ON hyperliquid_positions(symbol, ts);

@@ -126,18 +126,44 @@ def test_every_new_module_states_a_kill_condition():
         assert 'KILL CONDITION' in (mod.__doc__ or ''), mod.__name__
 
 
-def test_build_strategies_returns_eight_independent_instances():
-    """Three of these carry per-window state, so a shared instance would share a
-    block ledger between callers. FairValueArb additionally carries a BTC price
-    tape, and two loops feeding one tape would interleave their observations."""
+def test_build_strategies_returns_independent_instances():
+    """Two builds must share NO object, and no two strategies may share a name.
+
+    That is what this test is for. Several of these carry per-window state, so a
+    shared instance would share a block ledger between callers; the FairValueArb
+    family additionally carries a price tape, and two loops feeding one tape
+    would interleave their observations.
+
+    THE COUNT IS DELIBERATELY NOT ASSERTED AGAINST A MAGIC NUMBER. It was eight,
+    then eleven, then fifteen, then nineteen. Every drift turned this test red
+    for a reason that had nothing to do with instance independence, and the name
+    of the test had to be edited each time - so the count is now derived from
+    the list rather than restated, and the name no longer carries it.
+
+    Uniqueness of `strategy_name` IS asserted, and that one is load-bearing: two
+    strategies sharing a key would pool their evidence in every counter, log row
+    and DB query in the package.
+    """
     first, second = build_strategies(), build_strategies()
-    assert len(first) == 8
     names = [s.strategy_name for s in first]
-    assert len(set(names)) == 8, names
+
+    # A shared key would let one strategy be quoted as evidence about another.
+    assert len(set(names)) == len(names), names
+    # Not an exact count - a floor, so an empty or gutted build_strategies()
+    # cannot pass this test by returning nothing.
+    assert len(first) >= 8, names
     assert 'PM_corridor_pair' in names
     assert 'PM_fair_value_arb' in names
+
+    # Same population, same order, in the same process.
+    assert [s.strategy_name for s in second] == names
+
+    # Independence, pairwise AND as a whole: `a is not b` alone would pass if
+    # the two lists were the same objects in a different order.
     for a, b in zip(first, second):
         assert a is not b
+        assert a.strategy_name == b.strategy_name
+    assert not ({id(s) for s in first} & {id(s) for s in second})
 
 
 def test_the_taker_adaptation_is_not_named_as_his_maker_strategy():
@@ -580,6 +606,41 @@ def test_spread_harvest_ships_with_the_book_implied_gate_OFF():
         _spread_ctx(spot=_bps(OPEN_PX, 1.0), strike=OPEN_PX, atr14=10.0))
     assert with_strike.action == 'ENTER', with_strike.reason
     assert with_strike.features['coin_flip_source'] == 'cushion_atr'
+
+
+def test_spread_harvest_names_a_missing_midpoint_apart_from_a_real_tie():
+    """Convention 20: two drop causes never share one number.
+
+    Both used to emit `no_underdog`, which pooled a MISSING INPUT (a one-sided
+    book has no midpoint) with a MARKET CONDITION (both mids present and
+    exactly equal). The first is NOT_TESTED, the second is a measurement, and
+    a single name made the split unrecoverable after the fact.
+    """
+    import dataclasses
+
+    ctx = _spread_ctx()
+    one_sided = dataclasses.replace(
+        ctx, books={'UP': _book('UP', asks=((0.64, 50),), bids=((0.48, 50),)),
+                    'DN': _book('DN', asks=((0.46, 50),), bids=())})
+    missing = _book_implied_harvest().evaluate(one_sided)
+    assert missing.action == 'SKIP'
+    assert missing.reason == 'no_book_midpoint'
+    assert missing.features['mid_down'] is None
+    # Still the book-implied gate. The name changed, the gate did not.
+    assert missing.features['coin_flip_source'] == 'book_implied'
+
+    tie = _book_implied_harvest().evaluate(
+        _spread_ctx(up_ask=0.64, down_ask=0.64, up_bid=0.48, down_bid=0.48))
+    assert tie.action == 'SKIP'
+    assert tie.reason == 'book_implied_exact_tie'
+    assert tie.features['mid_up'] == tie.features['mid_down']
+    assert tie.features['coin_flip_source'] == 'book_implied'
+
+    # And they classify on opposite sides of the NOT_TESTED line.
+    import agents.forge_shadow_eval as _se
+    assert _se.classify_skip_reason('no_book_midpoint')[0] == _se.DATA_BLOCKER
+    assert _se.classify_skip_reason(
+        'book_implied_exact_tie')[0] == _se.GENUINE
 
 
 def test_spread_harvest_needs_a_wide_book():

@@ -122,9 +122,41 @@ DEFAULT_MAX_POSITIONS_PER_MARKET_SIDE = 1
 # (Dan1ro0 4B/4C, box_builder) is still expressible; 1 would ban hedging.
 DEFAULT_MAX_POSITIONS_PER_MARKET = 2
 
-# Realized resolution loss since UTC midnight that halts new entries. 3x the
-# per-trade cap, the same shape as the crypto daily_ops_stop_multiplier of 3.
+# Realized resolution loss since UTC midnight that halts new entries, PER ASSET.
+# 3x the per-trade cap, the same shape as the crypto daily_ops_stop_multiplier
+# of 3.
+#
+# PER ASSET as of D-285/D-288, and the number did not change - its SCOPE did.
+# $30 was sized when the loop traded one market (BTC). The loop now runs 3
+# assets x 15 strategies, and one portfolio-wide $30 budget means the first
+# combination of strategies to lose $30 anywhere halts entries EVERYWHERE,
+# including on two assets that have not lost a cent. That is not a risk control,
+# it is a coupling: SOL's bad hour stops BTC trading. Bucketing by asset keeps
+# each asset's risk exactly what it was before the loop went multi-asset.
 DEFAULT_DAILY_LOSS_LIMIT_USDC = 30.0
+
+# The SECOND tier, measured across every asset at once. Defense in depth, not a
+# duplicate: the per-asset limit catches one asset going wrong, this catches a
+# systemic problem (a marking bug, a bad strike proxy, a venue outage) that
+# loses money on all of them at once and would otherwise need 3 separate
+# breakers to trip before anything stopped.
+#
+# 5x the per-asset limit rather than 3x (= the sum, at 3 assets), because a
+# portfolio limit set AT the sum of its parts can only ever trip simultaneously
+# with the last per-asset limit and would never bind on its own. It has to sit
+# strictly above the sum to be a distinct control. EXPIRY: this is a house
+# number over a number of assets that will change; re-derive it when
+# SHADOW_ASSETS grows, or it silently becomes tighter than the sum again.
+PORTFOLIO_DAILY_LOSS_LIMIT_MULTIPLE = 5.0
+DEFAULT_PORTFOLIO_DAILY_LOSS_LIMIT_USDC = (DEFAULT_DAILY_LOSS_LIMIT_USDC
+                                           * PORTFOLIO_DAILY_LOSS_LIMIT_MULTIPLE)
+
+# The bucket for a position whose slug is not in the asset registry - an event
+# market, a sports market, anything not btc/eth/sol. NAMED rather than dropped:
+# an unrouted loss that fell out of every bucket would be a loss no breaker ever
+# measures, which is the exact shape of convention 20's silent `continue`. They
+# pool into one bucket that gets the same per-asset limit as a real asset.
+UNKNOWN_ASSET = 'unknown'
 
 # Premium at risk in any single market type (btc_5m, btc_15m, event, ...).
 DEFAULT_MAX_EXPOSURE_PER_MARKET_TYPE_USDC = 40.0
@@ -583,6 +615,91 @@ def realized_pnl_today(positions: Sequence[object], now: Optional[float] = None,
     return pnl, counts
 
 
+def asset_bucket(market_slug: Optional[str]) -> str:
+    """The daily-loss bucket a market slug belongs to. Never None.
+
+    Delegates to the ONE asset registry (`engine.polymarket.assets`) rather than
+    splitting the slug here, so 'btc' means the same thing to the breaker as it
+    does to the shadow loop's per-asset strategy routing. An unregistered slug
+    is `UNKNOWN_ASSET`, not a guess: `asset_for_slug` deliberately refuses to
+    return 'trump' for an election market, and inventing a bucket per unknown
+    prefix would give every one-off event market its own private $30 budget.
+
+    Imported lazily so `risk_gate` stays importable by a caller that has not
+    pulled in the rest of the polymarket package.
+    """
+    try:
+        from engine.polymarket.assets import asset_for_slug
+    except Exception:                   # pragma: no cover - defensive
+        return UNKNOWN_ASSET
+    return asset_for_slug(market_slug) or UNKNOWN_ASSET
+
+
+def realized_pnl_today_by_asset(positions: Sequence[object],
+                                now: Optional[float] = None,
+                                ts_attr: str = 'opened_ts'
+                                ) -> Tuple[Dict[str, float], float,
+                                           Dict[str, int]]:
+    """`realized_pnl_today`, split by asset. Returns (by_asset, total, counts).
+
+    `by_asset` carries a key for every asset that had a counted position today
+    and no keys for the rest - an asset with no resolved trades is ABSENT, which
+    the caller reads as "no loss to measure", not as a measured 0.0.
+
+    `total` is the exact sum of `by_asset.values()`, asserted below. It is not
+    recomputed independently: two code paths producing "the portfolio PnL" is
+    how the two tiers of the breaker would eventually disagree about the same
+    day, and the assertion is cheaper than the investigation.
+
+    Every skip category is `realized_pnl_today`'s, unchanged, because this
+    counts the same positions the same way (convention 20: one cause, one name).
+    """
+    counts = {
+        'seen': 0,
+        'counted': 0,
+        'skipped_still_open': 0,
+        'skipped_before_today': 0,
+        'skipped_missing_ts': 0,
+        'skipped_missing_pnl': 0,
+    }
+    cutoff = utc_midnight_seconds(now)
+    by_asset: Dict[str, float] = {}
+    total = 0.0
+    for pos in positions or ():
+        counts['seen'] += 1
+        resolution = getattr(pos, 'resolution', None)
+        pnl_value = getattr(pos, 'pnl_usdc', None)
+        if resolution is None:
+            counts['skipped_still_open'] += 1
+            continue
+        if pnl_value is None:
+            counts['skipped_missing_pnl'] += 1
+            logger.warning('pm risk: resolved position with no pnl_usdc: %r',
+                           getattr(pos, 'position_id', pos))
+            continue
+        ts = getattr(pos, ts_attr, None)
+        if ts is None:
+            counts['skipped_missing_ts'] += 1
+            continue
+        if int(ts) < cutoff:
+            counts['skipped_before_today'] += 1
+            continue
+        bucket = asset_bucket(getattr(pos, 'market_slug', None))
+        value = float(pnl_value)
+        by_asset[bucket] = by_asset.get(bucket, 0.0) + value
+        total += value
+        counts['counted'] += 1
+
+    skipped = sum(v for k, v in counts.items() if k.startswith('skipped_'))
+    assert counts['seen'] - skipped == counts['counted'], (
+        'realized-pnl-by-asset accounting identity broken: {}'.format(counts))
+    assert math.isclose(sum(by_asset.values()), total, rel_tol=1e-9,
+                        abs_tol=1e-9), (
+        'per-asset pnl does not sum to the portfolio pnl: {} vs {}'
+        .format(by_asset, total))
+    return by_asset, total, counts
+
+
 def exposures_from_adapter(adapter) -> Tuple[OpenExposure, ...]:
     """Build the gate's view of open exposure from a PolymarketPaperAdapter.
 
@@ -628,6 +745,9 @@ class PolymarketRiskGate:
             risk.get('max_positions_per_market', DEFAULT_MAX_POSITIONS_PER_MARKET))
         self.daily_loss_limit_usdc = float(
             risk.get('daily_loss_limit_usdc', DEFAULT_DAILY_LOSS_LIMIT_USDC))
+        self.portfolio_daily_loss_limit_usdc = float(
+            risk.get('portfolio_daily_loss_limit_usdc',
+                     DEFAULT_PORTFOLIO_DAILY_LOSS_LIMIT_USDC))
         self.max_exposure_per_market_type_usdc = float(
             risk.get('max_exposure_per_market_type_usdc',
                      DEFAULT_MAX_EXPOSURE_PER_MARKET_TYPE_USDC))
@@ -748,7 +868,28 @@ class PolymarketRiskGate:
 
     # -- circuit breaker -----------------------------------------------------
 
-    def check_daily_loss_breaker(self, realized_pnl_today_usdc: float
+    def _loss_or_reason(self, pnl_value, label: str) -> Tuple[bool, object]:
+        """(True, loss) or (False, reason). Unreadable state is never a number.
+
+        Shared by both tiers so an unparseable PnL is refused identically
+        whichever one saw it. A tier that quietly coerced garbage to 0.0 would
+        stop existing exactly when the portfolio state is least trustworthy.
+        """
+        try:
+            pnl = float(pnl_value or 0.0)
+        except (TypeError, ValueError):
+            return False, ('daily_loss_breaker: {} realized pnl is not a number '
+                           '({!r}) - refusing to trade on unreadable state'
+                           .format(label, pnl_value))
+        if not math.isfinite(pnl):
+            return False, ('daily_loss_breaker: {} realized pnl is not finite '
+                           '({!r}) - refusing to trade on unreadable state'
+                           .format(label, pnl_value))
+        return True, -pnl               # positive when we are down
+
+    def check_daily_loss_breaker(self, realized_pnl_today_usdc: float,
+                                 asset: Optional[str] = None,
+                                 portfolio_pnl_today_usdc: Optional[float] = None
                                  ) -> Tuple[bool, str]:
         """Halt new entries once today's realized loss exceeds the limit.
 
@@ -757,22 +898,54 @@ class PolymarketRiskGate:
         (ok, reason). It does not duplicate that check - it measures a different
         series (realized resolution PnL, not equity snapshots) because the
         Polymarket paper adapter writes no equity_snapshots rows.
+
+        TWO TIERS, and which arguments you pass decides how many run:
+
+        `realized_pnl_today_usdc` is the PnL the PER-ASSET limit is measured
+        against, and `asset` names the bucket it was filtered to. `asset=None`
+        means the caller did not split the book, so the per-asset limit is
+        applied to whatever it handed in. That fallback is deliberately the
+        TIGHT direction - one $30 budget for the whole book is the pre-D-285
+        behaviour and is stricter than three $30 budgets, so a caller that has
+        not been updated is over-protected rather than under-protected.
+
+        `portfolio_pnl_today_usdc` runs the SECOND, higher limit across every
+        asset. `None` means the caller did not supply it, so that tier does NOT
+        run - it is not treated as 0.0, which would read as a measured
+        break-even and silently pass a check that was never performed
+        (convention 11).
+
+        The per-asset tier is checked FIRST. When both would trip, the reason a
+        human reads should name the asset that actually did the damage, not the
+        aggregate it rolls up into.
         """
-        try:
-            pnl = float(realized_pnl_today_usdc or 0.0)
-        except (TypeError, ValueError):
-            return False, ('daily_loss_breaker: realized pnl is not a number '
-                           '({!r}) - refusing to trade on unreadable state'
-                           .format(realized_pnl_today_usdc))
-        if not math.isfinite(pnl):
-            return False, ('daily_loss_breaker: realized pnl is not finite '
-                           '({!r}) - refusing to trade on unreadable state'
-                           .format(realized_pnl_today_usdc))
-        loss = -pnl  # positive when we are down
-        if loss > self.daily_loss_limit_usdc:
-            return False, ('daily_loss_breaker: realized loss today '
+        # 'unsplit-book' rather than 'portfolio', because those are two
+        # different facts: this tier applies the PER-ASSET limit, and when the
+        # caller did not split the book it is applying it to everything. A
+        # reason string saying 'portfolio' next to the per-asset limit would
+        # read as the second tier having tripped.
+        label = 'asset={}'.format(asset) if asset else 'unsplit-book'
+        ok, loss = self._loss_or_reason(realized_pnl_today_usdc, label)
+        if not ok:
+            return False, loss
+        if self.daily_loss_limit_usdc > 0 and loss > self.daily_loss_limit_usdc:
+            return False, ('daily_loss_breaker: {} realized loss today '
                            '=${:.2f} > limit=${:.2f}'
-                           .format(loss, self.daily_loss_limit_usdc))
+                           .format(label, loss, self.daily_loss_limit_usdc))
+
+        if portfolio_pnl_today_usdc is not None:
+            ok, total_loss = self._loss_or_reason(portfolio_pnl_today_usdc,
+                                                  'portfolio')
+            if not ok:
+                return False, total_loss
+            if self.portfolio_daily_loss_limit_usdc > 0 and total_loss > self.portfolio_daily_loss_limit_usdc:
+                return False, (
+                    'daily_loss_breaker: portfolio realized loss today '
+                    '=${:.2f} > portfolio limit=${:.2f} (per-asset limit '
+                    '${:.2f} was not breached on {}) - this is the systemic '
+                    'guard, not one bad asset'
+                    .format(total_loss, self.portfolio_daily_loss_limit_usdc,
+                            self.daily_loss_limit_usdc, label))
         return True, 'ok'
 
     # -- the gate ------------------------------------------------------------
@@ -783,6 +956,8 @@ class PolymarketRiskGate:
                     premium: float,
                     open_positions: Sequence[OpenExposure] = (),
                     realized_pnl_today_usdc: float = 0.0,
+                    asset: Optional[str] = None,
+                    portfolio_pnl_today_usdc: Optional[float] = None,
                     requested_shares: Optional[float] = None,
                     fair_value: Optional[float] = None,
                     sizing_mode: Optional[str] = None,
@@ -829,9 +1004,16 @@ class PolymarketRiskGate:
             if not ops_ok:
                 return block(ops_reason)
 
-        # 2. Polymarket daily loss circuit breaker.
+        # 2. Polymarket daily loss circuit breaker, per asset then portfolio.
+        # `asset` is passed through UNCHANGED and is never inferred from
+        # `market_slug` here. It labels which slice of the book
+        # `realized_pnl_today_usdc` was measured over, and only the caller knows
+        # that. Deriving it from the slug would stamp `asset=btc` on a number
+        # that might be the whole portfolio - a reason string that reads as a
+        # measurement and is not one.
         breaker_ok, breaker_reason = self.check_daily_loss_breaker(
-            realized_pnl_today_usdc)
+            realized_pnl_today_usdc, asset=asset,
+            portfolio_pnl_today_usdc=portfolio_pnl_today_usdc)
         if not breaker_ok:
             return block(breaker_reason)
 
@@ -1023,10 +1205,27 @@ class PolymarketRiskGate:
         """`check_order` with the portfolio state read off a paper adapter.
 
         Convenience only. The adapter is read, never written.
+
+        THIS is where the daily loss breaker becomes per-asset (D-285/D-288),
+        and it is the only place the split happens. The shadow loop calls this
+        once per leg with that leg's slug, so routing here means the loop needs
+        no asset plumbing of its own - and, more importantly, there is exactly
+        ONE site that decides which bucket a slug belongs to. A second derivation
+        in the loop is convention 23's failure mode in reverse: two places that
+        agree today and drift silently.
+
+        Both tiers are supplied: `realized_pnl_today_usdc` is THIS asset's
+        slice, `portfolio_pnl_today_usdc` is the whole book. An asset with no
+        resolved trades today is absent from the split, which reads as 0.0 for
+        the per-asset tier - correct, because no resolved trade is genuinely no
+        realized loss, unlike the unreadable cases the tier refuses on.
         """
         positions = list(adapter.positions.values())
-        pnl, _counts = realized_pnl_today(positions)
-        kw.setdefault('realized_pnl_today_usdc', pnl)
+        by_asset, total, _counts = realized_pnl_today_by_asset(positions)
+        bucket = asset_bucket(market_slug)
+        kw.setdefault('realized_pnl_today_usdc', by_asset.get(bucket, 0.0))
+        kw.setdefault('asset', bucket)
+        kw.setdefault('portfolio_pnl_today_usdc', total)
         return self.check_order(market_slug, outcome_side, premium,
                                 open_positions=exposures_from_adapter(adapter),
                                 **kw)

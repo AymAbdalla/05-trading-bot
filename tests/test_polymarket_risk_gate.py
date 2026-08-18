@@ -45,6 +45,11 @@ from engine.polymarket.risk_gate import (DEFAULT_CORRELATION_GROUPS,
                                          correlation_key, exposures_from_adapter,
                                          fractional_kelly, normalize_direction,
                                          realized_pnl_today,
+                                         realized_pnl_today_by_asset,
+                                         asset_bucket, UNKNOWN_ASSET,
+                                         DEFAULT_DAILY_LOSS_LIMIT_USDC,
+                                         DEFAULT_PORTFOLIO_DAILY_LOSS_LIMIT_USDC,
+                                         PORTFOLIO_DAILY_LOSS_LIMIT_MULTIPLE,
                                          utc_midnight_seconds)
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -90,11 +95,14 @@ class FakePosition:
     """Minimal stand-in for PaperPosition for the realized-PnL census."""
 
     def __init__(self, resolution=None, pnl_usdc=None, opened_ts=0,
-                 position_id='p1'):
+                 position_id='p1', market_slug=None):
         self.resolution = resolution
         self.pnl_usdc = pnl_usdc
         self.opened_ts = opened_ts
         self.position_id = position_id
+        # None on purpose by default: a position with no slug is exactly the
+        # case `asset_bucket` has to route somewhere named rather than drop.
+        self.market_slug = market_slug
 
 
 @pytest.fixture
@@ -418,6 +426,291 @@ class TestDailyBoundary:
         assert counts['seen'] == 6
         assert counts['seen'] - skipped == counts['counted'] == 2
         assert pnl == pytest.approx(-2.0)
+
+
+# -- the breaker is PER ASSET (D-285/D-288) ---------------------------------
+
+SOL5M = 'sol-updown-5m-2026-08-18-12-00'
+
+
+def _loss(usd, slug, ts):
+    return FakePosition('LOSS', -abs(usd), ts, market_slug=slug)
+
+
+class TestPerAssetDailyLossBreaker:
+    """One $30 budget shared by 3 assets x 15 strategies is a coupling, not a
+    control: the first combination to lose $30 anywhere halts entries on two
+    assets that have not lost a cent. Each asset gets its own $30, and a second,
+    higher limit across all of them catches the systemic case."""
+
+    # -- the split ----------------------------------------------------------
+
+    def test_pnl_splits_by_asset_and_sums_to_the_portfolio(self):
+        now = 1755432000.0
+        m = utc_midnight_seconds(now)
+        by_asset, total, counts = realized_pnl_today_by_asset(
+            [_loss(10.0, BTC5M, m), _loss(5.0, BTC15M, m),
+             _loss(7.0, ETH5M, m), _loss(3.0, SOL5M, m)], now=now)
+        # BTC 5m and BTC 15m are ONE asset. They are two market TYPES, which is
+        # a different question the exposure caps ask.
+        assert by_asset == {'btc': pytest.approx(-15.0),
+                            'eth': pytest.approx(-7.0),
+                            'sol': pytest.approx(-3.0)}
+        assert total == pytest.approx(-25.0)
+        assert sum(by_asset.values()) == pytest.approx(total)
+        assert counts['counted'] == 4
+
+    def test_an_unregistered_slug_lands_in_a_named_bucket(self):
+        """An event market's loss must be measured by SOME breaker.
+
+        Convention 20: a position that fell out of every bucket is a loss no
+        limit ever sees. It does not get its own private budget either - every
+        unrouted slug shares one.
+        """
+        now = 1755432000.0
+        m = utc_midnight_seconds(now)
+        by_asset, total, _ = realized_pnl_today_by_asset(
+            [_loss(10.0, EVENT, m), _loss(10.0, 'trump-wins-2028', m)], now=now)
+        assert by_asset == {UNKNOWN_ASSET: pytest.approx(-20.0)}
+        assert total == pytest.approx(-20.0)
+
+    def test_asset_bucket_never_guesses(self):
+        assert asset_bucket(BTC5M) == 'btc'
+        assert asset_bucket(ETH5M) == 'eth'
+        assert asset_bucket(SOL5M) == 'sol'
+        assert asset_bucket(EVENT) == UNKNOWN_ASSET
+        assert asset_bucket(None) == UNKNOWN_ASSET
+        assert asset_bucket('') == UNKNOWN_ASSET
+
+    def test_the_split_agrees_with_the_unsplit_total(self):
+        """Two functions, one day, one number. If they ever disagree the two
+        tiers of the breaker are measuring different days."""
+        now = 1755432000.0
+        m = utc_midnight_seconds(now)
+        positions = [
+            _loss(10.0, BTC5M, m), FakePosition('WIN', +4.0, m, market_slug=ETH5M),
+            FakePosition(None, None, m, market_slug=SOL5M),      # still open
+            FakePosition('LOSS', None, m, market_slug=BTC5M),    # unpriced
+            _loss(9.0, SOL5M, m - 100),                          # yesterday
+        ]
+        flat, flat_counts = realized_pnl_today(positions, now=now)
+        by_asset, total, counts = realized_pnl_today_by_asset(positions, now=now)
+        assert total == pytest.approx(flat)
+        assert counts == flat_counts
+
+    # -- the per-asset tier -------------------------------------------------
+
+    def test_one_asset_losing_does_not_halt_the_others(self):
+        """The whole point. SOL is down $40; BTC must still be tradeable."""
+        g = gate()
+        assert not g.check_daily_loss_breaker(-40.0, asset='sol')[0]
+        assert g.check_daily_loss_breaker(0.0, asset='btc',
+                                          portfolio_pnl_today_usdc=-40.0)[0]
+
+    def test_the_reason_names_the_asset_that_did_the_damage(self):
+        ok, reason = gate().check_daily_loss_breaker(-40.0, asset='sol')
+        assert not ok
+        assert 'asset=sol' in reason
+        assert reason.startswith('daily_loss_breaker')
+
+    def test_the_per_asset_limit_is_the_same_thirty_dollars(self):
+        g = gate()
+        assert g.check_daily_loss_breaker(-30.0, asset='btc')[0]
+        assert not g.check_daily_loss_breaker(-30.01, asset='btc')[0]
+        assert g.daily_loss_limit_usdc == DEFAULT_DAILY_LOSS_LIMIT_USDC
+
+    def test_an_unsplit_book_still_gets_the_tight_limit(self):
+        """A caller that has not been updated is OVER-protected, not under.
+
+        One $30 budget for everything is the pre-D-285 behaviour and is
+        strictly stricter than three $30 budgets, so the fallback errs safe.
+        """
+        ok, reason = gate().check_daily_loss_breaker(-40.0)
+        assert not ok
+        assert 'unsplit-book' in reason
+        # And it must NOT claim the portfolio tier tripped - different limit,
+        # different fact.
+        assert 'portfolio limit' not in reason
+
+    # -- the portfolio tier -------------------------------------------------
+
+    def test_the_portfolio_limit_sits_strictly_above_the_sum_of_its_parts(self):
+        """A portfolio cap set AT 3 x $30 could only ever trip at the same
+        instant as the last per-asset cap, so it would not be a control."""
+        g = gate()
+        n_assets = 3
+        assert (g.portfolio_daily_loss_limit_usdc
+                > n_assets * g.daily_loss_limit_usdc)
+        assert (DEFAULT_PORTFOLIO_DAILY_LOSS_LIMIT_USDC
+                == pytest.approx(DEFAULT_DAILY_LOSS_LIMIT_USDC
+                                 * PORTFOLIO_DAILY_LOSS_LIMIT_MULTIPLE))
+
+    def test_a_systemic_drawdown_halts_everything(self):
+        """$29 lost on each of five buckets: no per-asset limit is breached and
+        the book is down $145... which is still under $150. At $151 it stops."""
+        g = gate()
+        assert g.check_daily_loss_breaker(-29.0, asset='btc',
+                                          portfolio_pnl_today_usdc=-145.0)[0]
+        ok, reason = g.check_daily_loss_breaker(
+            -29.0, asset='btc', portfolio_pnl_today_usdc=-151.0)
+        assert not ok
+        assert 'portfolio limit' in reason
+        assert 'systemic' in reason
+
+    def test_the_portfolio_tier_does_not_run_when_it_was_not_supplied(self):
+        """Convention 11: `None` is "not measured", never a measured $0.00.
+
+        Silently reading it as break-even would pass a check nobody performed.
+        """
+        g = gate()
+        assert g.check_daily_loss_breaker(-1.0, asset='btc')[0]
+        assert g.check_daily_loss_breaker(
+            -1.0, asset='btc', portfolio_pnl_today_usdc=None)[0]
+        assert not g.check_daily_loss_breaker(
+            -1.0, asset='btc', portfolio_pnl_today_usdc=-1000.0)[0]
+
+    def test_the_per_asset_tier_is_reported_first(self):
+        """When both trip, name the asset that did the damage, not the roll-up."""
+        ok, reason = gate().check_daily_loss_breaker(
+            -500.0, asset='sol', portfolio_pnl_today_usdc=-500.0)
+        assert not ok
+        assert 'asset=sol' in reason
+        assert 'portfolio limit' not in reason
+
+    @pytest.mark.parametrize('bad', ['nope', float('nan'), float('inf'), object()])
+    def test_an_unreadable_portfolio_pnl_refuses(self, bad):
+        """The second tier must fail closed the same way the first does."""
+        ok, reason = gate().check_daily_loss_breaker(
+            0.0, asset='btc', portfolio_pnl_today_usdc=bad)
+        assert not ok
+        assert 'portfolio' in reason
+        assert reason.startswith('daily_loss_breaker')
+
+    def test_both_limits_are_configurable(self):
+        g = gate(daily_loss_limit_usdc=5.0,
+                 portfolio_daily_loss_limit_usdc=11.0)
+        assert not g.check_daily_loss_breaker(-5.01, asset='btc')[0]
+        assert not g.check_daily_loss_breaker(
+            -1.0, asset='btc', portfolio_pnl_today_usdc=-11.01)[0]
+
+    # -- 0.0 means OFF, not "halt on the first cent" ------------------------
+
+    @pytest.mark.parametrize('loss', [0.01, 50.0, 5_000.0, 1e9])
+    def test_a_zero_limit_disables_the_tier_it_is_set_on(self, loss):
+        """`config.yaml` sets both to 0.0 with the comment "DISABLED in shadow".
+
+        Without the `> 0` guard, 0.0 is the TIGHTEST possible setting rather
+        than the loosest: `loss > 0.0` is true of one cent, so the first losing
+        resolution of the day would halt every entry while the config claimed
+        the breaker was off. That failure is silent, points the wrong way, and
+        looks exactly like a quiet market. It gets a test with a big number in
+        it so nobody can reintroduce it quietly.
+        """
+        g = gate(daily_loss_limit_usdc=0.0, portfolio_daily_loss_limit_usdc=0.0)
+        ok, reason = g.check_daily_loss_breaker(
+            -loss, asset='btc', portfolio_pnl_today_usdc=-loss)
+        assert ok, reason
+        assert reason == 'ok'
+
+    def test_the_two_tiers_disable_independently(self):
+        """Turning one off must not turn the other off."""
+        per_asset_off = gate(daily_loss_limit_usdc=0.0,
+                             portfolio_daily_loss_limit_usdc=150.0)
+        assert per_asset_off.check_daily_loss_breaker(-1_000.0, asset='btc')[0]
+        assert not per_asset_off.check_daily_loss_breaker(
+            -1_000.0, asset='btc', portfolio_pnl_today_usdc=-1_000.0)[0]
+
+        portfolio_off = gate(daily_loss_limit_usdc=30.0,
+                             portfolio_daily_loss_limit_usdc=0.0)
+        assert not portfolio_off.check_daily_loss_breaker(-31.0, asset='btc')[0]
+        assert portfolio_off.check_daily_loss_breaker(
+            -1.0, asset='btc', portfolio_pnl_today_usdc=-1_000_000.0)[0]
+
+    def test_disabling_does_not_disable_the_other_risk_caps(self):
+        """A zero loss limit is not a zero risk gate. Everything else binds.
+
+        The shadow config turns the breaker off to let strategies run to zero.
+        That must not quietly take the exposure and position caps with it.
+        """
+        g = gate(daily_loss_limit_usdc=0.0, portfolio_daily_loss_limit_usdc=0.0)
+        v = g.check_order(BTC5M, 'Up', 0.50,
+                          open_positions=[expo() for _ in range(5)],
+                          realized_pnl_today_usdc=-9_999.0)
+        assert not v.approved
+        assert v.reason.startswith('max_concurrent_positions')
+
+    def test_the_module_defaults_are_not_zero(self):
+        """The disable is a CONFIG choice for shadow, never the built-in.
+
+        A future reader deleting the config keys must get a breaker back, not
+        inherit shadow's "run to zero" posture into whatever runs next.
+        """
+        assert DEFAULT_DAILY_LOSS_LIMIT_USDC > 0
+        assert DEFAULT_PORTFOLIO_DAILY_LOSS_LIMIT_USDC > 0
+        d = PolymarketRiskGate()
+        assert not d.check_daily_loss_breaker(-40.0, asset='sol')[0]
+
+    # -- the wiring, end to end ---------------------------------------------
+
+    def _adapter(self, *positions):
+        class StubAdapter:
+            def __init__(self, pos):
+                self.positions = {str(i): p for i, p in enumerate(pos)}
+
+            def open_positions(self):
+                return []
+        return StubAdapter(positions)
+
+    def test_check_adapter_order_routes_the_loss_to_its_own_asset(self):
+        """SOL lost $50 today. A SOL order is blocked; a BTC order is not.
+
+        This is the wiring test for the whole change. Before it, both were
+        blocked, and the shadow loop's BTC strategies sat out an entire day
+        because a different asset had a bad hour.
+        """
+        now = int(time.time())
+        adapter = self._adapter(_loss(50.0, SOL5M, now))
+        g = gate()
+
+        blocked = g.check_adapter_order(adapter, SOL5M, 'Up', 0.50)
+        assert not blocked.approved
+        assert blocked.reason.startswith('daily_loss_breaker')
+        assert 'asset=sol' in blocked.reason
+
+        allowed = g.check_adapter_order(adapter, BTC5M, 'Up', 0.50)
+        assert allowed.approved, allowed.reason
+
+    def test_check_adapter_order_still_trips_the_portfolio_tier(self):
+        """BTC is only $29 down, the book is $174 down, and BTC stops anyway.
+
+        Six $29 losses: one on each registered asset and three more on
+        unregistered slugs. The order is on BTC, whose own bucket is under the
+        $30 per-asset limit, so ONLY the portfolio tier can block this - which
+        is the point of having it.
+        """
+        now = int(time.time())
+        adapter = self._adapter(
+            _loss(29.0, BTC5M, now), _loss(29.0, ETH5M, now),
+            _loss(29.0, SOL5M, now), _loss(29.0, EVENT, now),
+            _loss(29.0, 'some-other-market', now),
+            _loss(29.0, 'yet-another-market', now))
+        v = gate().check_adapter_order(adapter, BTC5M, 'Up', 0.50)
+        assert not v.approved
+        assert 'portfolio limit' in v.reason
+        assert 'asset=btc' in v.reason      # says which slice was under its cap
+
+    def test_the_fifteen_minute_leg_shares_its_five_minute_asset_budget(self):
+        """`btc-updown-15m` and `btc-updown-5m` are ONE asset for the breaker.
+
+        They are two market TYPES for the exposure caps. Two questions, two
+        classifications, and conflating them would give a corridor pair two
+        independent daily budgets on the same underlying.
+        """
+        now = int(time.time())
+        adapter = self._adapter(_loss(40.0, BTC15M, now))
+        v = gate().check_adapter_order(adapter, BTC5M, 'Up', 0.50)
+        assert not v.approved
+        assert 'asset=btc' in v.reason
 
 
 # -- market type exposure ----------------------------------------------------
@@ -1155,6 +1448,7 @@ class TestConfigWiring:
         scalars = ['notional_cap_usdc', 'max_total_exposure_usdc',
                    'max_concurrent_positions', 'max_positions_per_market_side',
                    'max_positions_per_market', 'daily_loss_limit_usdc',
+                   'portfolio_daily_loss_limit_usdc',
                    'max_exposure_per_market_type_usdc',
                    'max_correlated_exposure_usdc', 'min_premium', 'max_premium',
                    'min_shares', 'kelly_fraction', 'sizing_mode',

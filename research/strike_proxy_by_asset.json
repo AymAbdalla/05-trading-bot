@@ -1,0 +1,290 @@
+{
+  "by_asset": [
+    {
+      "measured_at": "2026-08-18T10:24:43Z",
+      "asset": "btc",
+      "asset_label": "Bitcoin",
+      "slug_prefix": "btc-updown-5m",
+      "symbol": "BTCUSDT",
+      "twap_lookback_sec": 60,
+      "configured_noise_floor_bps": 5.0,
+      "windows_requested": 220,
+      "windows_scored": 220,
+      "drops": {},
+      "headline_disagreement_pct": 15.0,
+      "buckets": [
+        {
+          "lo_bps": 0.0,
+          "hi_bps": 1.0,
+          "n": 54,
+          "disagreements": 21,
+          "rate_pct": 38.9
+        },
+        {
+          "lo_bps": 1.0,
+          "hi_bps": 2.0,
+          "n": 21,
+          "disagreements": 3,
+          "rate_pct": 14.3
+        },
+        {
+          "lo_bps": 2.0,
+          "hi_bps": 5.0,
+          "n": 70,
+          "disagreements": 7,
+          "rate_pct": 10.0
+        },
+        {
+          "lo_bps": 5.0,
+          "hi_bps": 10.0,
+          "n": 53,
+          "disagreements": 1,
+          "rate_pct": 1.9
+        },
+        {
+          "lo_bps": 10.0,
+          "hi_bps": null,
+          "n": 22,
+          "disagreements": 1,
+          "rate_pct": 4.5
+        }
+      ],
+      "cumulative": [
+        {
+          "threshold_bps": 1.0,
+          "n": 166,
+          "disagreements": 12,
+          "rate_pct": 7.2
+        },
+        {
+          "threshold_bps": 2.0,
+          "n": 145,
+          "disagreements": 9,
+          "rate_pct": 6.2
+        },
+        {
+          "threshold_bps": 3.0,
+          "n": 122,
+          "disagreements": 6,
+          "rate_pct": 4.9
+        },
+        {
+          "threshold_bps": 4.0,
+          "n": 97,
+          "disagreements": 2,
+          "rate_pct": 2.1
+        },
+        {
+          "threshold_bps": 5.0,
+          "n": 75,
+          "disagreements": 2,
+          "rate_pct": 2.7
+        },
+        {
+          "threshold_bps": 8.0,
+          "n": 40,
+          "disagreements": 2,
+          "rate_pct": 5.0
+        },
+        {
+          "threshold_bps": 10.0,
+          "n": 22,
+          "disagreements": 1,
+          "rate_pct": 4.5
+        }
+      ]
+    },
+    {
+      "measured_at": "2026-08-18T10:25:27Z",
+      "asset": "eth",
+      "asset_label": "Ethereum",
+      "slug_prefix": "eth-updown-5m",
+      "symbol": "ETHUSDT",
+      "twap_lookback_sec": 60,
+      "configured_noise_floor_bps": 5.0,
+      "windows_requested": 220,
+      "windows_scored": 219,
+      "drops": {
+        "unresolved": 1
+      },
+      "headline_disagreement_pct": 20.5,
+      "buckets": [
+        {
+          "lo_bps": 0.0,
+          "hi_bps": 1.0,
+          "n": 38,
+          "disagreements": 19,
+          "rate_pct": 50.0
+        },
+        {
+          "lo_bps": 1.0,
+          "hi_bps": 2.0,
+          "n": 20,
+          "disagreements": 5,
+          "rate_pct": 25.0
+        },
+        {
+          "lo_bps": 2.0,
+          "hi_bps": 5.0,
+          "n": 55,
+          "disagreements": 14,
+          "rate_pct": 25.5
+        },
+        {
+          "lo_bps": 5.0,
+          "hi_bps": 10.0,
+          "n": 63,
+          "disagreements": 5,
+          "rate_pct": 7.9
+        },
+        {
+          "lo_bps": 10.0,
+          "hi_bps": null,
+          "n": 43,
+          "disagreements": 2,
+          "rate_pct": 4.7
+        }
+      ],
+      "cumulative": [
+        {
+          "threshold_bps": 1.0,
+          "n": 181,
+          "disagreements": 26,
+          "rate_pct": 14.4
+        },
+        {
+          "threshold_bps": 2.0,
+          "n": 161,
+          "disagreements": 21,
+          "rate_pct": 13.0
+        },
+        {
+          "threshold_bps": 3.0,
+          "n": 137,
+          "disagreements": 14,
+          "rate_pct": 10.2
+        },
+        {
+          "threshold_bps": 4.0,
+          "n": 123,
+          "disagreements": 10,
+          "rate_pct": 8.1
+        },
+        {
+          "threshold_bps": 5.0,
+          "n": 106,
+          "disagreements": 7,
+          "rate_pct": 6.6
+        },
+        {
+          "threshold_bps": 8.0,
+          "n": 59,
+          "disagreements": 2,
+          "rate_pct": 3.4
+        },
+        {
+          "threshold_bps": 10.0,
+          "n": 43,
+          "disagreements": 2,
+          "rate_pct": 4.7
+        }
+      ]
+    },
+    {
+      "measured_at": "2026-08-18T10:26:14Z",
+      "asset": "sol",
+      "asset_label": "Solana",
+      "slug_prefix": "sol-updown-5m",
+      "symbol": "SOLUSDT",
+      "twap_lookback_sec": 60,
+      "configured_noise_floor_bps": 5.0,
+      "windows_requested": 220,
+      "windows_scored": 218,
+      "drops": {
+        "unresolved": 2
+      },
+      "headline_disagreement_pct": 33.0,
+      "buckets": [
+        {
+          "lo_bps": 0.0,
+          "hi_bps": 1.0,
+          "n": 91,
+          "disagreements": 49,
+          "rate_pct": 53.8
+        },
+        {
+          "lo_bps": 1.0,
+          "hi_bps": 2.0,
+          "n": 10,
+          "disagreements": 4,
+          "rate_pct": 40.0
+        },
+        {
+          "lo_bps": 2.0,
+          "hi_bps": 5.0,
+          "n": 33,
+          "disagreements": 7,
+          "rate_pct": 21.2
+        },
+        {
+          "lo_bps": 5.0,
+          "hi_bps": 10.0,
+          "n": 46,
+          "disagreements": 8,
+          "rate_pct": 17.4
+        },
+        {
+          "lo_bps": 10.0,
+          "hi_bps": null,
+          "n": 38,
+          "disagreements": 4,
+          "rate_pct": 10.5
+        }
+      ],
+      "cumulative": [
+        {
+          "threshold_bps": 1.0,
+          "n": 127,
+          "disagreements": 23,
+          "rate_pct": 18.1
+        },
+        {
+          "threshold_bps": 2.0,
+          "n": 117,
+          "disagreements": 19,
+          "rate_pct": 16.2
+        },
+        {
+          "threshold_bps": 3.0,
+          "n": 101,
+          "disagreements": 15,
+          "rate_pct": 14.9
+        },
+        {
+          "threshold_bps": 4.0,
+          "n": 86,
+          "disagreements": 12,
+          "rate_pct": 14.0
+        },
+        {
+          "threshold_bps": 5.0,
+          "n": 84,
+          "disagreements": 12,
+          "rate_pct": 14.3
+        },
+        {
+          "threshold_bps": 8.0,
+          "n": 48,
+          "disagreements": 8,
+          "rate_pct": 16.7
+        },
+        {
+          "threshold_bps": 10.0,
+          "n": 38,
+          "disagreements": 4,
+          "rate_pct": 10.5
+        }
+      ]
+    }
+  ]
+}

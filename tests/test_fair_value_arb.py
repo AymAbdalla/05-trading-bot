@@ -1162,10 +1162,42 @@ class TestWiring:
         a.tape.observe(1.0, 100.0)
         assert len(b.tape.samples) == 0
 
-    def test_only_this_strategy_advertises_that_it_manages_exits(self):
-        managers = [s.strategy_name for s in build_strategies()
+    def test_only_exit_managers_advertise_that_they_manage_exits(self):
+        # The three parameter VARIANTS inherit `manages_exits = True`, which is
+        # the point of them - same exit machinery, different constants.
+        #
+        # `PM_dip_arb` is the one member from OUTSIDE this family, added when it
+        # was registered in `build_strategies()`. It is legitimate: it is the
+        # only other strategy in the package that sells before resolution, and
+        # it ships its own `manage_exit` AND `exit_decisions`. Everything else
+        # here holds to resolution, and the shadow loop would start polling
+        # `manage_exit` on a strategy that does not have one.
+        #
+        # So the list is no longer a prefix test. What it still guards is the
+        # thing that actually breaks: a strategy claiming the flag WITHOUT the
+        # methods behind it. That is asserted directly below rather than
+        # inferred from the name.
+        managers = [s for s in build_strategies()
                     if getattr(s, 'manages_exits', False)]
-        assert managers == ['PM_fair_value_arb']
+        names = [s.strategy_name for s in managers]
+        assert names == ['PM_fair_value_arb', 'PM_fair_value_arb_wide',
+                         'PM_fair_value_arb_patient',
+                         'PM_fair_value_arb_hft',
+                         'PM_fair_value_arb_inverse',
+                         'PM_dip_arb']
+        # The flag is a promise about the interface. Check the interface.
+        for s in managers:
+            assert callable(getattr(s, 'manage_exit', None)), s.strategy_name
+
+    def test_no_unregistered_strategy_claims_it_manages_exits(self):
+        # The inverse guard: a strategy that sells early but forgot the flag
+        # would never be polled, and its positions would ride to resolution
+        # silently. Anything shipping `manage_exit` must also declare the flag.
+        for s in build_strategies():
+            if callable(getattr(s, 'manage_exit', None)):
+                assert getattr(s, 'manages_exits', False) is True, (
+                    '%s ships manage_exit but does not declare manages_exits'
+                    % s.strategy_name)
 
     def test_it_is_paper_mode_and_says_so(self):
         s = FairValueArb()

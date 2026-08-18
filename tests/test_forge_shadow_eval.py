@@ -23,6 +23,7 @@ if ROOT not in sys.path:
 
 from agents import forge  # noqa: E402
 from agents import forge_shadow_eval as se  # noqa: E402
+from tests import skip_reason_ast as sra  # noqa: E402
 
 
 SIGNALS_DDL = """
@@ -175,6 +176,255 @@ def test_null_skip_reason_is_counted(tmp_path):
     _build_db(path, signals=[('PM_null', 0, None)] * 40)
     result = se.evaluate(path, str(tmp_path / 'gone.csv'))
     assert result['gaps']['unknown_skip_reasons'] == {'<null_skip_reason>': 40}
+
+
+# ---------------------------------------------------------------------------
+# The 2026-08-18 classification gap
+#
+# The table went stale when concurrent sessions added strategies without
+# adding their reasons, and 18.1% of all skips fell through to UNKNOWN. These
+# tests pin the repair AND the mechanism that let it happen.
+# ---------------------------------------------------------------------------
+
+def test_no_skip_reason_is_defined_twice():
+    """A duplicate dict key is not a Python error - the later one silently
+    wins, and the earlier `missing_input` string is lost with no warning.
+    `no_market` was written twice and shadowed exactly this way. The dict
+    itself cannot show this after parsing, so the source is walked instead."""
+    import ast
+    src = open(os.path.join(ROOT, 'agents', 'forge_shadow_eval.py')).read()
+    keys = None
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.AnnAssign) and \
+                getattr(node.target, 'id', '') == 'SKIP_CLASSIFICATION':
+            keys = [k.value for k in node.value.keys]
+    assert keys, 'SKIP_CLASSIFICATION literal not found'
+    dupes = sorted({k for k in keys if keys.count(k) > 1})
+    assert dupes == [], f'skip reasons defined more than once: {dupes}'
+
+
+def test_every_skip_reason_the_strategies_emit_is_classified():
+    """The regression test for the gap itself.
+
+    Grepping for `decide('SKIP', ...)` is what went stale in the first place,
+    so this walks the AST of every strategy module and asserts the table covers
+    what the code can actually emit. A new strategy that adds a reason without
+    classifying it fails HERE, at 0 skips, instead of silently in the shadow
+    log at several thousand.
+
+    D-290: it now follows INDIRECTION too. Until 2026-08-18 this only saw
+    string literals, and seven call sites pass a variable, so sixteen reasons
+    were invisible and the suite was green over them by accident rather than
+    by coverage. `tests/skip_reason_ast.py` resolves those; the companion test
+    below is the one that makes an unfollowable site fail rather than vanish.
+    """
+    reasons, _prefixes, _unresolved = sra.skip_reason_sites()
+    assert reasons, 'no skip reasons resolved at all - the sweep is broken'
+
+    unclassified = {r: owners for r, owners in reasons.items()
+                    if se.classify_skip_reason(r)[0] == se.UNKNOWN}
+    assert unclassified == {}, (
+        'skip reasons emitted by strategies but missing from '
+        f'SKIP_CLASSIFICATION: {unclassified}')
+
+
+def test_no_skip_reason_argument_is_left_unresolved():
+    """D-290's load-bearing half.
+
+    Without this, Option A is just a bigger version of the same blind spot -
+    an expression the resolver cannot follow would contribute NOTHING to the
+    test above and the suite would stay green over it, exactly as it did over
+    the eight variable call sites for a day.
+
+    A failure here is not "the resolver is broken". It is "a call site was
+    written in a shape nobody can statically read", and the fix is either to
+    teach `skip_reason_ast.py` that shape or to pass a literal.
+    """
+    _reasons, _prefixes, unresolved = sra.skip_reason_sites()
+    assert unresolved == [], (
+        'decide(\'SKIP\', ...) arguments that could not be resolved. Each is '
+        'a reason nobody is checking is classified:\n  '
+        + '\n  '.join(repr(u) for u in unresolved))
+
+
+def test_the_resolver_actually_follows_the_variable_call_sites():
+    """The test above passes trivially if the resolver returns nothing.
+
+    So this pins the WORK: reasons that exist ONLY behind indirection must be
+    in the resolved set. Each one below was invisible to the literal-only
+    walk, and each is named here rather than counted, so deleting the rule
+    that resolves it fails with the reason's own name.
+    """
+    reasons, prefixes, _unresolved = sra.skip_reason_sites()
+
+    # near_liq_trigger.py: `decide('SKIP', feed.status)` - an ATTRIBUTE of a
+    # dataclass returned by a call, resolved through FeedRead(status=...).
+    assert 'hyperliquid_feed_stale' in reasons
+    assert 'hyperliquid_single_snapshot_only' in reasons
+    # `decide('SKIP', liq.reason)` in THREE modules - resolved through a
+    # nested `fail(reason)` helper into `NO_DATA_REASONS`.
+    for module in ('liq_cascade_chaser.py', 'small_liq_continuation.py',
+                   'near_liq_trigger.py'):
+        assert module in reasons['liquidation_feed_empty'], module
+    assert 'liquidation_history_too_short' in reasons
+    # grid_hedge.py: `decide('SKIP', implied_status)` - a local bound by
+    # TUPLE-UNPACKING a call, resolved through that function's returns.
+    assert reasons['implied_vol_undefined_at_the_money'] == ['grid_hedge.py']
+    assert reasons['implied_vol_sign_inconsistent'] == ['grid_hedge.py']
+    # weather_arb.py: `decide('SKIP', station_status)`, same shape.
+    assert 'resolution_station_ambiguous' in reasons
+    assert 'resolution_station_unknown' in reasons
+    # fair_value_arb.py: `'fair_value_' + (est.reason or 'unusable')` - a
+    # PREFIX family, claimed as a family rather than guessed at member by
+    # member, and the classifier has to handle the prefix.
+    assert prefixes == {'fair_value_': ['fair_value_arb.py']}
+    assert se.classify_skip_reason('fair_value_anything')[0] != se.UNKNOWN
+
+
+def test_every_classified_reason_is_still_emitted_by_something():
+    """D-290's reverse check: the table must not accumulate dead entries.
+
+    The forward test only ever grows the table. Nothing pushed back the other
+    way, so a reason deleted from a strategy would sit here forever, and the
+    next reader would take it as evidence that the code path exists.
+
+    Retirement is explicit, not silent: a reason no strategy emits any more
+    has to be named in `RETIRED_SKIP_REASONS`, which keeps it classifiable for
+    historical rows while stating that it is historical.
+    """
+    reasons, prefixes, _unresolved = sra.skip_reason_sites()
+    literals = sra.string_literals_in(('strategies', 'polymarket'),
+                                      ('engine', 'polymarket'))
+
+    dead = sorted(
+        key for key in se.SKIP_CLASSIFICATION
+        if key not in reasons
+        and key not in literals
+        and key not in se.RETIRED_SKIP_REASONS
+        and not any(key.startswith(p) for p in prefixes))
+    assert dead == [], (
+        'SKIP_CLASSIFICATION entries nothing can emit. Either the strategy '
+        'that emitted them is gone (move them to RETIRED_SKIP_REASONS) or '
+        'they were never right: ' + repr(dead))
+
+
+def test_a_retired_reason_that_comes_back_to_life_is_red():
+    """The other direction of the same check.
+
+    A live reason filed under "historical" is worse than an unclassified one:
+    unclassified surfaces in `unknown_skip_reasons` where somebody sees it,
+    while a mislabelled retirement reads as settled.
+    """
+    reasons, _prefixes, _unresolved = sra.skip_reason_sites()
+    resurrected = sorted(r for r in se.RETIRED_SKIP_REASONS if r in reasons)
+    assert resurrected == [], (
+        'reasons listed as RETIRED that a strategy still emits: '
+        + repr(resurrected))
+
+
+def test_no_classified_reason_looks_like_a_success_sentinel():
+    """Pins the resolver's one narrow filter.
+
+    It drops `'ok'` and `'ok_*'`, because those are what a producer function
+    returns when it SUCCEEDED and the guarded call site never passes them to
+    `decide`. If a real skip reason is ever named `ok_something`, that filter
+    would swallow it silently - so the naming rule is enforced here rather
+    than trusted.
+    """
+    swallowed = sorted(k for k in se.SKIP_CLASSIFICATION
+                       if sra.is_success_sentinel(k))
+    assert swallowed == [], (
+        'skip reasons named like a producer success sentinel; rename them or '
+        'the AST resolver will drop them: ' + repr(swallowed))
+
+
+@pytest.mark.parametrize('reason', [
+    'not_final_third_of_15m',
+    'too_late_for_leg1',
+    'leg2_ask_above_cap',
+    'leg1_ask_above_cap',
+    'leg2_deadline_passed_unpaired',
+    'ask_5m_above_cap',
+    'ask_15m_above_cap',
+    'edge_below_floor',
+])
+def test_evaluated_and_declined_reasons_are_genuine(reason):
+    """Each names a threshold that was COMPUTED from inputs that were present
+    and then not met. That is a measurement, thin but real."""
+    assert se.classify_skip_reason(reason)[0] == se.GENUINE
+
+
+def test_strike_inside_proxy_noise_floor_is_a_blocker_not_a_decline():
+    """The one reason in the batch that is NOT a genuine decline.
+
+    The strike is a MEASURED PROXY (Binance.US klines rebuilding the Chainlink
+    60s TWAP) with a known error distribution, and
+    STRIKE_PROXY_NOISE_FLOOR_BPS = 5.0 is the floor below which the signal is
+    inside our own instrument error. The strategy did not evaluate its edge and
+    decline; it was refused an input it could trust. Classing it GENUINE would
+    report ~19% of all skips as "looked and declined" - the exact inversion
+    convention 11 exists to prevent - and flips PM_corridor_collector and
+    PM_mid_price_continuation out of NOT_TESTED on live data.
+    """
+    cls, missing = se.classify_skip_reason('strike_inside_proxy_noise_floor')
+    assert cls == se.DATA_BLOCKER
+    assert missing, 'a blocker must name the input it is missing'
+
+
+def test_strike_noise_floor_keeps_a_strategy_not_tested(tmp_path):
+    path = str(tmp_path / 'x.db')
+    _build_db(path, signals=[
+        ('PM_strike', 0, 'strike_inside_proxy_noise_floor')] * 40)
+    gaps = se.evaluate(path, str(tmp_path / 'gone.csv'))['gaps']
+    assert [r['strategy'] for r in gaps['strategies_not_tested']] \
+        == ['PM_strike']
+    assert gaps['strategies_ran_no_entry'] == []
+
+
+@pytest.mark.parametrize('reason', [
+    'risk_gate: daily_loss_breaker: realized loss today =$30.08 > limit=$30.00',
+    'risk_gate: max_positions_per_market_side: 2 >= 2',
+    'risk_gate:anything_at_all',
+    'adapter: refused',
+])
+def test_gates_that_embed_their_own_numbers_are_sim_limit(reason):
+    """These carry a VARIABLE tail - the gate's own message, numbers included -
+    so they can never be dict keys: every distinct dollar amount would be its
+    own unclassified reason. Matched by prefix instead.
+
+    SIM_LIMIT and not GENUINE because the strategy had already DECIDED to
+    enter; our side refused. It never found out whether the market agreed.
+    """
+    assert se.classify_skip_reason(reason)[0] == se.SIM_LIMIT
+
+
+def test_risk_gate_blocked_strategy_is_not_tested(tmp_path):
+    path = str(tmp_path / 'x.db')
+    _build_db(path, signals=[
+        ('PM_gated', 0, 'risk_gate: daily_loss_breaker: $30.08 > $30.00')] * 40)
+    gaps = se.evaluate(path, str(tmp_path / 'gone.csv'))['gaps']
+    # It passed its own test and was stopped by us. Not "ran and found
+    # nothing".
+    assert [r['strategy'] for r in gaps['strategies_not_tested']] \
+        == ['PM_gated']
+
+
+def test_an_exact_entry_still_beats_a_prefix():
+    """Ordering guard: the prefix table is consulted only after the exact
+    table, so a specific reason can never be swallowed by a broad prefix."""
+    se.SKIP_CLASSIFICATION['risk_gate:specific_case'] = (se.GENUINE, '')
+    try:
+        assert se.classify_skip_reason(
+            'risk_gate:specific_case')[0] == se.GENUINE
+    finally:
+        del se.SKIP_CLASSIFICATION['risk_gate:specific_case']
+
+
+def test_an_unprefixed_novel_reason_is_still_unknown():
+    """The repair must not have turned the table into a catch-all: a reason
+    nobody has classified still has to surface as UNKNOWN."""
+    assert se.classify_skip_reason(
+        'gate_invented_next_week')[0] == se.UNKNOWN
 
 
 # ---------------------------------------------------------------------------
@@ -350,3 +600,204 @@ def test_attach_shadow_records_an_unreadable_db_rather_than_dropping_it():
                                     'error': 'no such database'})
     assert gaps['shadow'] is None
     assert gaps['shadow_error']['error'] == 'no such database'
+
+
+# ---------------------------------------------------------------------------
+# The resolver itself (D-290)
+#
+# `skip_reason_ast.py` is now the thing standing between a new strategy and an
+# unclassified reason. An untested guard is exactly what went stale the first
+# time, so these run it against synthetic modules where the right answer is
+# known by construction rather than by reading the real tree.
+# ---------------------------------------------------------------------------
+
+def _sweep(tmp_path, **modules):
+    """Write `name.py: source` under a fake root and resolve it."""
+    package = tmp_path / 'strategies' / 'polymarket'
+    package.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for name, source in sorted(modules.items()):
+        target = package / (name + '.py')
+        target.write_text(source)
+        paths.append(str(target))
+    return sra.skip_reason_sites(paths=paths, index=sra.Index(str(tmp_path)))
+
+
+def test_resolver_reads_a_plain_literal(tmp_path):
+    reasons, _p, unresolved = _sweep(tmp_path, s="""
+def f(ctx):
+    return decide('SKIP', 'a_literal')
+""")
+    assert unresolved == []
+    assert reasons == {'a_literal': ['s.py']}
+
+
+def test_resolver_takes_both_branches_of_an_ifexp(tmp_path):
+    """Both are reachable. Taking one is how half a family goes missing."""
+    reasons, _p, _u = _sweep(tmp_path, s="""
+def f(ctx):
+    return decide('SKIP', 'left' if ctx else 'right')
+""")
+    assert sorted(reasons) == ['left', 'right']
+
+
+def test_resolver_expands_a_module_level_tuple(tmp_path):
+    reasons, _p, unresolved = _sweep(tmp_path, s="""
+REASONS = ('one', 'two')
+def f(ctx):
+    reason = REASONS
+    return decide('SKIP', reason)
+""")
+    assert unresolved == []
+    assert sorted(reasons) == ['one', 'two']
+
+
+def test_one_unfollowable_branch_makes_the_whole_expression_unresolved(tmp_path):
+    """Partial resolution is the dangerous answer.
+
+    `REASONS[0] if ctx else 'two'` would resolve to {'two'} under a rule that
+    kept what it could - and the site would then look COVERED while one of
+    its two outcomes went unchecked. Reporting the whole site is the honest
+    result: half a resolution is not a resolution.
+    """
+    reasons, _p, unresolved = _sweep(tmp_path, s="""
+REASONS = ('one', 'two')
+def f(ctx):
+    return decide('SKIP', REASONS[0] if ctx else 'two')
+""")
+    assert reasons == {}
+    assert len(unresolved) == 1
+
+
+def test_resolver_follows_a_constant_imported_from_a_sibling(tmp_path):
+    """Convention 20's cost: shared reasons live in ONE module, so the
+    resolver has to cross module boundaries or Option A buys nothing."""
+    reasons, _p, unresolved = _sweep(
+        tmp_path,
+        feed="NO_DATA = ('feed_empty', 'feed_stale')\n",
+        s="""
+from strategies.polymarket.feed import NO_DATA
+LOCAL = tuple(NO_DATA)
+def f(ctx):
+    reason = LOCAL
+    return decide('SKIP', reason)
+""")
+    assert unresolved == []
+    assert sorted(reasons) == ['feed_empty', 'feed_stale']
+
+
+def test_resolver_follows_a_tuple_unpacked_local(tmp_path):
+    """`_, status = producer()` - grid_hedge and weather_arb's shape."""
+    reasons, _p, unresolved = _sweep(tmp_path, s="""
+def producer(x):
+    if x:
+        return None, 'undefined_here'
+    if x is None:
+        return None, 'inconsistent_here'
+    return 1.0, 'ok'
+
+def f(ctx):
+    value, status = producer(ctx)
+    if value is None:
+        return decide('SKIP', status)
+""")
+    assert unresolved == []
+    # 'ok' is the producer's SUCCESS value and is filtered, not classified.
+    assert sorted(reasons) == ['inconsistent_here', 'undefined_here']
+
+
+def test_resolver_follows_an_attribute_through_a_nested_helper(tmp_path):
+    """`liq.reason` - the liquidation feed's shape, and the hardest one.
+
+    The strings never appear near the call site: they go into a nested
+    `fail(reason)` helper, out through a dataclass keyword, and only then
+    into `decide`.
+    """
+    reasons, _p, unresolved = _sweep(tmp_path, s="""
+class Window:
+    pass
+
+def read_window(db):
+    def fail(reason, **kw):
+        return Window(ok=False, reason=reason, **kw)
+    if db is None:
+        return fail('table_missing')
+    if db == 0:
+        return fail('feed_empty')
+    return Window(ok=True, reason=None)
+
+def f(ctx):
+    window = read_window(ctx)
+    if not window.ok:
+        return decide('SKIP', window.reason)
+""")
+    assert unresolved == []
+    # `reason=None` on the success path is dropped, not reported as a reason.
+    assert sorted(reasons) == ['feed_empty', 'table_missing']
+
+
+def test_resolver_reports_a_prefix_family_rather_than_guessing_members(tmp_path):
+    reasons, prefixes, unresolved = _sweep(tmp_path, s="""
+def f(ctx):
+    return decide('SKIP', 'family_' + ctx.reason)
+""")
+    assert unresolved == []
+    assert reasons == {}
+    assert prefixes == {'family_': ['s.py']}
+
+
+def test_an_unfollowable_expression_is_reported_loudly_with_its_site(tmp_path):
+    """THE clause D-290 calls load-bearing.
+
+    A resolver that quietly returned nothing here would leave the suite green
+    over an unclassified reason - the precise failure it was written to end.
+    """
+    _r, _p, unresolved = _sweep(tmp_path, s="""
+def f(ctx):
+    return decide('SKIP', ctx.some_dict[ctx.key])
+""")
+    assert len(unresolved) == 1
+    site = unresolved[0]
+    assert site.module == 's.py'
+    assert site.lineno == 3
+    assert 'some_dict' in site.expr
+    # The report has to be actionable on its own: file, line, expression.
+    assert 's.py:3' in repr(site)
+
+
+def test_a_runtime_built_reason_is_unresolved_not_silently_empty(tmp_path):
+    """An f-string reads like a literal and is not one."""
+    _r, _p, unresolved = _sweep(tmp_path, s="""
+def f(ctx):
+    return decide('SKIP', f'gate_{ctx.name}')
+""")
+    assert len(unresolved) == 1
+
+
+def test_a_loop_variable_is_unresolved_rather_than_mistaken_for_a_constant(tmp_path):
+    """A local shadowing a module constant must not inherit its values."""
+    _r, _p, unresolved = _sweep(tmp_path, s="""
+REASONS = ('one', 'two')
+def f(ctx):
+    for REASONS in ctx.things:
+        return decide('SKIP', REASONS)
+""")
+    assert len(unresolved) == 1
+
+
+def test_the_resolver_terminates_on_mutual_recursion(tmp_path):
+    """A cycle must come back unresolved, not hang the suite."""
+    _r, _p, unresolved = _sweep(tmp_path, s="""
+def a(x):
+    value, status = b(x)
+    return value, status
+
+def b(x):
+    value, status = a(x)
+    return value, status
+
+def f(ctx):
+    value, status = a(ctx)
+    return decide('SKIP', status)
+""")
+    assert len(unresolved) == 1

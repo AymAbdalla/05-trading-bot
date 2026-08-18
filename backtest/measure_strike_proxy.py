@@ -28,13 +28,24 @@ Windows the oracle has not resolved are DROPPED and counted, never inferred
 from price (convention 11). An unresolved window is not a wrong prediction and
 must not be scored as one.
 
+MULTI-ASSET (D-285)
+-------------------
+The noise floor is ONE module constant applied to btc, eth and sol on the
+argument that the instrument is identical (all three are `*-5m-twap-60`). That
+argument is about the settlement mechanic, not about the proxy's error, and the
+error is a property of the KLINE feed and the underlying's tick behaviour, which
+are not identical. `--asset` measures each one independently. Nothing is pooled
+across assets: a combined headline would average three different distributions
+the same way the 15.1% BTC headline averaged a coin flip and a 96%.
+
 USAGE
     env -u PYTHONPATH python3 backtest/measure_strike_proxy.py --windows 500
-    env -u PYTHONPATH python3 backtest/measure_strike_proxy.py --json out.json
+    env -u PYTHONPATH python3 backtest/measure_strike_proxy.py --asset eth
+    env -u PYTHONPATH python3 backtest/measure_strike_proxy.py --asset all --json out.json
 
 EXIT CODES
     0  measurement completed (whatever it found)
-    2  too few windows scored to say anything (see --min-windows)
+    2  too few windows scored to say anything, on ANY requested asset
 """
 import argparse
 import json
@@ -52,8 +63,9 @@ import requests
 # first project import. Matches the pattern in build_graveyard.py.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from engine.polymarket.assets import SHADOW_ASSETS, get_asset
 from engine.polymarket.client import PolymarketClient
-from engine.polymarket.markets import (get_btc_updown_5m_checked,
+from engine.polymarket.markets import (get_updown_5m_checked,
                                        current_window_ts)
 from engine.polymarket.strike import (KLINES_URL, TWAP_LOOKBACK_SEC, _ohlc4,
                                       STRIKE_PROXY_NOISE_FLOOR_BPS)
@@ -120,9 +132,30 @@ def fetch_klines(session: requests.Session, start_ts: int, end_ts: int,
     return bars
 
 
-def measure(windows: int = 120, symbol: str = 'BTCUSDT',
+def measure(windows: int = 120, asset: str = 'btc',
+            symbol: Optional[str] = None,
             client: Optional[PolymarketClient] = None) -> dict:
-    """Replay `windows` completed 5m windows and score the proxy on each."""
+    """Replay `windows` completed 5m windows and score the proxy on each.
+
+    `asset` drives BOTH sides of the comparison through the one registry
+    (`engine.polymarket.assets`): the Gamma slug prefix the oracle is read from
+    and the Binance.US symbol the proxy is rebuilt from. They must agree or this
+    scores one instrument's proxy against another instrument's truth and reports
+    the mismatch as proxy error. `symbol` overrides the registry's exchange
+    symbol and is for probing an unregistered listing, not for normal use.
+
+    The noise floor this measurement exists to justify is a SINGLE module
+    constant applied to every asset. That is defensible only if each asset's
+    error is measured, which is what `asset` is for (D-285). It now IS: every
+    gated row carries `noise_floor_source: 'btc'` (where the constant came
+    from) alongside `noise_floor_measured_error_by_asset` (what all three
+    assets actually do at it), and this script is the only thing that can
+    change those numbers. `engine.polymarket.strike.NOISE_FLOOR_ERROR_BY_ASSET`
+    is where they live; re-running this rewrites the JSON, and the test that
+    compares the two goes red until the constant is updated to match.
+    """
+    row = get_asset(asset)              # raises on an unregistered asset key
+    symbol = symbol or row.binance_symbol
     client = client or PolymarketClient()
     now_window = current_window_ts()
     # +2 windows of slack so the TWAP lookback at the oldest window still has
@@ -140,7 +173,7 @@ def measure(windows: int = 120, symbol: str = 'BTCUSDT',
 
     for i in range(windows, 0, -1):
         ts = now_window - i * WINDOW_DURATION
-        market, status = get_btc_updown_5m_checked(client, ts)
+        market, status = get_updown_5m_checked(client, row.key, ts)
         if market is None:
             drops['not_listed' if status == 'not_found' else status] += 1
             continue
@@ -206,6 +239,9 @@ def measure(windows: int = 120, symbol: str = 'BTCUSDT',
     total_dis = sum(1 for r in scored if not r['agree'])
     return {
         'measured_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+        'asset': row.key,
+        'asset_label': row.label,
+        'slug_prefix': '{}-updown-5m'.format(row.key),
         'symbol': symbol,
         'twap_lookback_sec': TWAP_LOOKBACK_SEC,
         'configured_noise_floor_bps': STRIKE_PROXY_NOISE_FLOOR_BPS,
@@ -225,6 +261,8 @@ def render(result: dict) -> str:
     lines.append('PROXY STRIKE vs GAMMA ORACLE')
     lines.append('=' * 66)
     lines.append(f"  measured at    : {result['measured_at']}")
+    lines.append(f"  asset          : {result.get('asset')} ({result.get('asset_label')})"
+                 f"   slugs {result.get('slug_prefix')}-*")
     lines.append(f"  symbol         : {result['symbol']}  (TWAP {result['twap_lookback_sec']}s)")
     lines.append(f"  windows scored : {result['windows_scored']} of {result['windows_requested']}")
     lines.append(f"  drops          : {result['drops'] or 'none'}")
@@ -251,6 +289,11 @@ def render(result: dict) -> str:
                      f" {match['rate_pct']}% on n={match['n']}")
         if match['n'] < 100:
             lines.append('  WARNING: n < 100. Convention 7 - this is a shrug, not a verdict.')
+        if result.get('asset') not in (None, 'btc'):
+            lines.append(f"  NOTE: STRIKE_PROXY_NOISE_FLOOR_BPS was measured on BTC and is"
+                         f" applied to {result['asset']} unchanged. The rate above is"
+                         f" {result['asset']}'s OWN error at that floor. Changing the"
+                         ' constant needs a ruling, not this script.')
     else:
         lines.append(f"  configured noise floor {floor:g} bps was NOT scored"
                      ' (no windows at or above it). NOT_TESTED.')
@@ -263,7 +306,13 @@ def main(argv=None) -> int:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--windows', type=int, default=120,
                    help='completed 5m windows to replay (default 120)')
-    p.add_argument('--symbol', default='BTCUSDT')
+    p.add_argument('--asset', default='btc',
+                   help="asset key from the registry, or 'all' for every "
+                        "SHADOW_ASSETS entry measured INDEPENDENTLY "
+                        "(default btc; registered: %s)" % ', '.join(SHADOW_ASSETS))
+    p.add_argument('--symbol', default=None,
+                   help='override the registry exchange symbol (rare; the '
+                        'registry is the source of truth)')
     p.add_argument('--min-windows', type=int, default=20,
                    help='exit 2 if fewer than this many windows scored')
     p.add_argument('--json', dest='json_path',
@@ -271,20 +320,44 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
-    result = measure(windows=args.windows, symbol=args.symbol)
-    print(render(result))
+
+    if args.asset.lower() == 'all':
+        assets = list(SHADOW_ASSETS)
+        if args.symbol:
+            p.error('--symbol overrides one exchange symbol and cannot be '
+                    'combined with --asset all')
+    else:
+        assets = [args.asset.lower()]
+
+    results = []
+    for key in assets:
+        # Each asset is measured INDEPENDENTLY and reported separately. There
+        # is deliberately no pooled headline across assets: pooling is exactly
+        # what made the 15.1% BTC figure unusable (it averaged a coin flip and
+        # a 96%), and pooling three underlyings would repeat that at a larger
+        # scale while looking more authoritative.
+        result = measure(windows=args.windows, asset=key, symbol=args.symbol)
+        results.append(result)
+        print(render(result))
 
     if args.json_path:
+        payload = results[0] if len(results) == 1 else {'by_asset': results}
         with open(args.json_path, 'w') as f:
             # allow_nan=False: a non-finite must fail at write time, not turn
             # into an `Infinity` token that json.loads accepts and every other
             # parser rejects (convention 19).
-            json.dump(result, f, indent=2, allow_nan=False)
+            json.dump(payload, f, indent=2, allow_nan=False)
         print(f'wrote {args.json_path}')
 
-    if result['windows_scored'] < args.min_windows:
-        print(f"\nNOT_TESTED: only {result['windows_scored']} windows scored,"
-              f" need {args.min_windows}. This is 'could not run', not 'no error'.")
+    # Exit 2 if ANY requested asset came up short. A run where SOL scored 3
+    # windows and BTC scored 200 is not a successful run; reporting 0 because
+    # one asset was fine would bury the NOT_TESTED (convention 11).
+    short = [r for r in results if r['windows_scored'] < args.min_windows]
+    if short:
+        for r in short:
+            print(f"\nNOT_TESTED ({r['asset']}): only {r['windows_scored']} windows"
+                  f" scored, need {args.min_windows}. This is 'could not run',"
+                  " not 'no error'.")
         return 2
     return 0
 

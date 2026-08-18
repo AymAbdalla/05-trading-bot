@@ -139,6 +139,33 @@ polymarket:
   min_shares: 5                  # exchange minimum order size, in shares
   price_tick: 0.01               # CLOB price increment
 
+  # -- strike proxy noise floor (engine/polymarket/strike.py) --
+  # The gate is `abs(lead_bps) < floor -> skip`, so a BIGGER number here
+  # rejects MORE windows and a SMALLER one admits more. Deleting a key falls
+  # back to NOISE_FLOOR_BPS_BY_ASSET, then to STRIKE_PROXY_NOISE_FLOOR_BPS.
+  #
+  # Lowered from 5.0 to 1.0 for shadow mode on 2026-08-18. Measured from the
+  # 10,276 rows this gate has actually rejected: at 5.0 it admitted 0.0% of
+  # them, at 1.0 it admits 50.8% on btc and 56.6% on eth. 1.0 is the lowest
+  # floor still OUTSIDE the measured coin-flip band - below 1 bp the proxy
+  # disagrees with the oracle 42.2% of the time, so firing there samples a
+  # random number generator rather than testing a strategy (convention 11).
+  #
+  # sol is 1.0 too, and it will barely move: 95.3% of sol's blocked windows
+  # have lead_bps EXACTLY 0.0 because one $0.01 tick at ~$75.9 IS 1.318 bps
+  # and a quiet 1m bar is perfectly flat. sol's blocker is tick quantization,
+  # not the floor, and no value here fixes it.
+  #
+  # NEEDS A D-NUMBER. This loosens a gate that was DERIVED from a measurement,
+  # which convention 17 says is the exact shape of a false positive if a win
+  # rate improves afterwards. Compare against the pre-change baseline
+  # deliberately, do not read an improvement as edge.
+  strike_proxy:
+    noise_floor_bps_by_asset:
+      btc: 1.0
+      eth: 1.0
+      sol: 1.0
+
   # -- risk gate (engine/polymarket/risk_gate.py) --
   # On a binary the premium IS the risk: a share pays exactly $1.00 or exactly
   # $0.00, so shares * premium is simultaneously the notional and the maximum
@@ -150,7 +177,8 @@ polymarket:
     max_concurrent_positions: 5             # max open Polymarket positions at once
     max_positions_per_market_side: 1        # stops a strategy averaging into the same side of the same market
     max_positions_per_market: 2             # 2 so a deliberate Up+Down hedge stays expressible; 1 would ban hedging
-    daily_loss_limit_usdc: 30.0             # realized resolution loss since UTC midnight that halts new entries (3x one trade)
+    daily_loss_limit_usdc: 0.0              # DISABLED in shadow: let strategies run to zero. Shadow is for learning, not capital preservation.
+    portfolio_daily_loss_limit_usdc: 0.0    # DISABLED in shadow: no portfolio-wide stop. If the account blows up, log it, restart, keep stats.
     max_exposure_per_market_type_usdc: 40.0 # max premium at risk in any one market type (btc_5m, btc_15m, event, ...)
     market_type_exposure_overrides: {}      # per-type tighter caps, e.g. {event: 20.0}. Empty = the flat cap applies to all.
     max_correlated_exposure_usdc: 50.0      # max premium across one correlated group in one direction (BTC 5m Up + BTC 15m Up are ONE bet)

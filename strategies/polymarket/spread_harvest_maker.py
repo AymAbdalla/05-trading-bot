@@ -285,9 +285,22 @@ class SpreadHarvestMaker(PolymarketStrategy):
                 round(min(mid_up, mid_down) / total, 4) if total > 0 else None)
 
         if dog is None:
-            return decide('SKIP',
-                          'no_cushion_data' if source == 'unavailable'
-                          else 'no_underdog', **feats)
+            # Three causes, three names. `no_underdog` used to absorb the last
+            # two and convention 20 says two drop causes never share one
+            # number. The literals stay at the call site rather than riding out
+            # of `_underdog` in a variable, because the classification guard
+            # walks the AST for `decide('SKIP', <literal>)` and a variable is
+            # invisible to it.
+            if source == 'unavailable':
+                return decide('SKIP', 'no_cushion_data', **feats)
+            if mid_up is None or mid_down is None:
+                # A missing input. The book was one-sided or absent, so no
+                # midpoint could be computed - nothing was evaluated.
+                return decide('SKIP', 'no_book_midpoint', **feats)
+            # Both midpoints present and exactly equal. The book WAS observed
+            # and the market is genuinely tied, so there is no underdog to
+            # name. That is a market condition, not a missing input.
+            return decide('SKIP', 'book_implied_exact_tie', **feats)
         if source == 'cushion_atr' and coa is not None and coa > self.coa_max:
             # Not a coin flip. His gate, unchanged.
             return decide('SKIP', 'not_a_coin_flip', **feats)
@@ -372,8 +385,12 @@ class SpreadHarvestMaker(PolymarketStrategy):
             return None, 'unavailable', None
         if mid_up is None or mid_down is None:
             # A one-sided book has no midpoint, and an absent bid is not a bid
-            # of zero. Without both mids there is no underdog to identify.
+            # of zero. Without both mids there is no underdog to identify. The
+            # caller re-reads this same condition to name the skip
+            # `no_book_midpoint` (a missing input).
             return None, 'book_implied', None
         if mid_up == mid_down:
+            # An exact tie. Both mids were present, so this one is a market
+            # condition and the caller names it `book_implied_exact_tie`.
             return None, 'book_implied', None
         return ('Down' if mid_down < mid_up else 'Up'), 'book_implied', None

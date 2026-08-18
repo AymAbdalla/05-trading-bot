@@ -4,6 +4,7 @@ The point of these is not that the arithmetic works. It is that the module
 cannot quietly degrade into the thing the previous session refused to build:
 spot substituted for a Chainlink TWAP with no record that it happened.
 """
+import json
 import math
 import sys
 import os
@@ -12,7 +13,9 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from engine.polymarket.strike import (STRIKE_PROXY_NOISE_FLOOR_BPS,
+from engine.polymarket.strike import (NOISE_FLOOR_ERROR_BY_ASSET,
+                                      NOISE_FLOOR_SOURCE_ASSET,
+                                      STRIKE_PROXY_NOISE_FLOOR_BPS,
                                       TWAP_LOOKBACK_SEC, StrikeProxy, _ohlc4,
                                       is_inside_noise_floor)
 
@@ -188,3 +191,201 @@ def test_floor_is_at_or_above_where_the_proxy_stops_being_a_coin_flip():
     A floor at or below 2 would be trading inside known noise (convention 17).
     """
     assert STRIKE_PROXY_NOISE_FLOOR_BPS >= 3.0
+
+
+def test_the_per_asset_error_matches_the_measurement():
+    """The hardcoded per-asset error rates must not drift from the harness.
+
+    `NOISE_FLOOR_ERROR_BY_ASSET` is stamped onto every row the strike gate
+    rejects, so it is a claim the logs carry forever. Convention 17: it is a
+    hardcoded number and therefore an assumption with an expiry date. This
+    re-reads `research/strike_proxy_by_asset_500w.json` - the output of
+    `backtest/measure_strike_proxy.py`, the named harness - and fails if the
+    constant and the measurement ever disagree. It must read the file the
+    constant is SOURCED from, or it pins the constant to a measurement nobody
+    is using and goes green on a stale number.
+
+    Re-running the harness is what makes this red. That is the point: the
+    constant is then updated deliberately rather than silently outliving the
+    numbers it was derived from.
+    """
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        'research', 'strike_proxy_by_asset_500w.json')
+    if not os.path.exists(path):
+        pytest.skip('measurement not present: %s' % path)
+    with open(path) as fh:
+        measured = json.load(fh)
+
+    by_asset = {}
+    for row in measured['by_asset']:
+        at_floor = [c for c in row['cumulative']
+                    if c['threshold_bps'] == STRIKE_PROXY_NOISE_FLOOR_BPS]
+        assert len(at_floor) == 1, (row['asset'], row['cumulative'])
+        # The JSON is a percent; the constant is a fraction. Two units for one
+        # quantity is exactly how a 15.8% becomes a 0.158% in a report.
+        by_asset[row['asset']] = round(at_floor[0]['rate_pct'] / 100.0, 4)
+
+    assert by_asset == NOISE_FLOOR_ERROR_BY_ASSET, (
+        'constant %r has drifted from %s (%r) - re-derive it, do not edit '
+        'the test' % (NOISE_FLOOR_ERROR_BY_ASSET, path, by_asset))
+
+
+def test_the_floor_is_sourced_from_an_asset_that_was_actually_measured():
+    """`noise_floor_source` names where the constant came from, not a label."""
+    assert NOISE_FLOOR_SOURCE_ASSET in NOISE_FLOOR_ERROR_BY_ASSET
+    # And it must be the asset with the LOWEST measured error, because that is
+    # the honest reading of "inherited from BTC": every other asset is being
+    # trusted on evidence gathered somewhere it behaves better. If that ever
+    # stops being true the inheritance argument has inverted.
+    best = min(NOISE_FLOOR_ERROR_BY_ASSET,
+               key=lambda a: NOISE_FLOOR_ERROR_BY_ASSET[a])
+    assert NOISE_FLOOR_SOURCE_ASSET == best, NOISE_FLOOR_ERROR_BY_ASSET
+
+
+# ---------------------------------------------------------------------------
+# D-297: the per-asset error as a SCALAR on the row, not just as a dict
+# ---------------------------------------------------------------------------
+
+def test_error_at_floor_pct_is_a_percent_matching_the_constant():
+    """The row field is a PERCENT; the constant is a FRACTION.
+
+    Two units for one quantity is exactly how a 15.8% becomes a 0.158% three
+    files downstream, so the conversion has one owner and this pins it.
+    """
+    from engine.polymarket.strike import error_at_floor_pct_for
+    for asset, fraction in NOISE_FLOOR_ERROR_BY_ASSET.items():
+        assert error_at_floor_pct_for(asset) == round(fraction * 100.0, 1)
+    assert error_at_floor_pct_for('btc') == 5.1
+    assert error_at_floor_pct_for('eth') == 9.3
+    assert error_at_floor_pct_for('sol') == 15.8
+
+
+def test_an_unmeasured_asset_reads_as_unknown_never_as_zero():
+    """The convention 11 shape at the level of one field.
+
+    A fourth asset added to SHADOW_ASSETS without being measured must not
+    stamp 0.0, which reads as a PERFECT proxy - the best possible number
+    produced by the total absence of evidence.
+    """
+    from engine.polymarket.strike import error_at_floor_pct_for
+    for unmeasured in ('doge', 'DOGE', '', None):
+        assert error_at_floor_pct_for(unmeasured) is None
+
+
+def test_the_asset_lookup_is_case_insensitive():
+    """Slugs are lowercase, `assets.py` labels are not. One spelling of the
+    asset must not silently become an unmeasured one."""
+    from engine.polymarket.strike import error_at_floor_pct_for
+    assert error_at_floor_pct_for('BTC') == error_at_floor_pct_for('btc')
+
+
+def test_the_shadow_loop_stamps_the_scalar_on_every_gated_row():
+    """Convention 22: a claim in a comment is not a wiring test.
+
+    D-297 is only delivered if the number reaches the ROW. The gate is deep
+    inside a cycle, so this asserts on the source: the field name, the
+    unavailable flag and the helper must all be at the gate site.
+    """
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        'engine', 'polymarket', 'shadow_loop.py')
+    src = open(path).read()
+    assert 'strike_proxy_error_at_floor_pct=error_pct' in src
+    assert 'error_at_floor_pct_for(row_asset)' in src
+    assert 'ERROR_UNAVAILABLE_FLAG' in src
+
+
+# ---------------------------------------------------------------------------
+# D-297, second half: the SAMPLE behind each of those percentages
+# ---------------------------------------------------------------------------
+
+def test_the_per_asset_sample_size_matches_the_measurement():
+    """`n` drifts from the harness exactly as easily as the rate does.
+
+    Same construction as the rate drift test above and for the same reason:
+    re-running `backtest/measure_strike_proxy.py` must make this red rather
+    than silently leaving a 220-window `n` stamped on rows measured over 500.
+    That is not hypothetical any more - it is what the 500w repoint did, and
+    this test is what would have caught the `n` had it been left behind. It
+    reads the same file as the rate drift test, by construction: a rate and an
+    `n` sourced from two different samples is the exact defect D-297 exists to
+    prevent.
+    """
+    from engine.polymarket.strike import NOISE_FLOOR_ERROR_N_BY_ASSET
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        'research', 'strike_proxy_by_asset_500w.json')
+    if not os.path.exists(path):
+        pytest.skip('measurement not present: %s' % path)
+    with open(path) as fh:
+        measured = json.load(fh)
+
+    n_by_asset = {}
+    for row in measured['by_asset']:
+        at_floor = [c for c in row['cumulative']
+                    if c['threshold_bps'] == STRIKE_PROXY_NOISE_FLOOR_BPS]
+        assert len(at_floor) == 1, (row['asset'], row['cumulative'])
+        n_by_asset[row['asset']] = at_floor[0]['n']
+
+    assert n_by_asset == NOISE_FLOOR_ERROR_N_BY_ASSET, (
+        'constant %r has drifted from %s (%r) - re-derive it, do not edit '
+        'the test' % (NOISE_FLOOR_ERROR_N_BY_ASSET, path, n_by_asset))
+
+
+def test_every_rate_has_a_sample_size():
+    """A percentage with no `n` beside it is a verdict pretending to be one.
+
+    The two dicts must cover the same assets. A rate added without its sample
+    would publish the exact claim D-297 exists to qualify.
+    """
+    from engine.polymarket.strike import NOISE_FLOOR_ERROR_N_BY_ASSET
+    assert set(NOISE_FLOOR_ERROR_N_BY_ASSET) == set(NOISE_FLOOR_ERROR_BY_ASSET)
+
+
+def test_low_sample_is_derived_from_n_not_asserted_per_asset():
+    """Convention 7 applied by arithmetic, so it cannot be wrong about who.
+
+    D-297 names SOL, and at 220 windows the measurement said BTC was thinner
+    still (n=75 vs 84) with only ETH (n=106) clearing the threshold. At 500
+    windows all three clear it and the flag is False everywhere. Hardcoding
+    "sol is the low sample one" would have shipped the first error and then
+    survived the re-measurement that fixed it; deriving from `n` cannot do
+    either.
+    """
+    from engine.polymarket.strike import (LOW_SAMPLE_N,
+                                          NOISE_FLOOR_ERROR_N_BY_ASSET,
+                                          error_sample_at_floor_for)
+    assert LOW_SAMPLE_N == 100
+    for asset, n in NOISE_FLOOR_ERROR_N_BY_ASSET.items():
+        got_n, low = error_sample_at_floor_for(asset)
+        assert got_n == n
+        assert low is (n < LOW_SAMPLE_N)
+    assert error_sample_at_floor_for('sol') == (196, False)
+    assert error_sample_at_floor_for('btc') == (175, False)
+    assert error_sample_at_floor_for('eth') == (248, False)
+
+
+def test_an_unmeasured_asset_has_no_sample_and_no_flag():
+    """Unknown is not "well sampled" and it is not "poorly sampled" either.
+
+    `False` here would read as "we checked and the evidence is solid", which
+    is the same convention 11 inversion a 0.0% rate would be.
+    """
+    from engine.polymarket.strike import error_sample_at_floor_for
+    for unmeasured in ('doge', 'DOGE', '', None):
+        assert error_sample_at_floor_for(unmeasured) == (None, None)
+    assert error_sample_at_floor_for('BTC') == error_sample_at_floor_for('btc')
+
+
+def test_the_shadow_loop_stamps_the_sample_on_every_gated_row():
+    """Convention 22 again: the percent reaching the row is only half of D-297.
+
+    Without `n` on the same row a reader compares a 5.1% built on 175 windows
+    against a 15.8% built on 196 as though they were the same kind of number.
+    """
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        'engine', 'polymarket', 'shadow_loop.py')
+    src = open(path).read()
+    assert 'strike_proxy_error_n=error_n' in src
+    assert 'strike_proxy_error_low_sample=error_low_sample' in src
+    assert 'error_sample_at_floor_for(row_asset)' in src

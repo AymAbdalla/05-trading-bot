@@ -239,9 +239,13 @@ def no_network(monkeypatch):
     same reason. Left un-stubbed, every test in this file would depend on what
     BTC did in the last sixty seconds.
     """
+    monkeypatch.setattr(shadow_loop, 'fetch_spot_checked',
+                        lambda client, asset='btc': {
+                            'spot': 60000.0, 'source': 'stub',
+                            'failures': {}, 'asset': asset})
     monkeypatch.setattr(shadow_loop, 'fetch_btc_spot_checked',
                         lambda client: {'spot': 60000.0, 'source': 'stub',
-                                        'failures': {}})
+                                        'failures': {}, 'asset': 'btc'})
     monkeypatch.setattr(shadow_loop, 'StrikeProxy',
                         lambda *a, **kw: OfflineStrikeProxy())
 
@@ -258,7 +262,20 @@ def entry_time():
 
 
 def build_loop(tmp_path, client, candles=None, **kw):
+    """A loop pinned to ONE asset unless the caller says otherwise.
+
+    `assets=('btc',)` is the default here on purpose. The loop's own default is
+    all three (btc, eth, sol), which is the right production behaviour, but the
+    FakeClient answers every slug with the same market - so three assets would
+    turn every exact count in this file into three times itself and the
+    assertions would stop describing what they were written to describe.
+
+    Multi-asset behaviour has its own tests at the bottom of this file. Keeping
+    the two apart means a change to the multi-asset wiring cannot quietly
+    weaken the single-asset accounting assertions.
+    """
     store = ShadowStore(str(tmp_path / 'trading.db'))
+    kw.setdefault('assets', ('btc',))
     loop = PolymarketShadowLoop(
         client=client, store=store,
         log_dir=str(tmp_path / 'paperlog'),
@@ -600,7 +617,7 @@ def test_a_raising_strategy_does_not_take_the_others_with_it(tmp_path,
     loop = PolymarketShadowLoop(
         client=client, store=store, log_dir=str(tmp_path / 'paperlog'),
         candle_source=lambda: streak_candles(entry_time), include_15m=False,
-        strategies=[Exploding(), StreakSnapper()])
+        assets=('btc',), strategies=[Exploding(), StreakSnapper()])
 
     loop.run_cycle(now=entry_time)
 
@@ -670,13 +687,26 @@ def test_strategies_blocked_by_missing_strike_are_named_not_silent(tmp_path,
     assert ctx.atr14 is not None      # the ATR half of the gate IS supplied
 
     loop.run_cycle(now=entry_time)
-    # BOTH strike-gated strategies, naming the SAME root cause. Before the
+    # EVERY strike-gated strategy, naming the SAME root cause. Before the
     # proxy, corridor_collector reported `no_lead_or_atr` instead, which read
     # as a second independent problem and was really this one downstream: the
     # ATR was always supplied, it was the lead that was missing, and the lead
     # needs a strike. Two symptom names for one cause is how a single fix looks
     # like two (convention 20 in reverse).
-    assert loop.counts['strategy:no_spot_or_strike'] == 2
+    #
+    # The expected count is DERIVED from the population rather than hardcoded.
+    # It was literally 2 when this was written; PM_grid_hedge arriving with
+    # `needs_strike = True` made it 3, and the hardcoded 2 then failed for a
+    # reason that had nothing to do with what this test checks. Deriving it is
+    # not a loosening: `== len(strike_gated) * len(loop.assets)` still asserts
+    # that every one of them names the reason and that NONE of them is silent,
+    # which is the whole point (convention 11).
+    strike_gated = [s.strategy_name for s in loop.strategies
+                    if getattr(s, 'needs_strike', False)]
+    assert len(strike_gated) >= 2, strike_gated
+    expected = len(strike_gated) * len(loop.assets)
+    assert loop.counts['strategy:no_spot_or_strike'] == expected, (
+        strike_gated, dict(loop.counts))
     assert loop.counts['strategy:no_lead_or_atr'] == 0
 
 
@@ -704,6 +734,55 @@ def test_a_lead_inside_the_proxy_noise_floor_is_its_own_reason(tmp_path,
     assert loop.counts['strategy:' + shadow_loop.SKIP_PROXY_NOISE] >= 1
     # and NOT as the missing-data reason, which would mean something else
     assert loop.counts['strategy:no_spot_or_strike'] == 0
+
+
+def test_the_gated_row_carries_where_the_floor_came_from_and_what_it_costs(
+        tmp_path, entry_time):
+    """A gated row must be self-describing about the floor that gated it.
+
+    The floor is ONE constant applied to btc, eth and sol. Its per-asset error
+    spans ~3x (5.1% / 9.3% / 15.8%), so a row that records only
+    `noise_floor_bps: 5.0` understates what it cost on SOL by a factor of three.
+    Convention 22: the docstring in `strike.py` saying so is not a wiring test,
+    this is. The old stamp was `noise_floor_measured_on`, which read as "this
+    row was measured on BTC" - it was not; the FLOOR was.
+    """
+    client = FakeClient(gamma_ok(), books_ok)
+    loop = build_loop(tmp_path, client, candles=streak_candles(entry_time),
+                      strike_proxy=OfflineStrikeProxy(strike=60000.0))
+    loop.run_cycle(now=entry_time)
+
+    gated = rows(loop, 'SELECT features_json FROM signals WHERE skip_reason = ?',
+                 (shadow_loop.SKIP_PROXY_NOISE,))
+    assert gated, 'no row was gated on proxy noise'
+
+    for row in gated:
+        feats = json.loads(row['features_json'])
+        # The floor on the row is the ACTIVE, PER-ASSET one, not the module
+        # default. These are different numbers since the shadow-mode
+        # loosening, and the row has to carry the one that actually gated it -
+        # a row stamped with a floor it was not judged against is worse than
+        # an unstamped row, because it looks checked.
+        assert feats['noise_floor_bps'] == shadow_loop.noise_floor_bps_for(
+            feats['asset'])
+        assert feats['noise_floor_default_bps'] == (
+            shadow_loop.STRIKE_PROXY_NOISE_FLOOR_BPS)
+        # The 5.0-bps measurement must NOT be reported as the error at a floor
+        # that is no longer 5.0. None here means UNMEASURED at the active
+        # floor, and that is the honest answer until it is re-measured.
+        if feats['noise_floor_bps'] == feats[
+                'noise_floor_error_measured_at_bps']:
+            assert feats['strike_proxy_error_at_active_floor_pct'] == feats[
+                'strike_proxy_error_at_floor_pct']
+        else:
+            assert feats['strike_proxy_error_at_active_floor_pct'] is None
+        assert feats['noise_floor_source'] == 'btc'
+        assert feats['noise_floor_measured_error_by_asset'] == {
+            'btc': 0.051, 'eth': 0.093, 'sol': 0.158}
+        assert feats['strike_is_proxy'] is True
+        # The rename must be complete, not additive. Two names for one field
+        # is how a downstream query silently reads zero rows.
+        assert 'noise_floor_measured_on' not in feats
 
 
 def test_a_lead_outside_the_noise_floor_reaches_the_strategy(tmp_path,
@@ -970,3 +1049,126 @@ def test_csv_decision_log_is_written(tmp_path, entry_time):
     # never logged twice (the adapter writes its own row and we do not add a
     # second).
     assert len(log_rows) == N_STRATEGIES
+
+
+# ---------------------------------------------------------------------------
+# Exit-management CAPABILITY DISPATCH
+# ---------------------------------------------------------------------------
+
+class FairValueLessManager:
+    """A manager that decides its own exits and publishes NO fair value.
+
+    A REAL strategy shape, not a mock of a broken one: an exit rule keyed on
+    price, time or its own tape needs no model estimate. `PM_dip_arb` was
+    exactly this until 2026-08-18 and may be again depending on which of the two
+    competing rationales is retired (see `DipArb.estimate` and the
+    `exit_no_fair_value_protocol` block in `shadow_loop.__init__`).
+
+    Declared here rather than reached for in `strategies.polymarket` on purpose:
+    the loop's dispatch is a property of the LOOP, and a test that stops
+    exercising it the moment a strategy gains an `estimate()` is not testing the
+    loop at all.
+    """
+
+    strategy_name = 'PM_test_no_fair_value'
+    manages_exits = True
+    needs_strike = False
+
+    def evaluate(self, ctx):
+        from strategies.polymarket.base import Decision
+        return Decision(action='SKIP', reason='test_stub',
+                        strategy=self.strategy_name,
+                        window_ts=ctx.window_ts,
+                        market_slug=getattr(ctx.market, 'slug', None),
+                        legs=[], features={})
+
+    def manage_exit(self, position, book, now=None, fair_value=None):
+        raise AssertionError('no position should exist in this test')
+
+
+def test_a_manager_without_a_fair_value_is_not_an_exception(tmp_path,
+                                                            entry_time):
+    """`manages_exits` does not imply `estimate()`, and the gap is not an error.
+
+    The loop used to call `estimate()` on every exit manager and swallow the
+    AttributeError into `health['exit_fair_value_exceptions']` - every cycle, on
+    every asset. Exits were never affected (`manage_exit` is called afterwards
+    with `fair_value=None` either way), but the COUNTER was: at three assets on
+    a 5s poll that is roughly 51,000 spurious increments a day, which buries any
+    genuine fair-value exception completely.
+
+    Convention 20: "has no estimate()" and "estimate() raised" must not share a
+    number. The first is a wiring fact, gauged once; the second stays a
+    per-occurrence counter.
+    """
+    from strategies.polymarket import StreakSnapper
+
+    client = FakeClient(gamma_ok(), books_ok)
+    loop = build_loop(tmp_path, client, candles=streak_candles(entry_time),
+                      strategies=[StreakSnapper(), FairValueLessManager()])
+
+    loop.run_cycle(now=entry_time)
+    loop.run_cycle(now=entry_time + 5)
+
+    assert loop.health['exit_fair_value_exceptions'] == 0, dict(loop.health)
+    assert ({name for _asset, name in loop.exit_no_fair_value_protocol}
+            == {'PM_test_no_fair_value'})
+    # A GAUGE over a set, recorded once at setup: two cycles must not double it.
+    assert loop.health['exit_no_fair_value_protocol'] == len(loop.assets)
+
+
+def test_the_real_strategy_set_logs_no_fair_value_exceptions(tmp_path,
+                                                             entry_time):
+    """The same claim against whatever `build_strategies()` actually returns.
+
+    The test above pins the loop's dispatch with a shape it controls. This one
+    is the live check: with the REAL strategy list, two clean cycles must move
+    `exit_fair_value_exceptions` not at all. It holds whether a manager has no
+    `estimate()` (dispatch skips it) or has a never-usable one (the try/except
+    passes), which is the point - it cannot be satisfied by the counter being
+    wrong in a new way.
+    """
+    client = FakeClient(gamma_ok(), books_ok)
+    loop = build_loop(tmp_path, client, candles=streak_candles(entry_time))
+
+    managers = [s for s in loop.strategies
+                if getattr(s, 'manages_exits', False)]
+    assert managers, 'no exit managers at all; this test would be vacuous'
+
+    loop.run_cycle(now=entry_time)
+    loop.run_cycle(now=entry_time + 5)
+
+    assert loop.health['exit_fair_value_exceptions'] == 0, dict(loop.health)
+    # The two populations partition the managers, per asset. Neither number is
+    # asserted to a constant - the split is what matters, not where it sits.
+    without = {s.strategy_name for s in managers if not hasattr(s, 'estimate')}
+    assert ({name for _asset, name in loop.exit_no_fair_value_protocol}
+            == without)
+
+
+def test_a_real_estimate_failure_is_still_caught_and_counted(tmp_path,
+                                                             entry_time):
+    """The fix must not be "we stopped counting".
+
+    Capability dispatch removes the calls that could only ever raise
+    AttributeError. It must leave the try/except intact for the strategies that
+    DO publish a fair value, because a genuine failure inside `estimate()` is a
+    real signal - and the whole reason the counter was worth cleaning up.
+    """
+    client = FakeClient(gamma_ok(), books_ok)
+    loop = build_loop(tmp_path, client, candles=streak_candles(entry_time))
+
+    broken = [s for s in loop.strategies
+              if getattr(s, 'manages_exits', False) and hasattr(s, 'estimate')]
+    assert broken
+
+    def _raise(_ctx):
+        raise RuntimeError('deliberate')
+
+    broken[0].estimate = _raise
+    loop.run_cycle(now=entry_time)
+
+    assert loop.health['exit_fair_value_exceptions'] == 1, dict(loop.health)
+    # And it did NOT leak into the wiring gauge.
+    assert (broken[0].strategy_name
+            not in {name for _asset, name in loop.exit_no_fair_value_protocol})

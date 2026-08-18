@@ -29,9 +29,23 @@ from engine.polymarket.types import Market, Outcome, safe_float
 
 logger = logging.getLogger(__name__)
 
-# BTC Up/Down 5-minute markets are slugged by their unix window-open second.
-BTC_UPDOWN_5M_DURATION = 300
-BTC_UPDOWN_5M_SLUG = 'btc-updown-5m-{ts}'
+# Crypto Up/Down 5-minute markets are slugged by their unix window-open second,
+# prefixed by the lowercase ticker: `btc-updown-5m-{ts}`, `eth-updown-5m-{ts}`,
+# `sol-updown-5m-{ts}`. Verified live on all three, 2026-08-18.
+UPDOWN_5M_DURATION = 300
+UPDOWN_5M_SLUG = '{asset}-updown-5m-{ts}'
+
+# Up/Down markets also exist at 15 minutes on every registered asset, same
+# `{asset}-updown-15m-{ts}` shape. Verified live on btc, eth and sol.
+# There is NO 1-hour market: `btc-updown-1h-{ts}` returns empty.
+UPDOWN_15M_DURATION = 900
+UPDOWN_15M_SLUG = '{asset}-updown-15m-{ts}'
+
+# The BTC-specific names, kept because they are imported by name across the
+# engine, the strategies and the tests. Aliases, not a second definition: one
+# duration constant and one slug template (convention 23).
+BTC_UPDOWN_5M_DURATION = UPDOWN_5M_DURATION
+BTC_UPDOWN_5M_SLUG = UPDOWN_5M_SLUG.format(asset='btc', ts='{ts}')
 
 # Gamma caps `limit`; 100 is comfortably inside it and is what the reference
 # examples use.
@@ -345,37 +359,236 @@ def search_markets(client: PolymarketClient, query: str,
     return result['markets']
 
 
-# -- BTC Up/Down 5-minute helpers -------------------------------------------
+# -- high-volume event market discovery --------------------------------------
+
+#: The field name to sort `/markets` by when you want the BIGGEST markets.
+#:
+#: NOT `volume`. Measured live 2026-08-18, and this is the whole reason this
+#: constant exists rather than the obvious string:
+#:
+#:   order=volume&ascending=false&limit=20&active=true&closed=false
+#:       -> volumes $10 to $9,997, not monotonic in EITHER direction. Every
+#:          value on the page begins with the digit 9, which is the signature
+#:          of a LEXICOGRAPHIC sort on a text column: "9997.5" and "9.99" and
+#:          "99.99" all sort together and $43,000,000.00 sorts near the bottom
+#:          because it starts with a '4'.
+#:   order=volumeNum&ascending=false&limit=20&active=true&closed=false
+#:       -> $42,242,857 down to $83,444,578, STRICTLY monotonic descending.
+#:   order=volumeNum&ascending=true&limit=8
+#:       -> all zeros, so `ascending` is genuinely honoured.
+#:
+#: Gamma does NOT silently ignore an unknown order field - `order=notarealfield`
+#: returns HTTP 422. So `order=volume` is a RECOGNISED field that sorts the
+#: wrong way, which is worse than an ignored one: the request succeeds, the page
+#: looks like a result, and it is the exact inverse of what was asked for.
+#: `order=liquidity` fails the same way. Re-measure before changing this.
+EVENT_MARKET_ORDER_FIELD = 'volumeNum'
+
+#: Dollar volume a market must EXCEED to count as an event market worth
+#: scanning. Strictly greater. Convention 17: an assumption with an expiry date,
+#: not a measurement.
+DEFAULT_MIN_EVENT_VOLUME_USDC = 10000.0
+
+DEFAULT_EVENT_MARKET_LIMIT = 20
+
+#: Reasons a Gamma row does not become a returned event market. The parse
+#: reasons are inherited from `market_from_gamma_checked` rather than restated,
+#: so a new parse refusal cannot appear in one tuple and not the other
+#: (convention 23).
+EVENT_MARKET_DROP_REASONS = MARKET_DROP_REASONS + (
+    'inactive',
+    'closed',
+    'volume_unreadable',
+    'volume_below_floor',
+)
+
+
+def event_market_summary(market: Market) -> Dict[str, object]:
+    """Slug, question, volume and outcome prices for one market.
+
+    `outcome_prices` is a list of `{'name', 'token_id', 'price'}` in the
+    market's own positional order, NOT a Yes/No dict. See the module docstring:
+    index 0 is not reliably the bullish side, and flattening these into
+    `{'yes': ..., 'no': ...}` is how a caller ends up on the wrong side of an
+    Up/Down market. A price of None means Gamma quoted nothing, which is not
+    the same as a price of zero.
+    """
+    return {
+        'slug': market.slug,
+        'question': market.question,
+        'volume': market.volume,
+        'outcome_prices': [
+            {'name': o.name, 'token_id': o.token_id, 'price': o.price}
+            for o in (market.outcomes or ())
+        ],
+    }
+
+
+def search_event_markets_checked(
+        client: PolymarketClient,
+        limit: int = DEFAULT_EVENT_MARKET_LIMIT,
+        min_volume_usdc: float = DEFAULT_MIN_EVENT_VOLUME_USDC,
+        tag: Optional[str] = None,
+        offset: int = 0) -> Dict[str, object]:
+    """High-volume active markets, with every exclusion counted by cause.
+
+    Returns `{'ok', 'markets', 'summaries', 'raw_count', 'returned', 'dropped',
+    'drops', 'order_field', 'min_volume_usdc', 'reason'}`.
+
+    `ok=False` means the READ failed and `markets` being empty says nothing
+    about the world. `ok=True` with an empty `markets` means Gamma answered and
+    nothing cleared the floor. Those are different facts (convention 11).
+
+    Every drop cause gets its own counter and no two causes share one
+    (convention 20). The accounting identity
+
+        returned + dropped == raw_count
+
+    is asserted here rather than left for a reader to trust. In particular
+    `inactive` and `closed` are counted separately from each other and from the
+    volume filters, even though the query already asks Gamma to exclude both:
+    a row that comes back contradicting its own query filter is a fact about
+    Gamma worth seeing, and silently re-filtering it would hide that.
+    """
+    params: Dict[str, object] = {
+        'limit': int(limit), 'offset': int(offset),
+        'active': 'true', 'closed': 'false',
+        'order': EVENT_MARKET_ORDER_FIELD, 'ascending': 'false',
+    }
+    if tag:
+        params['tag'] = tag
+
+    floor = float(min_volume_usdc)
+    base = {'order_field': EVENT_MARKET_ORDER_FIELD, 'min_volume_usdc': floor}
+
+    payload = client.gamma('/markets', params)
+    if payload is None:
+        return dict(base, ok=False, markets=[], summaries=[], raw_count=0,
+                    returned=0, dropped=0, drops={}, reason='read_failed')
+
+    rows = _unwrap_list(payload)
+    drops: Counter = Counter()
+    out: List[Market] = []
+
+    for raw in rows:
+        market, reason = market_from_gamma_checked(raw)
+        if market is None:
+            drops[reason] += 1
+            continue
+        if not market.active:
+            drops['inactive'] += 1
+            continue
+        if market.closed:
+            drops['closed'] += 1
+            continue
+        if market.volume is None:
+            # Cannot measure, which is not the same as measured-and-too-small.
+            drops['volume_unreadable'] += 1
+            continue
+        if market.volume <= floor:
+            drops['volume_below_floor'] += 1
+            continue
+        out.append(market)
+
+    dropped = sum(drops.values())
+    if len(out) + dropped != len(rows):
+        raise AssertionError(
+            'event market accounting does not balance: {} returned + {} '
+            'dropped != {} fetched'.format(len(out), dropped, len(rows)))
+
+    return dict(base, ok=True, markets=out,
+                summaries=[event_market_summary(m) for m in out],
+                raw_count=len(rows), returned=len(out), dropped=dropped,
+                drops=dict(drops), reason=None)
+
+
+def search_event_markets(client: PolymarketClient,
+                         limit: int = DEFAULT_EVENT_MARKET_LIMIT,
+                         min_volume_usdc: float = DEFAULT_MIN_EVENT_VOLUME_USDC,
+                         tag: Optional[str] = None,
+                         offset: int = 0) -> List[Market]:
+    """High-volume active markets, highest dollar volume first.
+
+    The plain variant. A failed read logs and returns `[]`; a caller that needs
+    to tell an outage from a genuinely empty result must use the `_checked`
+    variant, which is the same split as `list_markets` / `list_markets_checked`.
+    """
+    result = search_event_markets_checked(client, limit, min_volume_usdc,
+                                          tag, offset)
+    if not result['ok']:
+        logger.warning('search_event_markets read FAILED (empty list is NOT '
+                       'the answer)')
+    elif result['drops']:
+        logger.info('search_event_markets dropped %d of %d rows: %s',
+                    result['dropped'], result['raw_count'], result['drops'])
+    return result['markets']
+
+
+# -- Crypto Up/Down 5-minute helpers -----------------------------------------
 
 def current_window_ts(now: Optional[float] = None,
-                      duration: int = BTC_UPDOWN_5M_DURATION) -> int:
-    """Unix second the current 5-minute window opened at."""
+                      duration: int = UPDOWN_5M_DURATION) -> int:
+    """Unix second the current 5-minute window opened at.
+
+    Asset-independent by construction: every crypto Up/Down market opens its
+    window on the same wall-clock boundary, so btc, eth and sol share a window
+    timestamp and can be polled from one cycle clock.
+    """
     now = time.time() if now is None else now
     return (int(now) // duration) * duration
 
 
+def updown_5m_slug(asset: str, window_ts: int) -> str:
+    """`('eth', 1787022000)` -> `'eth-updown-5m-1787022000'`."""
+    return UPDOWN_5M_SLUG.format(asset=str(asset).lower(), ts=int(window_ts))
+
+
+def updown_15m_slug(asset: str, window_ts: int) -> str:
+    """The 15m slug for the 15m window CONTAINING `window_ts`.
+
+    Takes any timestamp inside the window and floors it, rather than trusting
+    the caller to have floored to 900 already. A 5m window_ts passed straight
+    into a 15m template yields a slug that resolves to nothing two thirds of
+    the time, and the miss looks exactly like a market that is not indexed yet.
+    """
+    ts15 = (int(window_ts) // UPDOWN_15M_DURATION) * UPDOWN_15M_DURATION
+    return UPDOWN_15M_SLUG.format(asset=str(asset).lower(), ts=ts15)
+
+
 def btc_updown_slug(window_ts: int) -> str:
-    return BTC_UPDOWN_5M_SLUG.format(ts=int(window_ts))
+    return updown_5m_slug('btc', window_ts)
 
 
-def get_btc_updown_5m(client: PolymarketClient,
-                      window_ts: int) -> Optional[Market]:
-    """The BTC Up/Down 5m market for a given window open. None if not indexed.
+def get_updown_5m(client: PolymarketClient, asset: str,
+                  window_ts: int) -> Optional[Market]:
+    """The Up/Down 5m market for one asset and window. None if not indexed.
 
     Not-yet-indexed is common in the first seconds of a window and is a normal
     skip, not an error - callers log SKIP_NO_MARKET and move on.
     """
-    return get_market_by_slug(client, btc_updown_slug(window_ts))
+    return get_market_by_slug(client, updown_5m_slug(asset, window_ts))
+
+
+def get_updown_5m_checked(client: PolymarketClient, asset: str, window_ts: int
+                          ) -> Tuple[Optional[Market], str]:
+    """As above, but distinguishes "not indexed" from "could not read"."""
+    return get_market_by_slug_checked(client, updown_5m_slug(asset, window_ts))
+
+
+def get_btc_updown_5m(client: PolymarketClient,
+                      window_ts: int) -> Optional[Market]:
+    """The BTC Up/Down 5m market for a given window open. None if not indexed."""
+    return get_updown_5m(client, 'btc', window_ts)
 
 
 def get_btc_updown_5m_checked(client: PolymarketClient, window_ts: int
                               ) -> Tuple[Optional[Market], str]:
     """As above, but distinguishes "not indexed" from "could not read"."""
-    return get_market_by_slug_checked(client, btc_updown_slug(window_ts))
+    return get_updown_5m_checked(client, 'btc', window_ts)
 
 
-def resolved_direction(client: PolymarketClient,
-                       window_ts: int) -> Optional[str]:
+def resolved_direction(client: PolymarketClient, window_ts: int,
+                       asset: str = 'btc') -> Optional[str]:
     """Oracle-resolved direction of a past 5m window: 'UP', 'DOWN', or None.
 
     None means "not resolved yet", NOT "no move". Convention 11 applies at this
@@ -383,11 +596,12 @@ def resolved_direction(client: PolymarketClient,
     and inferring it from a tick feed would be inventing data. Callers that
     need a fallback must do so explicitly and label it.
     """
-    direction, _reason = resolved_direction_checked(client, window_ts)
+    direction, _reason = resolved_direction_checked(client, window_ts, asset)
     return direction
 
 
-def resolved_direction_checked(client: PolymarketClient, window_ts: int
+def resolved_direction_checked(client: PolymarketClient, window_ts: int,
+                               asset: str = 'btc'
                                ) -> Tuple[Optional[str], str]:
     """Direction plus WHY it is missing: `ok`, `read_failed`, `not_listed`,
     `not_binary`, `unresolved`, or a MARKET_DROP_REASONS value.
@@ -395,8 +609,12 @@ def resolved_direction_checked(client: PolymarketClient, window_ts: int
     A run that skipped 40 windows because Gamma was down and a run that skipped
     40 windows because the oracle had not settled them are the same length and
     completely different facts.
+
+    `asset` defaults to 'btc' so every existing caller keeps its exact previous
+    behaviour. A default that changed the meaning of an existing call would
+    silently repoint the graveyard's window history at a different underlying.
     """
-    market, status = get_btc_updown_5m_checked(client, window_ts)
+    market, status = get_updown_5m_checked(client, asset, window_ts)
     if market is None:
         return None, 'not_listed' if status == 'not_found' else status
     if not market.is_binary:
@@ -407,23 +625,29 @@ def resolved_direction_checked(client: PolymarketClient, window_ts: int
     return winner.strip().upper(), 'ok'
 
 
-def window_directions(client: PolymarketClient, window_starts: List[int]
-                      ) -> Dict[int, Optional[str]]:
+def window_directions(client: PolymarketClient, window_starts: List[int],
+                      asset: str = 'btc') -> Dict[int, Optional[str]]:
     """Resolved direction for a list of window opens, oldest key to newest.
 
     One Gamma call per window. At 5 minutes a strategy only ever needs ~16 of
-    these per cycle, which is nothing against a 4,000 req/10s budget.
+    these per cycle, which is nothing against a 4,000 req/10s budget. With three
+    assets polled it is three times that and still nothing.
+
+    The history is per-asset and must stay that way: a streak of 4 UP windows on
+    BTC is a different fact from 4 UP windows on ETH, and pooling them would
+    hand streak_snapper a signal that describes neither.
     """
-    return {ts: resolved_direction(client, ts) for ts in window_starts}
+    return {ts: resolved_direction(client, ts, asset) for ts in window_starts}
 
 
 def window_directions_checked(client: PolymarketClient,
-                              window_starts: List[int]) -> Dict[str, object]:
+                              window_starts: List[int],
+                              asset: str = 'btc') -> Dict[str, object]:
     """`window_directions` plus a tally of why each None is None."""
     directions: Dict[int, Optional[str]] = {}
     reasons: Counter = Counter()
     for ts in window_starts:
-        direction, reason = resolved_direction_checked(client, ts)
+        direction, reason = resolved_direction_checked(client, ts, asset)
         directions[ts] = direction
         reasons[reason] += 1
     return {'directions': directions, 'reasons': dict(reasons),

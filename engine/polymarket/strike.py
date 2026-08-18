@@ -71,7 +71,7 @@ import math
 import threading
 import time
 from collections import Counter
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import requests
 
@@ -91,6 +91,126 @@ TWAP_LOOKBACK_SEC = 60
 # these numbers deliberately - a strategy's win rate improving after this value
 # is lowered is the exact shape of a false positive.
 STRIKE_PROXY_NOISE_FLOOR_BPS = 5.0
+
+# Which asset the floor above was DERIVED from, and what the other two
+# actually do AT it. The floor is one constant applied to three underlyings on
+# the argument that the instrument is identical (all three are
+# `*-5m-twap-60`). These numbers are what that argument costs, measured.
+#
+# Source: `research/strike_proxy_by_asset_500w.json`, the `rate_pct` at
+# threshold_bps == 5.0 in each asset's `cumulative` table, 500 windows
+# requested per asset (n AT the floor: btc 175, eth 248, sol 196), measured
+# 2026-08-18 (D-285). Expressed as a FRACTION, not a percent.
+#
+# These REPLACE the 220-window numbers (btc 2.7%, eth 6.6%, sol 14.3%). Every
+# rate moved UP at the larger sample and BTC nearly doubled, so the 220w read
+# was the optimistic end of sampling noise, not a stable measurement. Worth
+# keeping: convention 7's n=100 line is about a rate being STABLE, not merely
+# reportable, and ETH cleared that line at 220w (n=106) yet still moved 6.6%
+# -> 9.3%. Clearing the bar is necessary, not sufficient.
+# SOL's 15.8% is ~3x BTC's 5.1%, so "same instrument" is an argument the data
+# only partly supports - do not quote the pooled headline, it averages a coin
+# flip and a 96%.
+#
+# Convention 17: these are hardcoded and therefore have an expiry date.
+# `tests/test_strike_proxy.py::test_the_per_asset_error_matches_the_measurement`
+# re-reads the JSON and goes red if the two ever drift.
+NOISE_FLOOR_SOURCE_ASSET = 'btc'
+NOISE_FLOOR_ERROR_BY_ASSET = {'btc': 0.051, 'eth': 0.093, 'sol': 0.158}
+
+#: The threshold `NOISE_FLOOR_ERROR_BY_ASSET` was measured AT. It is a separate
+#: constant from the ACTIVE floor on purpose: once the active floor can differ
+#: per asset, "the measured error" and "the error at the floor now in force"
+#: stop being the same claim, and silently reusing one for the other is how a
+#: stale number ends up labelled as a current measurement.
+NOISE_FLOOR_ERROR_MEASURED_AT_BPS = 5.0
+
+#: How many windows each of those rates is built on: the `n` at
+#: threshold_bps == 5.0 in the same `cumulative` table. D-297 requires this
+#: alongside the percentage, because a rate without its sample size is a
+#: verdict pretending to be one.
+#:
+#: At 500 windows ALL THREE clear convention 7's line of 100: btc n=175
+#: (9 disagreements), eth n=248 (23), sol n=196 (31). At 220 windows two did
+#: not (btc n=75, sol n=84), and `strike_proxy_error_low_sample` rode True on
+#: every row those two gated. It is False for all three now.
+#:
+#: This dict MUST move whenever `NOISE_FLOOR_ERROR_BY_ASSET` moves. A rate
+#: from one sample beside an `n` from another is worse than no `n` at all,
+#: because it looks qualified. The flag is computed from `n` rather than
+#: hardcoded per asset, so re-measuring cleared it with no second edit - the
+#: shape D-297 asked for, and here it actually paid.
+NOISE_FLOOR_ERROR_N_BY_ASSET = {'btc': 175, 'eth': 248, 'sol': 196}
+
+#: Convention 7's threshold, named once. "A PASS on 87 trades is a shrug"
+#: (D-256) is the same claim about the same number.
+LOW_SAMPLE_N = 100
+
+# -- per-asset active noise floor -------------------------------------------
+#
+# MEASURED 2026-08-18 from the 10,276 rows this gate has actually rejected in
+# `research/polymarket_paper/polymarket_paper_log.csv`, not assumed.
+#
+# READ THE DIRECTION OF THE GATE BEFORE CHANGING THESE. It is
+# `abs(lead_bps) < floor -> skip`. RAISING this number blocks MORE windows;
+# LOWERING it admits more. Every window this gate has ever rejected had
+# |lead_bps| < 5.0 (max observed 4.989), which is true by construction, so any
+# floor >= 5.0 admits exactly 0.0% more than 5.0 does. A floor of 15 or 25 bps
+# does not loosen this gate - it tightens it toward never firing at all.
+#
+# What each floor would ADMIT, as a share of the windows currently blocked:
+#
+#     floor      btc      eth      sol    measured proxy disagreement in band
+#     0.5 bps   65.9%    62.6%     4.7%     42.2%  <- coin flip, no information
+#     1.0 bps   50.8%    56.6%     4.7%     23.5%
+#     2.0 bps   20.2%    31.5%     4.7%      6.8%
+#     3.0 bps    0.0%    25.1%     4.7%      6.8%
+#     5.0 bps    0.0%     0.0%     0.0%      3.8%  <- the previous setting
+#
+# 1.0 bps is chosen for shadow mode as the LOWEST floor that still sits outside
+# the measured coin-flip band. Below 1 bp the proxy disagrees with the oracle
+# 42.2% of the time, which is ~50%: a strategy firing there is not learning
+# that its edge is weak, it is sampling a random number generator, and
+# convention 11 calls that NOT_TESTED rather than a result. At 1 bp and above
+# the disagreement is 23.5% and falling - noisy, but it carries information, so
+# a loss there is real evidence about the strategy. That is the trade this
+# setting makes deliberately: more firing, at a known and logged error rate.
+#
+# SOL IS NOT UNBLOCKED BY ANY FLOOR, AND THIS IS THE IMPORTANT ONE.
+# 95.3% of SOL's blocked windows carry lead_bps EXACTLY 0.0, and across the
+# whole log SOL's only two observed nonzero leads are 3.953 and 3.955. That is
+# TICK QUANTIZATION, not measurement noise: SOL trades near $75.89 against a
+# $0.01 Binance.US tick, so ONE TICK IS 1.318 bps, and a quiet 1-minute bar is
+# perfectly flat (O==H==L==C), making spot and the TWAP proxy bit-identical.
+# BTC near $64,210 has a 0.002 bps tick and is effectively continuous. So SOL's
+# 15.8% disagreement at 5 bps is very likely a DISCRETIZATION artifact rather
+# than a worse proxy, and widening SOL specifically would move it from 4.7%
+# admitted to 0.0%. SOL therefore gets the SAME floor as the others; its real
+# blocker is sub-tick resolution and is open work, not a floor to be tuned.
+#
+# Convention 17: hardcoded, therefore an assumption with an expiry date.
+# Overridable per asset from `config.yaml` via `set_noise_floor_bps_by_asset`.
+NOISE_FLOOR_BPS_BY_ASSET: Dict[str, float] = {
+    'btc': 1.0,
+    'eth': 1.0,
+    'sol': 1.0,
+}
+
+#: The MEASURED proxy-vs-oracle disagreement rate by |lead_bps| band, as a
+#: percent, from the 199-window run in this module's docstring. Bands are
+#: [low, high) in bps; the final band is open-ended.
+#:
+#: This exists so the disagreement rate can ride on EVERY evaluation that uses
+#: a proxy strike, not only on the ones the gate rejects. A strategy that fires
+#: at 1.2 bps and loses should be readable as "fired inside a 23.5%-error band"
+#: without anyone re-deriving that from a comment.
+PROXY_DISAGREEMENT_PCT_BY_BAND = (
+    (0.0, 1.0, 42.2),
+    (1.0, 2.0, 23.5),
+    (2.0, 5.0, 6.8),
+    (5.0, 10.0, 6.5),
+    (10.0, float('inf'), 0.0),
+)
 
 # The kline source. Binance.com is geo-blocked from this machine AND answers
 # HTTP 200 with an error body, so a status check passes it and the failure only
@@ -253,6 +373,59 @@ class StrikeProxy:
         }
 
 
+#: Stamped alongside a `None` error when the asset has no measurement. A row
+#: that says "we do not know this asset's proxy error" and a row that says
+#: "this asset's proxy error is 0%" are opposite claims and never share a
+#: field value (convention 20).
+ERROR_UNAVAILABLE_FLAG = 'strike_proxy_error_unavailable'
+
+
+def error_at_floor_pct_for(asset: Optional[str]) -> Optional[float]:
+    """This asset's MEASURED proxy-vs-oracle disagreement rate AT the floor.
+
+    D-297. `NOISE_FLOOR_ERROR_BY_ASSET` carries all three as fractions; the
+    gated row wants the ONE number for the asset the row is about, as a
+    percent, because that is the figure a reader compares against the row's
+    own `noise_floor_bps`. Returns a percent (5.1, not 0.051).
+
+    `None` for an unknown or absent asset, never 0.0. A fourth asset added to
+    `SHADOW_ASSETS` without being measured must read as UNMEASURED, not as a
+    perfect proxy - that is the convention 11 shape at the level of a field.
+    Callers pair the `None` with `ERROR_UNAVAILABLE_FLAG` and carry on: a
+    missing measurement is not a reason to refuse to log the skip.
+    """
+    if not asset:
+        return None
+    fraction = NOISE_FLOOR_ERROR_BY_ASSET.get(str(asset).lower())
+    if fraction is None:
+        return None
+    return round(fraction * 100.0, 1)
+
+
+def error_sample_at_floor_for(asset: Optional[str]) -> Tuple[Optional[int],
+                                                             Optional[bool]]:
+    """(n, low_sample) behind this asset's error rate. D-297.
+
+    A percentage with no `n` beside it reads as settled. At the 500-window
+    measurement all three clear convention 7's threshold of 100 (btc n=175,
+    eth n=248, sol n=196); at 220 windows BTC (75) and SOL (84) did not. The
+    row carries the sample so a reader can tell a strong hint from a verdict
+    without going back to the JSON.
+
+    `low_sample` is DERIVED from `n`, never asserted per asset, so re-measuring
+    on more windows clears the flag by itself - which is exactly what the 500w
+    re-measurement did, with no edit to this function. `(None, None)` for an
+    unmeasured asset - unknown is not "well sampled", and it is not "poorly
+    sampled" either.
+    """
+    if not asset:
+        return None, None
+    n = NOISE_FLOOR_ERROR_N_BY_ASSET.get(str(asset).lower())
+    if n is None:
+        return None, None
+    return int(n), bool(int(n) < LOW_SAMPLE_N)
+
+
 def is_inside_noise_floor(lead_bps: Optional[float],
                           noise_floor_bps: float = STRIKE_PROXY_NOISE_FLOOR_BPS
                           ) -> bool:
@@ -267,3 +440,96 @@ def is_inside_noise_floor(lead_bps: Optional[float],
     if not math.isfinite(lead_bps):
         return True
     return abs(lead_bps) < noise_floor_bps
+
+
+def noise_floor_bps_for(asset: Optional[str]) -> float:
+    """The ACTIVE noise floor for `asset`, in bps.
+
+    Falls back to `STRIKE_PROXY_NOISE_FLOOR_BPS` for an asset with no entry.
+    The fallback is deliberately the CONSERVATIVE 5.0 rather than the looser
+    shadow-mode value: an unregistered asset is one nobody has measured, and
+    the failure mode of guessing loose there is a strategy firing on a strike
+    whose error is unknown, which is unreadable rather than merely noisy.
+    """
+    if not asset:
+        return STRIKE_PROXY_NOISE_FLOOR_BPS
+    return NOISE_FLOOR_BPS_BY_ASSET.get(
+        str(asset).lower(), STRIKE_PROXY_NOISE_FLOOR_BPS)
+
+
+def set_noise_floor_bps_by_asset(overrides: Optional[Dict[str, object]]) -> Dict[str, float]:
+    """Apply `config.yaml` overrides onto `NOISE_FLOOR_BPS_BY_ASSET` in place.
+
+    Called once at shadow-loop startup so the floor is configurable per asset
+    without editing this module (convention 17: a threshold nobody can see in
+    the config is one nobody reviews).
+
+    Rejects anything non-finite or negative rather than letting it through: a
+    NaN floor makes `abs(lead) < floor` False for every lead, which would
+    silently DISABLE the gate entirely while looking like a configured value
+    (convention 19 - a non-finite must fail loudly, not ride along). A floor of
+    exactly 0.0 is legal and means "admit every finite lead, including 0.0".
+
+    Returns the resulting mapping. Raises ValueError on a bad value.
+    """
+    if not overrides:
+        return dict(NOISE_FLOOR_BPS_BY_ASSET)
+    for raw_asset, raw_value in dict(overrides).items():
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            raise ValueError(
+                'noise floor for %r must be a number, got %r'
+                % (raw_asset, raw_value)) from None
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(
+                'noise floor for %r must be finite and >= 0, got %r'
+                % (raw_asset, raw_value))
+        NOISE_FLOOR_BPS_BY_ASSET[str(raw_asset).lower()] = value
+    return dict(NOISE_FLOOR_BPS_BY_ASSET)
+
+
+def active_floor_error_pct_for(asset: Optional[str]) -> Optional[float]:
+    """The measured disagreement rate at the floor ACTUALLY IN FORCE, or None.
+
+    `error_at_floor_pct_for` returns the rate measured at 5.0 bps, which stops
+    describing reality the moment the active floor moves off 5.0. Rather than
+    keep reporting a 5.0-bps number under a field that reads as "at the floor",
+    this returns None whenever the active floor is not the threshold the
+    measurement was taken at. None means UNMEASURED, never 0.0 - the same
+    convention 11 shape `error_at_floor_pct_for` already follows for an
+    unregistered asset.
+    """
+    if noise_floor_bps_for(asset) != NOISE_FLOOR_ERROR_MEASURED_AT_BPS:
+        return None
+    return error_at_floor_pct_for(asset)
+
+
+def disagreement_pct_for_lead(lead_bps: Optional[float]) -> Optional[float]:
+    """The measured proxy-vs-oracle disagreement rate for this lead's band.
+
+    The point of this function is that it applies to every evaluation, not just
+    the rejected ones. A window that PASSES the gate at 1.2 bps still carries a
+    23.5% measured chance the proxy strike disagrees with the oracle, and that
+    number belongs on the row rather than in a comment.
+
+    Returns a percent (23.5, not 0.235). None for a missing or non-finite lead,
+    which is UNKNOWN and never 0.0.
+
+    STANDING CAVEAT (convention 7): these bands come from 199 BTC windows. The
+    2-5 bps cell is 4 disagreements out of 59. It is enough to act on and not
+    enough to settle anything, and it is a BTC measurement being applied to
+    three assets - see `NOISE_FLOOR_ERROR_BY_ASSET` for what that costs.
+    """
+    if lead_bps is None:
+        return None
+    try:
+        magnitude = abs(float(lead_bps))
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(magnitude):
+        return None
+    for low, high, pct in PROXY_DISAGREEMENT_PCT_BY_BAND:
+        if low <= magnitude < high:
+            return pct
+    return None
