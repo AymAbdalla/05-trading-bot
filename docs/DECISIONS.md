@@ -2145,7 +2145,7 @@ the drift tests, and D-297's implementation. No follow-up D-number needed.
 Leave D-285 as written.
 
 
-### D-305. One subprocess call site for every reasoning turn (CODY, needs ratifying)
+### D-305. One subprocess call site for every reasoning turn (RATIFIED by Raven, 2026-08-18)
 
 Raven's 2026-08-18 instruction file asked for Opus reasoning in five places:
 Forge proposals, vault lessons, blowup root cause, critic post-mortems, cycle

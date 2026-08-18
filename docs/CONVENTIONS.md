@@ -51,6 +51,9 @@ and the wording of the conventions that have been contested.
 23. **A fix at one site is not a fix.**
 24. **A cited D-number is not a decision.** Check it exists in DECISIONS.md.
 25. **A PID in a doc is a claim, not a fact.** Confirm with `ps -p <pid>`.
+    This covers REVIEW files as much as any other doc: a review that names a
+    PID must carry the timestamp it was verified at, and a stale citation in an
+    older review never overrides a live `ps` check.
 26. **Hash-before-write.** Use `engine.concurrency.checkout()` / `checkin()` /
     `safe_edit(path, fn)` before writing a file another agent might be editing.
     `env -u PYTHONPATH python3 -m engine.concurrency who` lists open checkouts.
