@@ -911,16 +911,25 @@ class PolymarketShadowLoop:
         # per day across three assets on a 5-second poll, enough to bury a
         # genuine fair-value exception completely.
         #
-        # OPEN CONFLICT, 2026-08-18, needs a D-number. A concurrent session
+        # RESOLVED by D-300 (Raven ruling, 2026-08-18). A concurrent session
         # fixed the same bug from the OTHER end and gave `DipArb` a documented,
-        # never-usable `estimate()`. The two compose safely - DipArb now takes
-        # the try/except branch, never raises, and the exception counter stays
-        # clean - but they cannot both be the reason, and with that method
-        # present this gauge reads 0 rather than one entry per asset. See
-        # `DipArb.estimate`'s docstring, which raises the same conflict from its
-        # side. Either rationale is defensible and ONE has to be retired
-        # deliberately; neither session gets to retire the other's silently
-        # (convention 21). Nothing below assumes which way that goes.
+        # never-usable `estimate()`. THAT is the one that stands: a strategy
+        # declaring `manages_exits = True` is obliged to ship an `estimate()`
+        # this loop can call, and DipArb now ships one.
+        #
+        # So the paragraph above is HISTORY, not current state. "PM_dip_arb has
+        # no estimate()" was true when this dispatch was written and is no
+        # longer true of any registered strategy. It is kept because it is the
+        # measurement that explains the ~51,000 spurious increments per day, and
+        # deleting it would leave the counter's history unreadable.
+        #
+        # The dispatch stays, and it is now a SAFETY GUARD rather than a fix:
+        # redundant with `DipArb.estimate()` today, kept for the next strategy
+        # that declares the flag without shipping the method. With every current
+        # manager implementing the protocol this gauge reads 0, which makes any
+        # NONZERO reading a wiring bug - including a fair-value strategy that
+        # loses its `estimate()` in a refactor, a breakage the pre-dispatch
+        # shape absorbed silently into a caught AttributeError.
         #
         # So dispatch on the CAPABILITY, and keep the two populations in
         # SEPARATE numbers. "has no estimate()" is a WIRING FACT, recorded once

@@ -11,6 +11,9 @@ These pin four things:
      for an unknown order field, so `volume` is a real field that sorts the
      wrong way - a request that succeeds and returns the inverse of what was
      asked for. `test_the_order_field_is_volumeNum_not_volume` is the guard.
+     D-302 extended the same default to the plain `list_markets` family, which
+     had kept `order='volume'` under a docstring claiming the opposite;
+     `TestListMarketsOrderDefault` guards that side.
   2. **The volume floor is strict.** `> 10000`, not `>=`. A market exactly at
      the floor is dropped, and the boundary is tested from both sides.
   3. **The accounting identity.** `returned + dropped == raw_count`, with a
@@ -29,8 +32,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from engine.polymarket.markets import (  # noqa: E402
     DEFAULT_MIN_EVENT_VOLUME_USDC, EVENT_MARKET_DROP_REASONS,
-    EVENT_MARKET_ORDER_FIELD, MARKET_DROP_REASONS, event_market_summary,
-    search_event_markets, search_event_markets_checked)
+    EVENT_MARKET_ORDER_FIELD, MARKET_DROP_REASONS, VOLUME_ORDER_FIELD,
+    event_market_summary, list_all_markets, list_markets,
+    list_markets_checked, search_event_markets, search_event_markets_checked)
 
 
 # ---------------------------------------------------------------------------
@@ -494,3 +498,71 @@ class TestOrderPreserved:
                 market_row('third', volume=7e6)]
         result = search_event_markets_checked(FakeClient(rows))
         assert [m.slug for m in result['markets']] == ['first', 'third']
+
+
+# ---------------------------------------------------------------------------
+# The plain listing family - D-302
+# ---------------------------------------------------------------------------
+
+class TestListMarketsOrderDefault:
+    """`list_markets` and friends carried the broken `volume` default.
+
+    `search_event_markets` was fixed when the trap was measured, but the
+    `list_markets` family kept `order: str = 'volume'` and a docstring that
+    claimed "highest volume first by default". It had zero production callers,
+    so nothing was wrong on the wire - it was a loaded gun for the first caller
+    who trusted the docstring. D-302 repoints the defaults at the one constant
+    and these tests are the guard (convention 23: a fix at one site is not a
+    fix).
+    """
+
+    def test_the_two_constants_are_one_definition(self):
+        assert VOLUME_ORDER_FIELD == 'volumeNum'
+        assert EVENT_MARKET_ORDER_FIELD is VOLUME_ORDER_FIELD
+
+    def test_list_markets_checked_asks_for_volumeNum(self):
+        client = FakeClient([market_row('a')])
+        list_markets_checked(client)
+        _path, params = client.gamma_calls[0]
+        assert params['order'] == 'volumeNum'
+        assert params['order'] != 'volume'
+
+    def test_list_markets_asks_for_volumeNum(self):
+        client = FakeClient([market_row('a')])
+        list_markets(client)
+        assert client.gamma_calls[0][1]['order'] == VOLUME_ORDER_FIELD
+
+    def test_list_all_markets_asks_for_volumeNum_on_every_page(self):
+        """The paging loop threads `order` through per page. A default fixed
+        at the top and dropped on page 2 would still return a broken universe.
+        """
+        pages = [[market_row('p0-%d' % i) for i in range(2)], []]
+
+        def payload(_path, params):
+            idx = int(params['offset']) // 2
+            return pages[idx] if idx < len(pages) else []
+
+        client = FakeClient(payload)
+        list_all_markets(client, page_size=2, max_pages=3)
+        assert len(client.gamma_calls) >= 2
+        for _path, params in client.gamma_calls:
+            assert params['order'] == VOLUME_ORDER_FIELD
+
+    def test_an_explicit_order_still_wins(self):
+        """The default changed; the parameter is still a parameter. A caller
+        that deliberately wants the text sort (to reproduce D-302) can ask.
+        """
+        client = FakeClient([])
+        list_markets_checked(client, order='volume')
+        assert client.gamma_calls[0][1]['order'] == 'volume'
+
+    def test_no_listing_signature_still_defaults_to_volume(self):
+        """Signature-level sweep, so a fourth listing function added later
+        cannot quietly reintroduce the broken default.
+        """
+        import inspect
+
+        for fn in (list_markets, list_markets_checked, list_all_markets):
+            default = inspect.signature(fn).parameters['order'].default
+            assert default == VOLUME_ORDER_FIELD, \
+                '{} defaults to {!r}'.format(fn.__name__, default)

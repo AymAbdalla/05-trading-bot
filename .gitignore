@@ -45,6 +45,11 @@ HANDOVER.md
 docs/handoffs/from-raven/
 docs/handoffs/from-cody/
 
+# Internal agent directory - installed subagents, session settings. Not a
+# portfolio artifact. `.claude/agents/forge.md` asserts this in its install
+# comment, so the assertion has to be true (Raven ruling, 2026-08-18).
+.claude/
+
 # Cloned third-party reference repos - read for ideas, never our code
 research/moondevonyt-ai-trading-battles/
 research/moondevonyt-polymarket-examples/

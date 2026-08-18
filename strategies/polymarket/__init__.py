@@ -177,7 +177,34 @@ today. The other two are refusals, and each refuses for its own reason.
                         never be evaluated, in either direction. It is not a
                         passing kill condition. It is one that cannot run.
 
-  PM_weather_arb        Can enter. Unproven in two specific ways, plus a third
+  PM_weather_arb        **CANNOT ENTER on today's live board.** This model
+                        prices a POINT-IN-TIME reading at the settlement
+                        timestamp. Live weather markets resolve on the DAILY
+                        EXTREME, and the daily max of a path is a different
+                        random variable from the path's endpoint. Gated off
+                        behind `allow_daily_extreme_markets=False`; every such
+                        market is refused under
+                        `daily_extreme_not_priced_by_point_in_time_model`, a
+                        convention 11 cannot-run and NOT a claim that there is
+                        no edge there.
+
+                        The gate is CONDITIONAL, not blanket, and the
+                        distinction matters for anyone reading the code: it
+                        fires only when the market carries a detected
+                        `market_metric`. A genuine point-in-time weather market
+                        would still be enterable. Measured 2026-08-18 over 80
+                        live markets with real books and real METAR, 100% of
+                        the live universe was daily-extreme, so in practice
+                        this books zero entries.
+
+                        That measurement is also why the refusal exists at all:
+                        the FIXED parser produced 7 ENTERs with realised "edge"
+                        of 0.45 to 0.999, and the errors pointed in OPPOSITE
+                        directions on the two ladders, so a pooled win rate
+                        would have averaged two biases into something that
+                        looked unbiased.
+
+                        It is unproven in two further ways, plus a third
                         provenance problem.
 
                         First, its `WEATHER_MARKETS` station table (KNYC/KLGA,

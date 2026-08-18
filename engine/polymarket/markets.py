@@ -52,6 +52,33 @@ BTC_UPDOWN_5M_SLUG = UPDOWN_5M_SLUG.format(asset='btc', ts='{ts}')
 GAMMA_PAGE_SIZE = 100
 DEFAULT_MAX_PAGES = 20
 
+#: The field name to sort `/markets` by when you want the BIGGEST markets.
+#:
+#: NOT `volume`. Measured live 2026-08-18, and this is the whole reason this
+#: constant exists rather than the obvious string:
+#:
+#:   order=volume&ascending=false&limit=20&active=true&closed=false
+#:       -> volumes $10 to $9,997, not monotonic in EITHER direction. Every
+#:          value on the page begins with the digit 9, which is the signature
+#:          of a LEXICOGRAPHIC sort on a text column: "9997.5" and "9.99" and
+#:          "99.99" all sort together and $43,000,000.00 sorts near the bottom
+#:          because it starts with a '4'.
+#:   order=volumeNum&ascending=false&limit=20&active=true&closed=false
+#:       -> $42,242,857 down to $83,444,578, STRICTLY monotonic descending.
+#:   order=volumeNum&ascending=true&limit=8
+#:       -> all zeros, so `ascending` is genuinely honoured.
+#:
+#: Gamma does NOT silently ignore an unknown order field - `order=notarealfield`
+#: returns HTTP 422. So `order=volume` is a RECOGNISED field that sorts the
+#: wrong way, which is worse than an ignored one: the request succeeds, the page
+#: looks like a result, and it is the exact inverse of what was asked for.
+#: `order=liquidity` fails the same way. Re-measure before changing this.
+#:
+#: D-302: this is the default for the whole `list_markets` family too, not just
+#: event-market discovery. It used to be defined only down in the event-market
+#: section while the listing functions defaulted to the broken `volume`.
+VOLUME_ORDER_FIELD = 'volumeNum'
+
 # Reasons a raw Gamma market object cannot become a Market.
 MARKET_DROP_REASONS = (
     'not_a_dict',
@@ -212,7 +239,8 @@ def get_market_by_slug(client: PolymarketClient, slug: str,
 
 def list_markets_checked(client: PolymarketClient, limit: int = 100,
                          active: bool = True, closed: bool = False,
-                         order: str = 'volume', ascending: bool = False,
+                         order: str = VOLUME_ORDER_FIELD,
+                         ascending: bool = False,
                          tag: Optional[str] = None,
                          offset: int = 0) -> Dict[str, object]:
     """One page of markets plus full drop accounting.
@@ -223,6 +251,10 @@ def list_markets_checked(client: PolymarketClient, limit: int = 100,
     `list_markets` cannot express the difference (convention 11).
 
     The accounting identity `raw_count - sum(drops) == len(markets)` holds.
+
+    `order` defaults to `VOLUME_ORDER_FIELD` ('volumeNum'). Passing the
+    plausible-looking `'volume'` sorts that column as TEXT and returns the
+    SMALLEST markets first (D-302).
     """
     params: Dict[str, object] = {
         'limit': limit, 'offset': offset,
@@ -246,10 +278,15 @@ def list_markets_checked(client: PolymarketClient, limit: int = 100,
 
 def list_markets(client: PolymarketClient, limit: int = 100,
                  active: bool = True, closed: bool = False,
-                 order: str = 'volume', ascending: bool = False,
+                 order: str = VOLUME_ORDER_FIELD, ascending: bool = False,
                  tag: Optional[str] = None,
                  offset: int = 0) -> List[Market]:
-    """List markets, highest volume first by default."""
+    """List markets, genuinely highest volume first by default (D-302).
+
+    The default sorts on `volumeNum`. Before D-302 it sorted on `volume`,
+    which Gamma orders lexicographically, so "highest volume first" was
+    exactly backwards and the docstring said so anyway.
+    """
     result = list_markets_checked(client, limit, active, closed, order,
                                   ascending, tag, offset)
     if not result['ok']:
@@ -262,7 +299,7 @@ def list_markets(client: PolymarketClient, limit: int = 100,
 
 
 def list_all_markets(client: PolymarketClient, active: bool = True,
-                     closed: bool = False, order: str = 'volume',
+                     closed: bool = False, order: str = VOLUME_ORDER_FIELD,
                      ascending: bool = False, tag: Optional[str] = None,
                      page_size: int = GAMMA_PAGE_SIZE,
                      max_pages: int = DEFAULT_MAX_PAGES) -> Dict[str, object]:
@@ -361,28 +398,10 @@ def search_markets(client: PolymarketClient, query: str,
 
 # -- high-volume event market discovery --------------------------------------
 
-#: The field name to sort `/markets` by when you want the BIGGEST markets.
-#:
-#: NOT `volume`. Measured live 2026-08-18, and this is the whole reason this
-#: constant exists rather than the obvious string:
-#:
-#:   order=volume&ascending=false&limit=20&active=true&closed=false
-#:       -> volumes $10 to $9,997, not monotonic in EITHER direction. Every
-#:          value on the page begins with the digit 9, which is the signature
-#:          of a LEXICOGRAPHIC sort on a text column: "9997.5" and "9.99" and
-#:          "99.99" all sort together and $43,000,000.00 sorts near the bottom
-#:          because it starts with a '4'.
-#:   order=volumeNum&ascending=false&limit=20&active=true&closed=false
-#:       -> $42,242,857 down to $83,444,578, STRICTLY monotonic descending.
-#:   order=volumeNum&ascending=true&limit=8
-#:       -> all zeros, so `ascending` is genuinely honoured.
-#:
-#: Gamma does NOT silently ignore an unknown order field - `order=notarealfield`
-#: returns HTTP 422. So `order=volume` is a RECOGNISED field that sorts the
-#: wrong way, which is worse than an ignored one: the request succeeds, the page
-#: looks like a result, and it is the exact inverse of what was asked for.
-#: `order=liquidity` fails the same way. Re-measure before changing this.
-EVENT_MARKET_ORDER_FIELD = 'volumeNum'
+#: Alias, not a second definition (convention 23). The measurement that picked
+#: `volumeNum` over `volume` is documented on `VOLUME_ORDER_FIELD` at the top of
+#: the module, which is also what the `list_markets` family now defaults to.
+EVENT_MARKET_ORDER_FIELD = VOLUME_ORDER_FIELD
 
 #: Dollar volume a market must EXCEED to count as an event market worth
 #: scanning. Strictly greater. Convention 17: an assumption with an expiry date,

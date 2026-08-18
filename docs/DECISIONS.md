@@ -1890,3 +1890,256 @@ two keys is reachable in the state Raven's instruction described. Classifying
 them DATA_BLOCKER would report "could not run" for a lock that ran and returned
 false, which is the convention 11 inversion pointing the other way. Cody is
 correct. Keep GENUINE. Two independent readings agreed.
+
+
+### D-299. Strike proxy noise floor is per-asset and drops 5.0 -> 1.0 bps for shadow (AYM DIRECTIVE, numbers corrected by Cody)
+
+**Directive as given:** "the gate is too conservative, it's rejecting real
+windows because the proxy MIGHT be wrong; in shadow mode we WANT strategies to
+fire. Lower the noise floor to 15bps for all assets (was 5bps), and 25bps for
+SOL. Make it per-asset configurable."
+
+**Correction, measured before acting.** The gate is
+`abs(lead_bps) < floor -> skip` (`strike.py:is_inside_noise_floor`). A BIGGER
+floor rejects MORE windows. Every one of the 10,276 rows this gate has ever
+rejected had `|lead_bps| < 5.0` (max observed 4.989), which is true by
+construction, so a floor of 15 or 25 bps admits **0.0%** more than 5.0 did - it
+would have tightened the gate toward never firing, the opposite of the intent.
+The directive's GOAL is implemented; its NUMBERS are not.
+
+Also corrected: the gate blocks **3** strategies, not 11. Measured over the
+06:39 run, `strike_inside_proxy_noise_floor` is emitted only by
+`PM_corridor_collector`, `PM_grid_hedge` and `PM_mid_price_continuation`
+(531 each). The other 16 never emit it. The larger blockers are
+`max_trades_this_window` (2,058), `liquidation_feed_empty` (948),
+`no_liq_cluster_near_spot`, `wallet_address_unresolved` and
+`resolution_station_unknown` (579 each).
+
+**Decision.** `NOISE_FLOOR_BPS_BY_ASSET = {btc: 1.0, eth: 1.0, sol: 1.0}`,
+overridable from `config.yaml` at `polymarket.strike_proxy.
+noise_floor_bps_by_asset`. Unregistered assets fall back to the strict 5.0.
+
+1.0 bps is the LOWEST floor still outside the measured coin-flip band. Below
+1 bp the proxy disagrees with the oracle 42.2% of the time; firing there
+samples a random number generator rather than testing a strategy, which
+convention 11 calls NOT_TESTED, not a result. At 1-2 bps disagreement is 23.5%
+and falling - noisy but informative, which is the trade the directive asked for.
+
+Measured effect on the 10,276 historically gated rows: btc 46.6% now admitted,
+eth 46.8%, sol 3.5%.
+
+**SOL is not fixed by any floor, and widening it would have made SOL worse.**
+95.3% of SOL's blocked windows carry `lead_bps` EXACTLY 0.0, and across the
+whole log SOL has only two distinct nonzero leads: 3.953 and 3.955. That is
+tick quantization, not measurement noise. SOL trades near $75.89 against a
+$0.01 Binance.US tick, so ONE TICK IS 1.318 bps, and a quiet 1-minute bar is
+perfectly flat (O==H==L==C), making spot and the TWAP proxy bit-identical. BTC
+near $64,210 has a 0.002 bps tick and is effectively continuous. The proposed
+SOL-specific 25 bps floor would have taken SOL from 3.5% admitted to 0.0%.
+
+This also puts D-285's SOL reading in a different light: SOL's 14.3%
+disagreement at 5 bps is plausibly a DISCRETIZATION artifact rather than a
+worse proxy. Not resolved here. Open work.
+
+**Honesty guard.** `NOISE_FLOOR_ERROR_BY_ASSET` was measured AT 5.0 bps and no
+longer describes the active floor. `error_at_floor_pct_for` still returns the
+5.0-bps figure; the new `active_floor_error_pct_for` returns it ONLY when the
+active floor equals `NOISE_FLOOR_ERROR_MEASURED_AT_BPS`, and None otherwise.
+Gated rows now carry both, so a 5.0-bps number is never published under a field
+that reads as "the error at the floor". None means UNMEASURED, never 0.0.
+
+Every evaluation (not just rejected ones) now carries
+`strike_proxy_disagreement_pct` from `PROXY_DISAGREEMENT_PCT_BY_BAND`, so a
+strategy that FIRES at 1.2 bps is readable afterwards as having fired inside a
+23.5%-error band. Without it a loss there is indistinguishable from a loss
+caused by a bad strike.
+
+**Convention 17 warning, stated in advance.** This LOOSENS a gate that was
+DERIVED from a measurement. If a strategy's win rate improves after this, that
+is the exact shape of a false positive. Compare against the pre-change baseline
+deliberately; do not read an improvement as edge.
+
+**Kill condition.** If the three unblocked strategies produce entries whose
+realized accuracy in the 1-2 bps band is worse than the 23.5% measured
+disagreement predicts, the floor goes back to 2.0 (6.8% band) rather than to
+5.0. Named harness: `backtest/measure_strike_proxy.py`.
+
+**Where:** `engine/polymarket/strike.py`, `engine/polymarket/shadow_loop.py`,
+`config.yaml`, `tests/test_strike_proxy_per_asset.py` (33 tests, including
+`test_a_bigger_floor_never_admits_more`, which goes red if anyone ever
+"loosens" this gate by raising the number again).
+
+**Aym still owns the call on the 1.0 value.** The mechanism is per-asset and
+config-driven, so changing it is a one-line edit with no code change.
+
+### D-300. DipArb.estimate() is the surviving fix; the capability dispatch stays as a safety guard (RAVEN RULING)
+
+Two concurrent sessions fixed the same bug from opposite ends and both wrote a
+docstring saying the other one had to be retired under a D-number. Retired here.
+
+The bug: `manages_exits = True` says "this strategy decides its own exits", not
+"this strategy publishes a fair value". The loop assumed the second followed
+from the first and called `estimate()` on every exit manager. `PM_dip_arb` exits
+against its own rolling tape mean and had no `estimate()`, so every cycle raised
+a caught AttributeError into `health['exit_fair_value_exceptions']` - roughly
+51,000 spurious increments per day across three assets on a 5-second poll,
+enough to bury a genuine fair-value exception completely. Exits were never
+affected; the INSTRUMENT was.
+
+**Ruling: keep `DipArb.estimate()`. Retire the capability dispatch's rationale,
+not the dispatch itself.** A strategy declaring `manages_exits = True` is
+obliged to ship an `estimate()` the loop can call. That is the convention, and
+meeting the obligation beats working around it at the call site. DipArb's
+`estimate()` is deliberately never-usable (it under-claims and lets
+`manage_exit` read its own per-token tape) and never raises, which is the
+correct shape: it satisfies the protocol without fabricating a per-window scalar
+for a per-token mean.
+
+**The `hasattr` guard in `shadow_loop.__init__` is NOT removed.** It is now
+redundant with `DipArb.estimate()` and is kept for the next strategy that
+declares the flag without shipping the method. Its comment now says exactly
+that, and the historical measurement is kept in place because deleting it would
+leave the counter's history unreadable.
+
+Consequence, stated so nobody reads it as a regression:
+`health['exit_no_fair_value_protocol']` now reads **0** rather than one entry
+per asset. That is the better invariant. Every current exit manager implements
+the protocol, so any NONZERO reading is a wiring bug - including a fair-value
+strategy that loses its `estimate()` in a refactor, a breakage the pre-dispatch
+shape absorbed silently into a caught AttributeError.
+
+**Where:** `strategies/polymarket/dip_arb.py` (`estimate()` docstring, conflict
+section replaced with the ruling), `engine/polymarket/shadow_loop.py`
+(dispatch comment block only; no logic touched).
+
+**Numbering note.** Raven's instruction file asked for this to be written as
+D-299. D-299 was taken by a concurrent session (Aym's per-asset strike-proxy
+noise floor directive) before this was written. Renumbered to D-300 rather than
+overwrite it (convention 21).
+
+### D-301. no_underdog split into no_book_midpoint + book_implied_exact_tie (RAVEN RULING)
+
+Convention 20 forbids two drop causes sharing one skip reason. The old
+`no_underdog` pooled two unrelated causes: (a) a one-sided book with no
+midpoint to compute, and (b) both mids present and exactly equal.
+
+Split, with classifications:
+
+| new reason | class | why |
+|---|---|---|
+| `no_book_midpoint` | DATA_BLOCKER | one-sided book or absent bid; no midpoint could be computed, so nothing was evaluated |
+| `book_implied_exact_tie` | GENUINE | both mids present and exactly equal; the book was observed and the market is genuinely tied |
+
+`no_underdog` is retained in `SKIP_CLASSIFICATION` as a retired reason
+(historical rows still carry it). It is listed in `RETIRED_SKIP_REASONS`, so a
+strategy emitting it again is red.
+
+The gate/feature path (`book_implied`) is unchanged. Both new reasons still
+report under the same gate, so results remain poolable.
+
+Pinned by `test_spread_harvest_names_a_missing_midpoint_apart_from_a_real_tie`.
+
+Cody's naming (`no_book_midpoint` / `book_implied_exact_tie`) is confirmed over
+Raven's original suggestion (`no_underdog_missing_midpoint` /
+`no_underdog_tied_mids`). Shorter, already classified, already shipped.
+
+**Where:** `agents/forge_shadow_eval.py`, `strategies/polymarket/spread_harvest_maker.py`.
+
+### D-302. The list_markets family defaults to order=volumeNum, not volume (RAVEN RULING)
+
+**Decided by:** Raven, 2026-08-18. Mechanical fix, no Aym decision needed.
+
+**What.** `list_markets`, `list_markets_checked` and `list_all_markets` all
+defaulted to `order='volume'`. Gamma sorts that column as TEXT. All three now
+default to the single constant `VOLUME_ORDER_FIELD = 'volumeNum'`, and
+`EVENT_MARKET_ORDER_FIELD` is now an alias of it rather than a second
+definition (convention 23).
+
+**Why.** Measured live 2026-08-18:
+
+| query | result |
+|---|---|
+| `order=volume&ascending=false&limit=20` | $10 to $9,997, not monotonic either way. Every value on the page starts with the digit 9. Text-sorted sequence: 99.99, 999.88, 9997.5, 9.99 |
+| `order=volumeNum&ascending=false&limit=20` | $42,242,857 down to $83,444 (sic), strictly monotonic descending |
+| `order=volumeNum&ascending=true&limit=8` | all zeros, so `ascending` is genuinely honoured |
+
+Gamma returns **HTTP 422 for an unknown order field** (`order=notarealfield`),
+so `volume` is a RECOGNISED field that sorts backwards. That is worse than an
+ignored parameter: the request returns 200 and a page that looks like an
+answer, and it is the exact inverse of what was asked for. `order=liquidity`
+fails the same way.
+
+**Scope.** Zero production callers were affected: nothing outside the package
+export ever called `list_markets`. This was a latent footgun, not a live bug,
+and the `docstring said "highest volume first by default"` while doing the
+opposite - a docstring claim with no wiring test behind it (convention 22).
+`search_event_markets` was already correct; it took the constant, not the
+literal, when the trap was first measured.
+
+**Not a behaviour change on the wire today.** No result, backtest or shadow row
+changes, because nothing called it. Do not re-baseline anything against this.
+
+**Kill condition.** If Gamma ever starts answering 422 for `volumeNum`, or the
+monotonicity check above stops holding on a fresh live measurement, the
+constant is wrong and must be re-measured before it is re-pointed. Re-measure,
+never guess: the whole point of this entry is that a plausible field name
+returned a plausible-looking page.
+
+**Where:** `engine/polymarket/markets.py` (`VOLUME_ORDER_FIELD` promoted to the
+top of the module with the measurement, `EVENT_MARKET_ORDER_FIELD` reduced to
+an alias, three signatures and two docstrings repointed),
+`tests/test_event_market_search.py` (`TestListMarketsOrderDefault`, six tests,
+including a signature-level sweep so a fourth listing function cannot quietly
+reintroduce the broken default).
+
+**Numbering note.** Raven's instruction file asked for this to be D-301. D-301
+was taken by a concurrent session (the `no_underdog` skip-reason split) before
+this was written. Renumbered to D-302 rather than overwrite it (convention 21).
+This is the second consecutive instruction file whose requested D-number was
+taken mid-task.
+
+### D-303. Kill clock staleness: a stale tape does NOT rewind the clock (RAVEN RULING)
+
+Cody asked whether staleness should rewind the kill clock in
+near_liq_trigger. D-296 says "at least 1 row to date." A recorder that ran
+and produced evidence has produced evidence, even if it later went silent.
+If staleness rewound the clock, the kill condition could never fire on a
+strategy whose feed is merely unreliable, making the guard un-expirable.
+Cody's call is correct: staleness does NOT rewind the clock. The clock
+counts from the tape's FIRST print (min(ts)), not from "right now has a
+row."
+
+**Where:** `strategies/polymarket/near_liq_trigger.py` (kill_clock_row_features,
+kill_clock_status).
+
+### D-304. Convention numbering 27/28/29 and CONVENTIONS.md as canonical (RAVEN RULING)
+
+Three conventions collided on number 27 in one day. Convention 27 was
+occupied twice (once clobbered, once live) and Raven asked for a third.
+
+Resolution (ratified from Cody's assignment):
+- **27** = gate-direction rule ("verify the DIRECTION of a gate before
+  changing its threshold"). Was live in CLAUDE.md.
+- **28** = "half a resolution is not a resolution" (recovered from a
+  clobbered CLAUDE.md rewrite).
+- **29** = "`inspect.getsource` defeats the import snapshot" (Raven's
+  rule, from the mechanical-fixes-and-cleanup session).
+
+`docs/CONVENTIONS.md` is now canonical (tracked, survives clean checkouts).
+CLAUDE.md's convention list is a mirror and is stale when they disagree.
+The next epilogue that rewrites CLAUDE.md should replace its convention
+list with a pointer at docs/CONVENTIONS.md.
+
+Nothing in the repo cites conventions 27-29 by number, so renumbering is
+still free if desired. Current assignment stands.
+
+**Where:** `docs/CONVENTIONS.md` (new, canonical), `tests/test_conventions_doc.py`
+(10 tests), `.gitignore` (.claude/ added).
+
+### D-285 old field name: leave as historical record (RAVEN RULING)
+
+D-285's body references `noise_floor_measured_on` (renamed to
+`noise_floor_source` in a concurrent session). Decision bodies are
+historical records (convention 10). The rename is documented in the code,
+the drift tests, and D-297's implementation. No follow-up D-number needed.
+Leave D-285 as written.

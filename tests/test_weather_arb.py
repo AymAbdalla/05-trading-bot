@@ -1356,3 +1356,178 @@ def test_a_missing_current_block_is_its_own_reason():
     reading, status = feed.observation(1.0, 2.0)
     assert reading is None
     assert status == 'downtown_no_current_block'
+
+
+# ---------------------------------------------------------------------------
+# METAR observation cache
+# ---------------------------------------------------------------------------
+#
+# The cache is MODULE level, so `tests/conftest.py` clears it around every test.
+# Without that fixture these tests pass for the wrong reason: whichever test ran
+# first would have seeded 'KNYC' and the rest would never touch their stub.
+
+def _cached_airport(responses, ttl=300.0, clock=None):
+    """An airport feed whose clock is a plain list-backed fake.
+
+    The clock is injected rather than monkeypatched so TTL expiry is tested by
+    ARITHMETIC, not by sleeping. A test that sleeps 300 seconds is a test nobody
+    runs.
+    """
+    return AirportWeatherFeed(session=_StubSession(responses),
+                              retries=2, sleep_fn=lambda s: None,
+                              cache_ttl_sec=ttl, clock=clock or (lambda: 0.0))
+
+
+def _row(temp_c=20.0, icao='KNYC'):
+    return {'icaoId': icao, 'temp': temp_c, 'obsTime': NOW - 60,
+            'rawOb': '{} ...'.format(icao)}
+
+
+def test_a_second_read_of_the_same_station_sends_no_request():
+    feed = _cached_airport([_StubResponse(payload=[_row()])])
+    first, s1 = feed.observation('KNYC')
+    second, s2 = feed.observation('KNYC')
+    assert (s1, s2) == ('ok', 'ok')
+    assert second == first
+    # One HTTP call, two observations. This is the whole point of the cache: a
+    # city's ladder is many markets standing on ONE station.
+    assert len(feed.session.calls) == 1
+    assert feed.stats['cache_hits'] == 1
+    assert feed.stats['cache_misses'] == 1
+
+
+def test_the_cache_is_shared_across_instances_not_per_instance():
+    # A per-instance cache would miss on exactly the repeat a sweep generates,
+    # because WeatherArb builds its feed lazily and a sweep may build several.
+    first = _cached_airport([_StubResponse(payload=[_row()])])
+    first.observation('KNYC')
+    second = _cached_airport([])            # no responses left to serve
+    reading, status = second.observation('KNYC')
+    assert status == 'ok'
+    assert reading is not None
+    assert second.session.calls == []
+
+
+def test_the_cache_key_is_the_icao_so_two_stations_do_not_collide():
+    feed = _cached_airport([_StubResponse(payload=[_row(20.0, 'KNYC')]),
+                            _StubResponse(payload=[_row(30.0, 'KLAX')])])
+    knyc, _ = feed.observation('KNYC')
+    klax, _ = feed.observation('KLAX')
+    assert knyc.station == 'KNYC'
+    assert klax.station == 'KLAX'
+    assert knyc.temp_f != klax.temp_f
+    assert len(feed.session.calls) == 2
+
+
+def test_the_key_is_case_folded_so_knyc_and_KNYC_are_one_entry():
+    feed = _cached_airport([_StubResponse(payload=[_row()])])
+    feed.observation('knyc')
+    reading, status = feed.observation('KNYC')
+    assert status == 'ok'
+    assert reading is not None
+    assert len(feed.session.calls) == 1
+
+
+def test_an_entry_past_its_ttl_is_refetched():
+    now = [0.0]
+    feed = _cached_airport([_StubResponse(payload=[_row(20.0)]),
+                            _StubResponse(payload=[_row(25.0)])],
+                           ttl=300.0, clock=lambda: now[0])
+    first, _ = feed.observation('KNYC')
+    now[0] = 301.0
+    second, _ = feed.observation('KNYC')
+    assert len(feed.session.calls) == 2
+    assert second.temp_f != first.temp_f
+
+
+def test_an_entry_exactly_at_its_ttl_is_expired_not_served():
+    # `now >= expires_at`, so the boundary is a miss. An off-by-one here would
+    # serve a reading one second past the window every single time.
+    now = [0.0]
+    feed = _cached_airport([_StubResponse(payload=[_row(20.0)]),
+                            _StubResponse(payload=[_row(25.0)])],
+                           ttl=300.0, clock=lambda: now[0])
+    feed.observation('KNYC')
+    now[0] = 300.0
+    feed.observation('KNYC')
+    assert len(feed.session.calls) == 2
+
+
+def test_a_ttl_of_zero_disables_the_cache_entirely():
+    feed = _cached_airport([_StubResponse(payload=[_row()]),
+                            _StubResponse(payload=[_row()])], ttl=0.0)
+    feed.observation('KNYC')
+    feed.observation('KNYC')
+    assert len(feed.session.calls) == 2
+    assert 'cache_hits' not in feed.stats
+
+
+def test_a_negative_ttl_is_clamped_rather_than_becoming_a_past_expiry():
+    feed = _cached_airport([_StubResponse(payload=[_row()])], ttl=-5.0)
+    assert feed.cache_ttl_sec == 0.0
+
+
+@pytest.mark.parametrize('responses,expected_status', [
+    ([_StubResponse(status_code=404)], 'feed_http_error'),
+    ([_StubResponse(status_code=503), _StubResponse(status_code=503)],
+     'feed_http_transient'),
+    ([RuntimeError('boom'), RuntimeError('boom')], 'feed_network_failure'),
+    ([_StubResponse(payload=[])], 'airport_no_observation'),
+    ([_StubResponse(payload=[{'temp': float('nan'), 'obsTime': NOW}])],
+     'airport_non_finite_temperature'),
+    ([_StubResponse(payload=[{'obsTime': NOW}])],
+     'airport_no_temperature_field'),
+])
+def test_a_failure_is_never_cached(responses, expected_status):
+    """A cached failure turns one bad minute into five minutes of guaranteed
+    refusals, and the retry that would have fixed it never happens."""
+    from strategies.polymarket.weather_arb import metar_cache_size
+
+    feed = _cached_airport(responses)
+    reading, status = feed.observation('KNYC')
+    assert reading is None
+    assert status == expected_status
+    assert metar_cache_size() == 0
+
+
+def test_a_cached_reading_still_ages_and_is_still_refused_when_stale():
+    """The cache cannot launder a stale observation past the freshness gate.
+
+    `MAX_OBS_AGE_SEC` is checked against the observation's OWN `observed_ts`,
+    never against the time we fetched it, so a cached reading ages at exactly
+    the same rate as a freshly fetched one.
+    """
+    from strategies.polymarket.weather_arb import MAX_OBS_AGE_SEC
+
+    feed = _cached_airport([_StubResponse(payload=[
+        {'icaoId': 'KNYC', 'temp': 20.0, 'obsTime': NOW - 60}])])
+    feed.observation('KNYC')
+    reading, _ = feed.observation('KNYC')          # served from cache
+    assert len(feed.session.calls) == 1
+    # Far enough past the observation that the gate must refuse it.
+    late = NOW + MAX_OBS_AGE_SEC + 120
+    assert reading.age_sec(late) > MAX_OBS_AGE_SEC
+
+
+def test_clear_metar_cache_forces_the_next_read_to_fetch():
+    from strategies.polymarket.weather_arb import (clear_metar_cache,
+                                                   metar_cache_size)
+
+    feed = _cached_airport([_StubResponse(payload=[_row()]),
+                            _StubResponse(payload=[_row()])])
+    feed.observation('KNYC')
+    assert metar_cache_size() == 1
+    clear_metar_cache()
+    assert metar_cache_size() == 0
+    feed.observation('KNYC')
+    assert len(feed.session.calls) == 2
+
+
+def test_the_default_ttl_is_well_under_the_observation_freshness_gate():
+    """If the TTL ever exceeds MAX_OBS_AGE_SEC the cache stops being free: it
+    would hold entries the age gate has already decided are unusable."""
+    from strategies.polymarket.weather_arb import (MAX_OBS_AGE_SEC,
+                                                   METAR_CACHE_TTL_SEC)
+
+    assert METAR_CACHE_TTL_SEC == 300.0
+    assert METAR_CACHE_TTL_SEC < MAX_OBS_AGE_SEC

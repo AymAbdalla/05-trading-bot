@@ -215,6 +215,7 @@ deliberate - convention 6 wants a number and a named harness, and an honest
 """
 import math
 import re
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -253,6 +254,28 @@ USER_AGENT = '05-trading-bot/paper (read-only)'
 #: minutes, and a 59-minute-old reading taken during one is simply a different
 #: temperature. This is the gate that stops us pricing yesterday's air.
 MAX_OBS_AGE_SEC = 3600
+
+#: How long a fetched METAR observation may be re-served from the module cache.
+#: `evaluate()` fetches one observation per MARKET per cycle, and a city's ladder
+#: is many markets standing on ONE station, so the request count scales with the
+#: board and not with the number of stations. Measured 2026-08-18: a 1,299-market
+#: sweep issued 1,299 requests and drew 44 4xx responses from aviationweather.gov.
+#:
+#: A station issues a METAR at most about every 30 minutes, so inside this window
+#: a re-fetch returns the SAME observation. The request buys nothing and the 4xx
+#: it may draw instead costs a decision.
+#:
+#: This cache CANNOT launder a stale reading past the freshness gate, and that is
+#: the property that makes it safe rather than merely convenient. `MAX_OBS_AGE_SEC`
+#: is checked against the observation's OWN `observed_ts`, never against the time
+#: we fetched it, so a cached reading ages at exactly the same rate as a freshly
+#: fetched one and is refused under `airport_obs_stale` at the same instant either
+#: way. The TTL only decides how often we ASK; the age gate alone decides what we
+#: are willing to price.
+#:
+#: EXPIRY: raise this only against a measured request count, never because a sweep
+#: felt slow. Lower it to 0.0 to disable caching outright.
+METAR_CACHE_TTL_SEC = 300.0
 
 #: Minimum gap between our own probability and the walked entry price. 8c is
 #: wide on purpose: it has to absorb the sigma model's known diurnal bias (see
@@ -618,6 +641,44 @@ class _HttpFeed(object):
         return None, 'feed_network_failure'              # pragma: no cover
 
 
+# ---------------------------------------------------------------------------
+# METAR observation cache
+# ---------------------------------------------------------------------------
+#
+# MODULE level, not per instance, and that is the whole point. `WeatherArb`
+# builds its feed lazily and a sweep may build several `AirportWeatherFeed`
+# objects; a per-instance cache would then miss on exactly the repeat that a
+# multi-rung ladder generates. Keyed by ICAO alone because the METAR endpoint's
+# only other parameter is the response format.
+#
+# Values are `(expires_at, Reading)`. `Reading` is a frozen dataclass, so a
+# cached entry cannot be mutated by whoever we hand it to.
+#
+# ONLY successful reads are stored. A 4xx, a network failure, an empty station
+# response and a non-finite temperature are all left uncached deliberately: a
+# cached failure would turn one bad minute into five minutes of guaranteed
+# refusals, and the retry that would have fixed it never happens.
+_METAR_CACHE: Dict[str, Tuple[float, Reading]] = {}
+_METAR_CACHE_LOCK = threading.Lock()
+
+
+def clear_metar_cache() -> None:
+    """Drop every cached observation.
+
+    Tests need this because the cache outlives an instance by design, so one
+    test's fetch would otherwise satisfy the next test's assertion about how
+    many requests were issued.
+    """
+    with _METAR_CACHE_LOCK:
+        _METAR_CACHE.clear()
+
+
+def metar_cache_size() -> int:
+    """Number of cached entries, expired ones included. Diagnostic only."""
+    with _METAR_CACHE_LOCK:
+        return len(_METAR_CACHE)
+
+
 class AirportWeatherFeed(_HttpFeed):
     """METAR observations from aviationweather.gov. THE resolution-relevant one.
 
@@ -625,14 +686,62 @@ class AirportWeatherFeed(_HttpFeed):
     Fahrenheit value carries about 0.9F of quantisation. On a market whose
     threshold is a whole number of degrees F that quantisation is material near
     the line, which is why every row also carries `airport_temp_c`.
+
+    Reads are cached per station for `cache_ttl_sec` (see `METAR_CACHE_TTL_SEC`
+    for why that is safe). `cache_hits` and `cache_misses` are counted
+    SEPARATELY from `requests` in `stats`, because "we did not send a request"
+    and "we sent one and it failed" are different facts and one number for both
+    would hide a feed outage behind a healthy-looking hit rate (convention 20).
     """
 
     url = AVIATION_WEATHER_URL
     source_name = 'airport_metar'
 
+    def __init__(self, session=None, timeout: float = FEED_TIMEOUT_SEC,
+                 retries: int = FEED_RETRIES, sleep_fn=None,
+                 cache_ttl_sec: float = METAR_CACHE_TTL_SEC, clock=None):
+        super().__init__(session=session, timeout=timeout, retries=retries,
+                         sleep_fn=sleep_fn)
+        # Negative would be a cache that expires before it is written, which no
+        # caller means. 0.0 is meaningful and kept: it disables the cache.
+        self.cache_ttl_sec = max(0.0, float(cache_ttl_sec))
+        # Injectable so a test can advance the clock without sleeping, the same
+        # reason `sleep_fn` is injectable.
+        self._clock = clock or time.time
+
+    def _cache_get(self, key: str) -> Optional[Reading]:
+        if self.cache_ttl_sec <= 0:
+            return None
+        now = float(self._clock())
+        with _METAR_CACHE_LOCK:
+            entry = _METAR_CACHE.get(key)
+            if entry is None:
+                return None
+            expires_at, reading = entry
+            if now >= expires_at:
+                # Deleted rather than left in place: an expired entry that stays
+                # is a slow leak in a process that runs for days.
+                del _METAR_CACHE[key]
+                return None
+            return reading
+
+    def _cache_put(self, key: str, reading: Reading) -> None:
+        if self.cache_ttl_sec <= 0:
+            return
+        with _METAR_CACHE_LOCK:
+            _METAR_CACHE[key] = (float(self._clock()) + self.cache_ttl_sec,
+                                 reading)
+
     def observation(self, icao: str) -> Tuple[Optional[Reading], str]:
-        payload, status = self._get_json({'ids': str(icao).upper(),
-                                          'format': 'json'})
+        key = str(icao).upper()
+
+        cached = self._cache_get(key)
+        if cached is not None:
+            self._bump('cache_hits')
+            return cached, 'ok'
+        self._bump('cache_misses')
+
+        payload, status = self._get_json({'ids': key, 'format': 'json'})
         if payload is None:
             return None, status
 
@@ -668,11 +777,15 @@ class AirportWeatherFeed(_HttpFeed):
         except (TypeError, ValueError):
             observed = _parse_iso_seconds(obs_ts)
 
-        return Reading(source=self.source_name,
-                       station=str(row.get('icaoId') or icao).upper(),
-                       temp_f=c_to_f(temp_c),
-                       observed_ts=observed,
-                       raw=row.get('rawOb')), 'ok'
+        reading = Reading(source=self.source_name,
+                          station=str(row.get('icaoId') or icao).upper(),
+                          temp_f=c_to_f(temp_c),
+                          observed_ts=observed,
+                          raw=row.get('rawOb'))
+        # Cached under the REQUESTED icao, not the one the response echoed back:
+        # the next caller will ask by the same key this one did.
+        self._cache_put(key, reading)
+        return reading, 'ok'
 
 
 class DowntownWeatherFeed(_HttpFeed):
@@ -1499,6 +1612,14 @@ def _discovery_keep(raw: dict, now: float) -> Tuple[bool, str, object]:
     if raw.get('acceptingOrders') is False:
         return False, 'not_accepting_orders', None
 
+    # `endDate` is a SETTLEMENT ADMIN timestamp, NOT the close of the
+    # observation window. See `WeatherArb.hours_to_resolution` for the
+    # measurement (Madrid resolves at 12:00Z = 14:00 local, mid-afternoon) and
+    # for why it is documented rather than fixed.
+    #
+    # Used here only as a LIVENESS filter, which is the one job it is actually
+    # fit for: a market whose settlement stamp has passed is over, whatever the
+    # observation window was. Do not read the value as a horizon.
     end_ts = _parse_iso_seconds(raw.get('endDate'))
     if end_ts is None:
         return False, 'end_date_missing', None
@@ -1666,7 +1787,44 @@ class WeatherArb(PolymarketStrategy):
 
     @staticmethod
     def hours_to_resolution(market, now: float) -> Optional[float]:
-        """Hours from `now` until `market.end_date`, or None if unreadable."""
+        """Hours from `now` until `market.end_date`, or None if unreadable.
+
+        ## KNOWN LIMITATION: `endDate` is a SETTLEMENT timestamp, not the close
+        ## of the observation window. Documented, deliberately not fixed.
+
+        Measured 2026-08-18 on live Gamma markets: Madrid's `endDate` is 12:00Z,
+        which is 14:00 local. That is mid-afternoon. It is not the end of the
+        station's calendar day, and on a "highest temperature today" market the
+        afternoon peak has typically not even happened yet at that hour.
+
+        So this returns hours-until-an-admin-timestamp, and the number the
+        physics wants is hours-until-the-observation-window-closes, which for a
+        daily-extreme market is local midnight at the station. The two differ by
+        hours, in a direction that varies by city and by the market's own
+        timezone, so there is no constant offset that repairs it.
+
+        Two consumers are affected, and BOTH are inside the gate that is
+        currently closed:
+
+          - `max_hours_to_resolution` admits and rejects against the wrong
+            horizon.
+          - `sigma_f(hours)` is fed the wrong horizon, and it is the term under
+            the square root, so an understated horizon understates the
+            uncertainty and OVERSTATES every edge computed from it.
+
+        This is moot today and only today: `allow_daily_extreme_markets`
+        defaults to False, so every market that would exercise this is refused
+        upstream under `daily_extreme_not_priced_by_point_in_time_model` and no
+        entry is ever priced off this number. It is NOT moot for whoever builds
+        the daily-extreme model. Fixing it needs the station's local timezone
+        and the market's own resolution language parsed into a window close, not
+        an offset applied to `endDate`.
+
+        Left as-is ON PURPOSE. Changing the horizon now would silently move
+        `resolution_too_far_out` and every `sigma_f` in the logged tape while the
+        strategy is gated off, which would make the pre-model rows and the
+        post-model rows non-comparable for no gain (convention 17).
+        """
         end_ts = _parse_iso_seconds(getattr(market, 'end_date', None))
         if end_ts is None:
             return None

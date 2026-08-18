@@ -650,25 +650,29 @@ class DipArb(PolymarketStrategy):
         condition and a permanent design fact, and one number for both would
         make the first invisible.
 
-        ## OPEN CONFLICT, 2026-08-18: the loop was fixed from the other end too
+        ## RESOLVED by D-300, 2026-08-18: this method is the surviving fix
 
-        `PolymarketShadowLoop` now does CAPABILITY DISPATCH: it calls
-        `estimate()` only on managers where `hasattr(strategy, 'estimate')`, and
-        records the rest in an `exit_no_fair_value_protocol` SET reported as a
-        gauge. That fix was written on the explicit premise that DipArb has no
-        `estimate()`, and its comment says so.
+        The loop was fixed from the other end too. `PolymarketShadowLoop` does
+        CAPABILITY DISPATCH: it calls `estimate()` only on managers where
+        `hasattr(strategy, 'estimate')`, and records the rest in an
+        `exit_no_fair_value_protocol` SET reported as a gauge. That fix was
+        written on the explicit premise that DipArb has no `estimate()`.
 
-        The two changes compose safely - with this method present DipArb takes
-        the try/except branch, never raises, and
-        `health['exit_fair_value_exceptions']` stays clean - but they cannot
-        both be the reason, and the gauge now reads 0 instead of one entry per
-        asset. That is arguably the BETTER invariant ("every exit manager
-        implements the protocol, so any nonzero reading is a wiring bug", which
-        also catches a fair-value strategy that loses its `estimate()` in a
-        refactor, a breakage the gauge currently absorbs silently). It is still
-        a decision, not Cody's to make unilaterally: ONE of the two rationales
-        has to be retired under a D-number, and until that happens the comment
-        in `shadow_loop.__init__` describing this strategy is stale.
+        Raven ruled (D-300): THIS method stands, and that premise is retired.
+        Declaring `manages_exits = True` obliges a strategy to ship an
+        `estimate()` the loop can call, so the obligation is met here rather
+        than worked around there.
+
+        The dispatch in `shadow_loop.__init__` is deliberately NOT removed. It
+        is redundant with this method today and is kept as a safety guard for a
+        future exit-managing strategy that declares the flag without shipping
+        the method. Its comment has been updated to say so.
+
+        The consequence worth knowing: with every current manager implementing
+        the protocol, `health['exit_no_fair_value_protocol']` reads 0 rather
+        than one entry per asset. That makes any NONZERO reading a wiring bug,
+        which also catches a fair-value strategy that loses its `estimate()` in
+        a refactor - a breakage the pre-dispatch shape absorbed silently.
         """
         if ctx is None:
             return TapeMeanEstimate(False, EST_NO_CONTEXT,
