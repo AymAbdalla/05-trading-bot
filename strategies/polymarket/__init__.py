@@ -334,6 +334,25 @@ today. The other two are refusals, and each refuses for its own reason.
                               every row, and needs the scorer to charge
                               unsellable positions at realised resolution PnL,
                               same treatment as the fair-value family.
+
+## Proposal 032, appended at index 22
+
+  PM_longshot_fade_hold_to_resolution   Buys the crypto Up/Down favorite at
+                              93-97c in the final 1-5 minutes of a 15m window
+                              when a diffusion model (sigma fitted from the
+                              strategy's OWN in-memory, per-asset, unpersisted
+                              15m-window tape) says it is underpriced; holds to
+                              resolution. Declares `manages_exits = True` for a
+                              single thesis-invalidation stop (spot crosses back
+                              through strike AND favorite bid <= 0.80), not for a
+                              converged-mid or time-based exit - resolution stays
+                              the primary exit. Needs at least 5 hours of
+                              continuous per-asset uptime before its sigma
+                              estimator has 20 completed windows to measure from;
+                              a shadow-loop restart resets that tape to empty.
+                              Its own module docstring is the authority, including
+                              the honest limit on its "max 2 concurrent" self-cap
+                              (enforced per asset instance, not system-wide).
 """
 from strategies.polymarket.base import (BINARY_STOP, BINARY_TARGET, PAPER_MODE,
                                         Decision, Leg, MarketContext,
@@ -354,6 +373,8 @@ from strategies.polymarket.fair_value_arb_patient import FairValueArbPatient
 from strategies.polymarket.fair_value_arb_wide import FairValueArbWide
 from strategies.polymarket.grid_hedge import GridHedge
 from strategies.polymarket.liq_cascade_chaser import LiqCascadeChaser
+from strategies.polymarket.longshot_fade_hold_to_resolution import \
+    LongshotFadeHoldToResolution
 from strategies.polymarket.maker_rebate_corridor_quote_ladder import \
     MakerRebateCorridorQuoteLadder
 from strategies.polymarket.mid_price_continuation import MidPriceContinuation
@@ -433,6 +454,12 @@ def build_strategies(dip_arb_tape_db_path=None):
         # state (`_entered_rungs`) like `GridHedge`'s per-window rung state,
         # so it needs the same fresh-instance isolation as everything above it.
         StatusQuoCollector(),
+        # APPENDED, at index 22 (proposal 032). Carries a per-instance,
+        # per-asset 15m-window tape (`WindowTapeByAsset`) and open-position
+        # tracking (`_open`), so it needs the same fresh-instance isolation as
+        # everything above it. See its module docstring: the tape is
+        # in-memory only and a restart resets it to empty.
+        LongshotFadeHoldToResolution(),
     ]
 
 
@@ -448,5 +475,6 @@ __all__ = [
     'LiqCascadeChaser', 'SmallLiqContinuation', 'NearLiqTrigger',
     'SmartMoneyCopy', 'WeatherArb', 'GridHedge', 'DipArb', 'StatusQuoCollector',
     'MakerRebateCorridorQuoteLadder', 'SmartMoneyCallers',
+    'LongshotFadeHoldToResolution',
     'build_strategies',
 ]

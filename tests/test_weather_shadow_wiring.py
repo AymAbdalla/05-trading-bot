@@ -565,13 +565,14 @@ def test_the_registry_still_returns_twenty_and_weather_arb_is_index_16():
 
     The INDEX pin is the load-bearing half and it has not moved.
     `PM_maker_rebate_quote_ladder` (proposal 024) was appended at index 19,
-    `PM_smart_money_callers` (proposal 027) at index 20, and
-    `PM_status_quo_collector` (proposal 028) at index 21, so the total is now
-    22 and every historical position before 19 is unchanged.
+    `PM_smart_money_callers` (proposal 027) at index 20,
+    `PM_status_quo_collector` (proposal 028) at index 21, and
+    `PM_longshot_fade_hold_to_resolution` (proposal 032) at index 22, so the
+    total is now 23 and every historical position before 19 is unchanged.
     """
     from strategies.polymarket import build_strategies
     names = [s.strategy_name for s in build_strategies()]
-    assert len(names) == 22
+    assert len(names) == 23
     assert names[16] == 'PM_weather_arb'
     assert names[19] == 'PM_maker_rebate_quote_ladder'
 

@@ -1171,12 +1171,17 @@ class TestWiring:
         # The three parameter VARIANTS inherit `manages_exits = True`, which is
         # the point of them - same exit machinery, different constants.
         #
-        # `PM_dip_arb` is the one member from OUTSIDE this family, added when it
-        # was registered in `build_strategies()`. It is legitimate: it is the
-        # only other strategy in the package that sells before resolution, and
-        # it ships its own `manage_exit` AND `exit_decisions`. Everything else
-        # here holds to resolution, and the shadow loop would start polling
-        # `manage_exit` on a strategy that does not have one.
+        # `PM_dip_arb` is one member from OUTSIDE this family, added when it
+        # was registered in `build_strategies()`. It is legitimate: it sells
+        # before resolution and ships its own `manage_exit` AND
+        # `exit_decisions`. `PM_longshot_fade_hold_to_resolution` (proposal
+        # 032) is a second outside member: its PRIMARY exit is resolution
+        # (like every strategy below this list), but it declares the flag for
+        # Exit B, a thesis-invalidation stop that can sell early on a small
+        # minority of entries - see that module's own docstring. Everything
+        # else here holds to resolution unconditionally, and the shadow loop
+        # would start polling `manage_exit` on a strategy that does not have
+        # one.
         #
         # So the list is no longer a prefix test. What it still guards is the
         # thing that actually breaks: a strategy claiming the flag WITHOUT the
@@ -1189,7 +1194,8 @@ class TestWiring:
                          'PM_fair_value_arb_patient',
                          'PM_fair_value_arb_hft',
                          'PM_fair_value_arb_inverse',
-                         'PM_dip_arb']
+                         'PM_dip_arb',
+                         'PM_longshot_fade_hold_to_resolution']
         # The flag is a promise about the interface. Check the interface.
         for s in managers:
             assert callable(getattr(s, 'manage_exit', None)), s.strategy_name

@@ -744,6 +744,52 @@ SKIP_CLASSIFICATION: Dict[str, Tuple[str, str]] = {
     # pair_complete: a condition on live state, evaluated and found false.
     'ladder_rung_not_yet_reached': (GENUINE, ''),
     'ladder_fully_filled': (GENUINE, ''),
+
+    # --- longshot fade hold to resolution (proposal 032) --------------------
+    # `asset_for_slug` found no registered crypto asset for this market's slug
+    # prefix - the same wrong-instrument shape as `not_a_temperature_market`:
+    # the strategy has no per-asset tape or sigma model for a market this is
+    # not built to trade, so it never evaluated a real entry condition on it.
+    'unknown_asset_for_tape': (
+        DATA_BLOCKER, "an asset identity for this market's slug "
+                      '(`asset_for_slug`) - the slug prefix is not a '
+                      'registered crypto asset'),
+    # `ctx.seconds_remaining` is a real clock value, evaluated against the
+    # real [60, 300] entry band and found outside it. Same shape as
+    # `not_final_third_of_15m`.
+    't_rem_outside_entry_window': (GENUINE, ''),
+    # `self._open`, this instance's own live position count, evaluated
+    # against `MAX_CONCURRENT_POSITIONS` and found at cap - same shape as
+    # `already_entered_this_window`, a condition on live state.
+    'strategy_concurrency_cap_reached': (GENUINE, ''),
+    # `sigma_window_bps` is computed from 20+ REAL completed windows (the
+    # `insufficient_window_history` gate above already refused anything
+    # short of that). A non-positive result means those real windows showed
+    # zero measured variance, a real if degenerate measurement - same shape
+    # as `book_implied_exact_tie`, not a missing input.
+    'non_positive_sigma_rem': (GENUINE, ''),
+    # The favorite token's book was present but its ask side was empty -
+    # same shape as `no_asks`.
+    'no_favorite_ask': (DATA_BLOCKER, 'ask side of the book for the '
+                                      'favorite token'),
+    # A real best ask, evaluated against the real [0.93, 0.97] band and
+    # found outside it.
+    'favorite_ask_outside_entry_band': (GENUINE, ''),
+    # The tail token's book was present but its bid side was empty - same
+    # shape as `no_bids`.
+    'no_tail_bid': (DATA_BLOCKER, 'bid side of the book for the tail token'),
+    # The tail token's best bid was real, evaluated against
+    # `TAIL_BID_MULTIPLE * p_tail` and found already at or below it - "a
+    # market that already agrees with the model is not a trade" (the
+    # module's own docstring). A real condition on real state, found true.
+    'tail_bid_already_converged_with_model': (GENUINE, ''),
+    # `shares = floor(NOTIONAL_USDC / a_fav)` from a real favorite ask,
+    # found below the exchange minimum - same shape as
+    # `unsizable_at_notional_cap`.
+    'unsizable_at_notional': (GENUINE, ''),
+    # `effective_ask_for` walked the real book up to `MAX_FAVORITE_ASK` and
+    # could not fill the full size - same shape as `unfillable_at_cap`.
+    'unfillable_at_favorite_ask_cap': (GENUINE, ''),
 }
 
 #: Reasons NO STRATEGY CAN EMIT ANY MORE, kept because rows logged before the
