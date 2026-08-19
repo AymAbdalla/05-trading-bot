@@ -1657,3 +1657,35 @@ def test_paper_adapter_no_longer_defines_its_own_notional_cap(tmp_path):
     source = inspect.getsource(pa_module)
     assert 'risk_constraints.DEFAULT_LIMITS.per_trade_notional_usd' in source
     assert "cfg.get('notional_cap_usdc', 10.0)" not in source
+
+
+def test_config_yaml_notional_cap_matches_the_delegated_default():
+    """Pin the number D-343 R1 ratified on the adapter's CONFIG surface.
+
+    The test above proves the adapter's module DEFAULT delegates. It says
+    nothing about `config.yaml`, and a config override WINS over that default
+    on every adapter the loop actually builds - so
+    `polymarket.notional_cap_usdc` is the last place a stale literal could
+    silently win. Per-trade twin of
+    `test_config_yaml_max_total_exposure_matches_the_delegated_default` in
+    `tests/test_polymarket_risk_gate.py`.
+    """
+    import yaml
+    from engine.risk import constraints as risk_constraints
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(repo_root, 'config.yaml')) as fh:
+        cfg = yaml.safe_load(fh)
+
+    assert (cfg['polymarket']['notional_cap_usdc']
+            == risk_constraints.DEFAULT_LIMITS.per_trade_notional_usd)
+
+    # The risk GATE's own per-trade surface, pinned explicitly. The scalar
+    # loop in `test_config_yaml_matches_the_module_defaults` already covers
+    # this transitively - it compares a gate built from config.yaml against a
+    # gate built with no config, and that gate default now sources
+    # DEFAULT_LIMITS. Verified by reading it, not assumed. This line exists so
+    # a future reader sees BOTH config surfaces pinned to one number in one
+    # place, rather than having to reconstruct the transitive path.
+    assert (cfg['polymarket']['risk']['notional_cap_usdc']
+            == risk_constraints.DEFAULT_LIMITS.per_trade_notional_usd)
