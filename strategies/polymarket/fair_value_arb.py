@@ -125,6 +125,14 @@ from strategies.polymarket.base import (GENERAL_BINARY_MARKET_TYPES,
                                         tiered_stop_features,
                                         tiered_stop_price, window_atr)
 
+#: Set on every row from this point in `evaluate()` onward (D-329 Task 2, the
+#: Opus Q3 measurement): the COMPLEMENT token's own ask at entry, plus its
+#: identity. `features_json` had `best_ask` for the side taken and no
+#: complement mapping anywhere in the DB (61.7% of token-timestamps
+#: over-match on mid-sum, per the Opus analysis) - this is the prerequisite
+#: for the structural no-arbitrage family (`yes_ask + no_ask < 1`), not an
+#: attempt at the arbitrage measurement itself.
+
 # Never False in this repo. Nothing here has live-trading authority.
 PAPER_MODE = True
 
@@ -636,6 +644,9 @@ class FairValueArb(PolymarketStrategy):
         side = best['side']
         fair = best['fair']
         book = best['book']
+        # The other candidate in the same binary pair - always exactly one,
+        # since `candidates` is built over `('Up', 'Down')` above.
+        counter = next(c for c in candidates if c is not best)
         feats.update({
             'outcome_side': side,
             'side_fair_value': round(fair, 6),
@@ -652,6 +663,13 @@ class FairValueArb(PolymarketStrategy):
             'raw_edge': round(best['raw_edge'], 4),
             'confidence': round(fair, 6),
             'confidence_is_model_output_not_measured_win_rate': True,
+            # D-329 Task 2 (Opus Q3 measurement). LOGGING ONLY: no gate below
+            # reads these. `counter_ask` is None when the complement book has
+            # no ask, same as `best_ask` can be.
+            'counter_side': counter['side'],
+            'counter_ask': counter['best_ask'],
+            'counter_token_id': (None if ctx.market is None
+                                 else ctx.market.token_id(counter['side'])),
         })
 
         # The cap IS the edge. Quote the worst price at which the trade still

@@ -87,6 +87,16 @@ and the wording of the conventions that have been contested.
     proposal 034's strategy with zero test files. Both claims were repeated
     downstream before anyone ran `git show --stat`. Run it.
 
+32. **A fade or mirror claim is reported split by `fill_was_maker`, never
+    pooled.** D-326's original ruling (+$281.74 mirrored, t=3.46, n=345)
+    pooled maker and taker fills and was wrong: 80% of that evidence was
+    maker fills, which cannot be mirrored (a maker fill only happens because
+    the market already moved through our resting limit - the counterfactual
+    "take the other side instead" does not exist for it). The taker-only
+    number was t=1.19 on n=116, below the kill bar. `positions.fill_was_maker`
+    (D-329) exists so this split is a query, not a re-derivation, the next
+    time someone reports a fade or mirror result.
+
 ---
 
 ## Numbering note for 27, 28 and 29 (open, needs a Raven ruling)

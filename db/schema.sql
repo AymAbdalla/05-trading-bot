@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS positions (
     r_multiple      REAL,                -- realized R, NULL if still open
     exit_reason     TEXT,                -- 'target' | 'stop' | 'signal_exit' | 'manual_halt' | 'daily_loss_halt'
     mode            TEXT NOT NULL DEFAULT 'paper',
+    fill_was_maker      INTEGER NOT NULL DEFAULT 0, -- D-329 Task 2: 1 if this fill crossed OUR OWN resting bid (`PaperPosition.entry_liquidity == 'maker'`), 0 for a taker fill or a row that predates this column (backfilled false, per the Opus Q3 measurement - fill provenance must never again be pooled)
     pair_id             TEXT,    -- joins the two leg rows of one multi-leg decision
     leg_index           INTEGER, -- 1-based position in Decision.legs, in submission order
     leg_target_px       REAL,    -- the price this leg was priced at when the pair was decided

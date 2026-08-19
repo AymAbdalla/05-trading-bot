@@ -13,6 +13,7 @@ This file is OFFLINE, same as test_polymarket_shadow_loop.py: no test here
 opens a socket or runs a cycle, so no candle/book fakes are needed - only
 enough of a client to let `PolymarketShadowLoop` construct itself.
 """
+import logging
 from collections import Counter
 
 import pytest
@@ -155,16 +156,67 @@ def test_filter_shrinks_the_evaluations_per_cycle_identity(tmp_path):
         len(rt.strategies) for rt in loop.runtimes.values())
 
 
-def test_unknown_name_in_the_whitelist_matches_nothing_silently(tmp_path):
-    """A typo does not raise; it just routes zero strategies for that name.
+def test_unknown_name_in_the_whitelist_matches_nothing_but_warns(tmp_path,
+                                                                caplog):
+    """A typo does not raise; it routes zero strategies AND says so.
 
-    Matches how `filter_strategies_by_name` is written (a set-membership
-    filter, no validation) - documented here so a future change in behaviour
-    (e.g. raising on an unmatched name) is a deliberate decision, not a
-    silent regression either way.
+    The no-op is deliberate (a typo must not take down a shadow run
+    mid-flight), so the behaviour below is unchanged from when the filter
+    landed. What is new is that the no-op is no longer silent: convention 20,
+    a silent skip is a missing number. Documented here so a future change in
+    behaviour (e.g. raising on an unmatched name) is a deliberate decision,
+    not a silent regression either way.
     """
     loop = build_loop(tmp_path, assets=('btc',))
-    filter_strategies_by_name(loop, 'PM_this_strategy_does_not_exist')
+    with caplog.at_level(logging.WARNING, logger=shadow_loop.__name__):
+        filter_strategies_by_name(loop, 'PM_this_strategy_does_not_exist')
+
     assert loop.strategies == []
     assert loop.weather_strategies == []
     assert all(space.strategies == [] for space in loop.spaces)
+
+    warnings = [r.getMessage() for r in caplog.records
+                if r.levelno == logging.WARNING]
+    assert any('matched nothing' in m
+               and 'PM_this_strategy_does_not_exist' in m
+               for m in warnings), warnings
+
+
+def test_partial_whitelist_warns_for_the_typo_and_keeps_the_matched_subset(
+        tmp_path, caplog):
+    """The realistic failure: one good name, one typo, in the same --strategies.
+
+    This is the case the warning exists for. Without it the run just quietly
+    evaluates a thinner book than the operator asked for, and the A/B result
+    reads as clean evidence about a set of strategies that never ran.
+    """
+    good = CRYPTO_NAMES[0]
+    loop = build_loop(tmp_path, assets=('btc',))
+    with caplog.at_level(logging.WARNING, logger=shadow_loop.__name__):
+        filter_strategies_by_name(loop, '%s,PM_typo_not_a_strategy' % good)
+
+    # the run still proceeds, with exactly the matched subset.
+    assert _all_routed_names(loop) == {good}
+
+    warnings = [r.getMessage() for r in caplog.records
+                if r.levelno == logging.WARNING and 'matched nothing' in r
+                .getMessage()]
+    assert len(warnings) == 1, warnings
+    assert 'PM_typo_not_a_strategy' in warnings[0]
+    # and it does not slander the name that DID match.
+    assert good not in warnings[0]
+
+
+def test_fully_matched_whitelist_emits_no_warning(tmp_path, caplog):
+    """Negative control: without this, a warning that always fires would pass.
+
+    Every name in WHITELIST is routed somewhere (see the filter test above),
+    so there is nothing to warn about and the log must stay quiet.
+    """
+    loop = build_loop(tmp_path)
+    with caplog.at_level(logging.WARNING, logger=shadow_loop.__name__):
+        filter_strategies_by_name(loop, ','.join(WHITELIST))
+
+    assert _all_routed_names(loop) == set(WHITELIST)
+    assert not [r for r in caplog.records
+                if 'matched nothing' in r.getMessage()]

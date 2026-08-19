@@ -418,6 +418,7 @@ from strategies.polymarket.fair_value_arb_hft import FairValueArbHFT
 from strategies.polymarket.fair_value_arb_inverse import FairValueArbInverse
 from strategies.polymarket.fair_value_arb_patient import FairValueArbPatient
 from strategies.polymarket.fair_value_arb_wide import FairValueArbWide
+from strategies.polymarket.fair_value_mirror_fade import FairValueMirrorFade
 from strategies.polymarket.fair_value_settlement_exit import \
     FairValueSettlementExit
 from strategies.polymarket.grid_hedge import GridHedge
@@ -524,6 +525,14 @@ def build_strategies(dip_arb_tape_db_path=None):
         # `FairValueArb`'s price tape via inheritance rather than a second
         # one - see its own module docstring.
         FairValueSettlementExit(),
+        # APPENDED, at index 25 (D-326, the mirror-fade probe). Carries
+        # per-instance open-position tracking (`_open`) for its concurrency
+        # self-cap, the same shape `FairValueSettlementExit` and
+        # `LongshotFadeHoldToResolution` need, so it needs the same
+        # fresh-instance isolation as everything above it. Reuses
+        # `FairValueArb`'s price tape via inheritance rather than a second
+        # one - see its own module docstring.
+        FairValueMirrorFade(),
     ]
 
 
@@ -540,6 +549,6 @@ __all__ = [
     'SmartMoneyCopy', 'WeatherArb', 'GridHedge', 'DipArb', 'StatusQuoCollector',
     'MakerRebateCorridorQuoteLadder', 'SmartMoneyCallers',
     'LongshotFadeHoldToResolution', 'WeatherBracketWidthMatched',
-    'FairValueSettlementExit',
+    'FairValueSettlementExit', 'FairValueMirrorFade',
     'build_strategies',
 ]

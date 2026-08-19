@@ -440,10 +440,12 @@ class TestConcurrencyCap:
 
 class TestRegistry:
 
-    def test_registry_is_twenty_five_and_this_strategy_is_index_24(self):
+    def test_registry_is_twenty_six_and_this_strategy_is_index_24(self):
+        # 26 since `PM_fair_value_mirror_fade` (D-326) was APPENDED at index
+        # 25, after this strategy.
         from strategies.polymarket import build_strategies
         names = [st.strategy_name for st in build_strategies()]
-        assert len(names) == 25
+        assert len(names) == 26
         assert names[:8] == [
             'PM_streak_snapper', 'PM_mid_price_continuation', 'PM_box_builder',
             'PM_corridor_collector', 'PM_temporal_arbitrage', 'PM_corridor_pair',
@@ -452,6 +454,7 @@ class TestRegistry:
         assert names[22] == 'PM_longshot_fade_hold_to_resolution'
         assert names[23] == 'PM_weather_bracket_width_matched'
         assert names[24] == STRATEGY_NAME
+        assert names[25] == 'PM_fair_value_mirror_fade'
 
     def test_declares_crypto_only_unlike_the_parent(self):
         from strategies.polymarket import FairValueArb, FairValueSettlementExit

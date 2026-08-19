@@ -3050,3 +3050,155 @@ that actually serves the route (blocker 2). Both must clear. Neither alone
 unblocks 027.
 
 **Where:** no code changed. This entry is the record.
+---
+
+### D-326. Fair-value mirror-fade probe: fade direction approved, then AMENDED to PAUSED on split evidence (RATIFIED by execution under Raven's ruling, then AMENDED under Raven's ruling on Opus's planning-session correction, 2026-08-19)
+
+**Original ruling** (`docs/handoffs/from-raven/2026-08-19-mirror-fade-probe.md`,
+Raven, 01:20 EDT, under Aym's overnight authority). Opus's edge analysis
+(`docs/handoffs/2026-08-19-opus-edge-analysis.md`) found the fair_value model
+anti-predictive (slope 0.30 against a well-calibrated forecaster's 1.0, 87%
+of forecasts pinned in [0.4, 0.6]) and reported that mirroring 345 positions
+already held to settlement flips the observed -$294.35 to **+$281.74**
+(t=3.46) - "the complement of the model's selection is the one real signal
+in the book." Approved as the primary experiment: build
+`strategies/polymarket/fair_value_mirror_fade.py`, the exact complement of
+the fair_value model's selection, shadow-only, crypto Up/Down only,
+registered at index 25 (registry now 26).
+
+**Amendment** (`docs/handoffs/2026-08-19-opus-planning-session.md`, Opus,
+~01:05 EDT; ratified here under Raven's `docs/handoffs/from-raven/
+2026-08-19-execute-opus-plan.md`, 01:15 EDT). The +$281.74 does not survive
+being split by HOW each fill happened:
+
+| subset | n | mirror net | t |
+|---|---|---|---|
+| ALL settled (the original evidence) | 355 | +$281.74 | 3.46 |
+| TAKER (executable) | 169 | +$51.15 | 1.52 |
+| TAKER excl. ask <= 0.10 | 116 | +$40.24 | **1.19** |
+
+80% of the pooled evidence is MAKER fills, and a maker fill cannot be
+mirrored: `paper_adapter.py:1088 _through_and_touch` fills a resting BUY
+only after the best ask has fallen strictly below the limit, and
+`_fill_resting_buy` (line 1461) books it AT the limit - so the fill exists
+only in a state that already moved against us, priced pre-move. That is the
+simulator restating its own (deliberately conservative) fill rule, not a
+market measurement. The executable, taker-only portion is t=1.19 on n=116,
+below the t>=2.0 kill bar this strategy was always going to be judged
+against.
+
+**Decision.** `PM_fair_value_mirror_fade` ships PAUSED, not deleted:
+`supported_market_types = ('smart_money',)` (the D-322/D-323 sentinel),
+construction-valid, in the registry at index 25, never routed. New kill
+condition: dead unless taker-only settled mirror PnL reaches t >= 2.0 on
+n >= 250, excluding entries below ask 0.10, measured on THIS FILE's own
+trades once unpaused - not the retrospective mirror the original ruling
+used, which was measured on trades the PARENT strategies' gates selected.
+What is NOT retracted: execution = ~9% of the fair_value family's loss,
+model = ~91%; the model is still bad. Only "fading it is the proven fix" is
+downgraded to "fading it is unproven." See convention 32 (new, D-329): a
+fade/mirror claim is reported split by `fill_was_maker`, never pooled again.
+
+**Where:** `strategies/polymarket/fair_value_mirror_fade.py` (module
+docstring correction, class docstring, `supported_market_types`),
+`tests/test_fair_value_mirror_fade.py` (pause + registry tests),
+`docs/CONVENTIONS.md` (32).
+
+---
+
+### D-327. 034 re-gated as a calibration probe, not a profit strategy (RATIFIED by execution under Raven's ruling, 2026-08-19)
+
+**Finding.** `PM_fair_value_settlement_exit` (034) had never entered a trade:
+1,131 signals, zero acted. `max_trades_this_window` alone ate 643 of them
+(57%) - the throttle, not the edge, was starving it before its exit model
+could be measured at all. Separately, Opus's edge analysis
+(`docs/handoffs/2026-08-19-opus-edge-analysis.md`, Task 1.5) found the
+proposal's own premise backwards: 034 exists to "halve the round trip" by
+holding to settlement, but that round trip is ~0.26c/share, while the book's
+existing hold-to-settlement population already measures **3.4x worse per
+share than stopping out** inside 034's own entry band (-8.80c/share settled
+vs -2.59c/share intraday-exited, n=203 vs n=953, entry 0.15-0.55). This
+finding is independent of the mirror-fade maker/taker-fill contamination
+issue raised the same night (see `docs/handoffs/2026-08-19-opus-planning-session.md` and Raven's `2026-08-19-execute-opus-plan.md`, which amend D-326 separately - not restated here) - it comes
+from a different measurement (entry-ask-vs-realised-frequency calibration on
+taker-only fair_value signals) and is confirmed unaffected by Opus's own
+follow-up planning session (`docs/handoffs/2026-08-19-opus-planning-session.md`):
+"the 034 re-gate (mirror-fade directive Task 2) is good and should proceed -
+unaffected by any of this."
+
+**Decision.** 034 stays in the registry (it is the only instrumented
+settlement path for the fair_value selector) but is re-gated as a
+MEASUREMENT INSTRUMENT rather than a profit strategy. Its inherited
+`max_trades_per_window` is raised from the parent's default (3) to 12
+(`MAX_TRADES_PER_WINDOW` in `fair_value_settlement_exit.py`) so it can
+actually accumulate entries - the real safety bound stays
+`MAX_CONCURRENT_POSITIONS` (2, unchanged), since a hold-to-resolution
+strategy never frees a slot early the way the exit-before-resolution parent
+does. Its kill condition is replaced: **dead if realised settlement
+frequency over its first 60 entries is below 0.30, against a mean entry ask
+of 0.33** (break-even for a hold-to-settlement strategy is the price paid;
+0.33 is Opus's measured mean entry ask over the 10,630 fair_value-family
+signals that pass 034's own gate, `edge >= 0.05` / `ask <= 0.60`). Fewer than
+60 entries resolved within 14 days -> NOT_TESTED, requeue (convention 11).
+The proposal's original condition (net P&L per resolved position below 0.00
+over 200+ positions) never bound and is superseded, kept in the module
+docstring for the record.
+
+**Where:** `strategies/polymarket/fair_value_settlement_exit.py` (module
+docstring, class docstring, `MAX_TRADES_PER_WINDOW` constant,
+`__init__`'s `max_trades_per_window` parameter).
+
+
+---
+
+### D-329. Opus's ranked plan for the rest of the window is ratified and executed: mirror-fade PAUSED, two Q3 measurements shipped, convention 32 added (RATIFIED by execution under Raven's ruling, 2026-08-19)
+
+**Ruling** (`docs/handoffs/from-raven/2026-08-19-execute-opus-plan.md`,
+Raven, 01:15 EDT): Opus's ranked plan from the planning session
+(`docs/handoffs/2026-08-19-opus-planning-session.md`,
+`docs/PLAN-2026-08-19.md`) is ratified in full and executed this session:
+
+1. **D-326 amended** (above): mirror-fade probe ships PAUSED.
+2. **Two Q3 measurements** (Opus's Q3: "the complement token's own ask at
+   entry, plus the complement token's identity" is the prerequisite for the
+   structural no-arbitrage family; complement-mapping by mid-sum over-matches
+   61.7% of token-timestamps, so this is instrumentation, not the arbitrage
+   measurement itself, per convention 11):
+   - `signals.features_json`: `counter_ask`, `counter_side`,
+     `counter_token_id` added in `strategies/polymarket/fair_value_arb.py`'s
+     shared `evaluate()` (convention 23: the model computation exists at
+     exactly one site, and every family member -
+     `FairValueArb`/`Wide`/`Patient`/`HFT`/`Inverse`,
+     `FairValueSettlementExit`, `FairValueMirrorFade` - inherits it).
+   - `positions.fill_was_maker`: added via the same `ALTER TABLE ADD COLUMN`
+     migration shape `_migrate_positions_pair_linkage_columns` uses
+     (proposal 030), read off `PaperPosition.entry_liquidity` (already
+     tracked by the maker-fill machinery, not re-derived) inside
+     `PolymarketStore.record_entry`. `DEFAULT 0` backfills every existing
+     row to false, per instruction.
+3. **Convention 32** (`docs/CONVENTIONS.md`): a fade/mirror claim is
+   reported split by `fill_was_maker`, never pooled.
+4. **Env B whitelist correction NOTED, not applied live**:
+   `filter_strategies_by_name()` takes its list once, at process
+   construction (the `--strategies` CLI flag), so it cannot be updated on
+   the running process (PID 38881, tmux `shadow-survivors`) without a
+   restart, and this session does not restart it (Raven's instruction).
+   Corrected whitelist for the next natural restart, per Opus's Q1
+   (`docs/PLAN-2026-08-19.md` Q1): drop `PM_dip_arb` (t=-2.25, inconsistent
+   with D-323's own bar) and `PM_fair_value_arb_wide` (same broken model);
+   add `PM_corridor_collector` (n=5, model-independent). Recommended 9:
+   `PM_temporal_arbitrage, PM_small_liq_continuation,
+   PM_fair_value_arb_patient, PM_corridor_collector,
+   PM_longshot_fade_hold_to_resolution, PM_weather_bracket_width_matched,
+   PM_fair_value_settlement_exit, PM_weather_arb, PM_streak_snapper` (the
+   last tagged maker-only, never pooled per convention 32).
+
+**Not done, explicitly out of scope this session:** the main loop and env B
+were not restarted (report "ready for restart", per instruction); the
+complement-mapping logic itself was not attempted (Opus proved it
+over-matches - NOT_TESTED, convention 11); the Forge brief (Opus Q4) is
+unread, in scope for whoever runs Forge next.
+
+**Where:** see D-326 for the mirror-fade files;
+`strategies/polymarket/fair_value_arb.py`, `engine/polymarket/shadow_loop.py`,
+`db/schema.sql` for the Q3 measurements; `docs/CONVENTIONS.md` for 32.

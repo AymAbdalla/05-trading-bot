@@ -710,6 +710,42 @@ class ShadowStore:
                     name, sql_type))
         self.conn.commit()
 
+    #: D-329 Task 2 (Opus Q3 measurement): fill provenance, so a fade/mirror
+    #: claim can never again pool maker fills (adverse-selected by the fill
+    #: rule itself, see `paper_adapter._through_and_touch`) with taker fills.
+    #: Same reasoning as `_POSITIONS_PAIR_LINKAGE_COLUMNS` above: `CREATE
+    #: TABLE IF NOT EXISTS` is a no-op against a `positions` table that
+    #: already exists on disk, so a live db needs the ALTER too.
+    _POSITIONS_FILL_PROVENANCE_COLUMNS = (
+        ('fill_was_maker', 'INTEGER NOT NULL DEFAULT 0'),
+    )
+
+    def _migrate_positions_fill_provenance_column(self) -> None:
+        """`ALTER TABLE ADD COLUMN` for `fill_was_maker` if missing.
+
+        `DEFAULT 0` backfills every existing row to false (unmeasured rows
+        predate fill-provenance tracking and were never maker fills under
+        this column's own definition - they simply have no opinion recorded).
+        Same table-existence guard as
+        `_migrate_positions_pair_linkage_columns`, and must run before
+        `executescript` for the same reason: a fresh db has not created
+        `positions` yet, and an existing one needs the ALTER first.
+        """
+        table_exists = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='positions'").fetchone()
+        if not table_exists:
+            return
+        existing = {row[1] for row in
+                    self.conn.execute('PRAGMA table_info(positions)')}
+        for name, sql_type in self._POSITIONS_FILL_PROVENANCE_COLUMNS:
+            if name in existing:
+                continue
+            self.conn.execute(
+                'ALTER TABLE positions ADD COLUMN {} {}'.format(
+                    name, sql_type))
+        self.conn.commit()
+
     def ensure_schema(self) -> None:
         """Idempotent migration. Replays db/schema.sql verbatim.
 
@@ -721,6 +757,7 @@ class ShadowStore:
                 'db/schema.sql not found at {}; refusing to invent a schema'
                 .format(self.SCHEMA_PATH))
         self._migrate_positions_pair_linkage_columns()
+        self._migrate_positions_fill_provenance_column()
         with open(self.SCHEMA_PATH) as f:
             self.conn.executescript(f.read())
         self.conn.commit()
@@ -845,12 +882,12 @@ class ShadowStore:
                 'INSERT INTO positions (id, pair, strategy_id, signal_id, '
                 'opened_ts, closed_ts, entry_px, exit_px, qty, stop_px, '
                 'target_px, pnl_gross, pnl_net, fees, r_multiple, exit_reason, '
-                'mode, pair_id, leg_index, leg_target_px, leg_fill_px, '
-                'leg_fill_ts, leg2_latency_ms, pair_cost_expected, '
-                'pair_cost_actual, leg_bid_at_signal, leg_ask_at_signal, '
-                'leg_bid_at_fill, leg_ask_at_fill) '
+                'mode, fill_was_maker, pair_id, leg_index, leg_target_px, '
+                'leg_fill_px, leg_fill_ts, leg2_latency_ms, '
+                'pair_cost_expected, pair_cost_actual, leg_bid_at_signal, '
+                'leg_ask_at_signal, leg_bid_at_fill, leg_ask_at_fill) '
                 'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '
-                '?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                '?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                 (position.position_id, position.market_slug, strategy_id,
                  signal_id, ts_ms, None, position.avg_price, None,
                  position.shares,
@@ -862,6 +899,11 @@ class ShadowStore:
                  (0.0 if stop_px is None else float(stop_px)),
                  WINNING_REDEMPTION,
                  None, None, position.fee_usdc, None, None, MODE,
+                 # D-329 Task 2: fill provenance, read off the SAME field the
+                 # maker/taker fill-rate stats already read
+                 # (`PaperPosition.entry_liquidity`), not re-derived.
+                 1 if getattr(position, 'entry_liquidity', 'taker') == 'maker'
+                 else 0,
                  pair_id, leg_index, leg_target_px, leg_fill_px, leg_fill_ts,
                  leg2_latency_ms, pair_cost_expected, pair_cost_actual,
                  leg_bid_at_signal, leg_ask_at_signal, leg_bid_at_fill,
@@ -4214,16 +4256,34 @@ def filter_strategies_by_name(loop: 'PolymarketShadowLoop',
     is never touched.
     """
     whitelist = {name.strip() for name in names_csv.split(',') if name.strip()}
+    matched = set()
+
+    def _kept(strategies):
+        """Filter to the whitelist, recording which names actually matched."""
+        out = []
+        for s in strategies:
+            name = getattr(s, 'strategy_name', None)
+            if name in whitelist:
+                matched.add(name)
+                out.append(s)
+        return out
+
     for rt in loop.runtimes.values():
-        rt.strategies[:] = [s for s in rt.strategies
-                            if getattr(s, 'strategy_name', None) in whitelist]
-    loop.weather_strategies[:] = [
-        s for s in loop.weather_strategies
-        if getattr(s, 'strategy_name', None) in whitelist]
+        rt.strategies[:] = _kept(rt.strategies)
+    loop.weather_strategies[:] = _kept(loop.weather_strategies)
     for space in loop.spaces:
-        space.strategies[:] = [
-            s for s in space.strategies
-            if getattr(s, 'strategy_name', None) in whitelist]
+        space.strategies[:] = _kept(space.strategies)
+
+    # A whitelist name that matches nothing stays a NO-OP - a typo must not
+    # take down a shadow run mid-flight - but it must not stay SILENT. An
+    # unnoticed typo in `--strategies` makes an A/B environment quietly
+    # thinner than intended, and the run then reads as a clean result for a
+    # book it never actually had. Convention 20: a silent skip is a missing
+    # number. One line, at WARNING, naming every unmatched name.
+    unmatched = whitelist - matched
+    if unmatched:
+        logger.warning('--strategies names matched nothing: %s',
+                       ', '.join(sorted(unmatched)))
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:

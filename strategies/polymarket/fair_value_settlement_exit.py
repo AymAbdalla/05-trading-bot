@@ -188,19 +188,65 @@ number, not a deviation from it: the proposal never priced its own floor
 against `min_fair_value`, and refusing to invent an unstated exception was
 judged safer than reproducing the exact defect this exit exists to fix.
 
-## KILL CONDITION (verbatim from the proposal, restated per convention 6)
+## KILL CONDITION - SUPERSEDED BY D-327, 2026-08-19
+
+The proposal's original condition (below, kept for the record) never got a
+chance to fire: 1,131 signals, ZERO acted, because `max_trades_this_window`
+alone ate 643 of them (57%) - the throttle, not the edge, was starving this
+strategy before its exit model could be measured at all. Opus's edge
+analysis (`docs/handoffs/2026-08-19-opus-edge-analysis.md`, Task 1.5) found
+the original premise backwards in the same session: 034 exists to "halve the
+round trip" by holding to settlement, but the round trip it would halve is
+~0.26c/share, while the book's own hold-to-settlement population already
+measures **3.4x worse per share than stopping out** inside 034's own entry
+band (-8.80c/share settled vs -2.59c/share intraday-exited, n=203 vs n=953).
+The stop this file removes is not the disease; it is the thing currently
+limiting the damage from a model measured elsewhere in the same analysis to
+be anti-predictive (slope 0.30 against a calibrated forecaster's 1.0).
+
+**D-327 (RATIFIED, 2026-08-19): 034 is re-gated as a MEASUREMENT INSTRUMENT,
+not a profit strategy.** It is the only strategy in the registry that holds
+the fair_value selector to settlement with the round trip fully instrumented
+(`model_edge_at_entry` and `entry_ask` stamped on every signal), and that
+calibration data - realised settlement frequency against price paid, for
+this specific selector - does not exist anywhere else in the system. Its
+value is the measurement, whatever the sign turns out to be. It is not
+deleted, because deleting the only instrumented settlement path would throw
+the measurement away along with the (already refuted) profit premise.
+
+**New kill condition, with a number and a named harness (convention 6): 034
+is dead if realised settlement frequency over its first 60 entries is below
+0.30, against a mean entry ask of 0.33** - the break-even shape a
+hold-to-settlement strategy always has (a share pays 0 or 1, so break-even
+win rate equals the price paid), evaluated against Opus's own measured prior
+for this exact gate (`edge >= 0.05`, `ask <= 0.60`): over the 10,630
+fair_value-family signals that would pass it, mean entry ask 0.3300, median
+0.3400. Scored by `agents/forge_shadow_eval.py`, CLOSED and RESOLVED
+positions kept as two populations and never pooled. Fewer than 60 entries
+resolved within 14 days -> NOT_TESTED, not failed (convention 11), requeue.
+
+Opus's own expectation, stated so a later reader can check whether it held:
+"roughly 25% realised against a 33% requirement, about -9 cents per share...
+If it comes in near 33% I am wrong and the settlement thesis survives."
+
+### The proposal's original condition (SUPERSEDED, kept for the record)
 
 Retire if net P&L per resolved position is below 0.00 USD over 200 or more
 resolved positions (`agents/forge_shadow_eval.py`), and in that case execute
 the 9 standing kill recommendations for the fair-value family on the strength
 of it. Fewer than 200 positions resolved within 14 days of wiring ->
-NOT_TESTED, not failed (convention 11), requeue.
+NOT_TESTED, not failed (convention 11), requeue. This never bound - see
+above - and D-327's condition is the one that applies.
 
-## STATUS: NOT_TESTED (D-268 shape)
+## STATUS: NOT_TESTED (D-268 shape), THROTTLE RELAXED UNDER D-327
 
 No backtest was run against this file, per Aym's explicit instruction for
 this build (shadow-only, never live). Zero rows exist under
 `PM_fair_value_settlement_exit` before this session wires it in.
+`max_trades_per_window` raised from the inherited 3 to `MAX_TRADES_PER_WINDOW
+= 12` (D-327) so it can actually accumulate the 60 entries its own kill
+condition needs - see that constant's docstring for why 12 and why the real
+safety bound stays `MAX_CONCURRENT_POSITIONS` (2), unchanged.
 """
 from typing import Dict, Optional
 
@@ -228,6 +274,19 @@ SALVAGE_FLOOR = 0.10
 #: honest-limit section for what this does and does not guarantee
 #: system-wide.
 MAX_CONCURRENT_POSITIONS = 2
+
+#: D-327, 2026-08-19. Raised from the parent's inherited default (3) so 034
+#: can actually accumulate the 60 entries its own kill condition needs -
+#: 643 of 1,131 signals (57%) were eaten by this throttle alone before any
+#: exit model got measured. 12 is chosen, not derived: it is well above what
+#: `MAX_CONCURRENT_POSITIONS` (2) will ever let bind in practice, because a
+#: hold-to-resolution strategy never frees a slot early the way the
+#: exit-before-resolution parent does - so the concurrency self-cap, not the
+#: per-window attempt count, is meant to be the real safety bound here.
+#: EXPIRY: no measurement stands behind 12 specifically; the number that
+#: would move it is how many of the first 60 entries land inside one window
+#: once this runs live.
+MAX_TRADES_PER_WINDOW = 12
 
 #: Belt-and-braces bound on internal open-position tracking, matching
 #: `LongshotFadeHoldToResolution.OPEN_TRACKING_MAX`'s reasoning - `self._open`
@@ -271,11 +330,14 @@ class FairValueSettlementExit(FairValueArb):
     sold on convergence, with a flat salvage-floor stop replacing the
     parent's six-rule exit chain.
 
-    Kill condition: net P&L per resolved position below 0.00 USD over 200+
-    resolved positions, scored by `agents/forge_shadow_eval.py`. Fewer than
-    200 within 14 days -> NOT_TESTED, requeue (convention 11). See the module
-    docstring for the full ruling, including the already-resolved blocking
-    precondition this proposal was gated on.
+    Re-gated as a MEASUREMENT INSTRUMENT under D-327 (2026-08-19), not a
+    profit strategy - see the module docstring's superseded-kill-condition
+    section. Kill condition: realised settlement frequency over the first 60
+    entries below 0.30, against a mean entry ask of 0.33, scored by
+    `agents/forge_shadow_eval.py`. Fewer than 60 entries resolved within 14
+    days -> NOT_TESTED, requeue (convention 11). See the module docstring for
+    the full ruling, including the already-resolved blocking precondition
+    this proposal was gated on.
     """
 
     strategy_name = 'PM_fair_value_settlement_exit'
@@ -297,29 +359,32 @@ class FairValueSettlementExit(FairValueArb):
                  entry_ask_cap: float = ENTRY_ASK_CAP,
                  salvage_floor: float = SALVAGE_FLOOR,
                  max_concurrent_positions: int = MAX_CONCURRENT_POSITIONS,
+                 max_trades_per_window: int = MAX_TRADES_PER_WINDOW,
                  **kwargs):
         # Every other parent constant passes straight through unchanged
         # (target_shares, max_notional_usdc, min_book_depth_shares,
-        # depth_band, min_fair_value, max_fair_value, max_trades_per_window,
-        # model_uncertainty, atr_windows). `min_profit`, `max_loss`,
+        # depth_band, min_fair_value, max_fair_value, model_uncertainty,
+        # atr_windows). `max_trades_per_window` is D-327's relaxation (3 ->
+        # 12) - see that constant's docstring. `min_profit`, `max_loss`,
         # `model_stop_margin`, `convergence_eps`, `time_stop_sec` and
         # `window_close_exit_sec` are still accepted (via `super().__init__`)
         # for interface compatibility but read by nothing here - `manage_exit`
         # is a full rewrite that never consults them.
-        super().__init__(edge_threshold=edge_threshold, **kwargs)
+        super().__init__(edge_threshold=edge_threshold,
+                         max_trades_per_window=max_trades_per_window, **kwargs)
         self.entry_ask_cap = float(entry_ask_cap)
         self.salvage_floor = float(salvage_floor)
         self.max_concurrent_positions = int(max_concurrent_positions)
 
         #: (market_slug, attempt_number) -> believed resolve-at timestamp.
         #: Keyed on the PAIR, not the slug alone: the parent's own
-        #: `max_trades_per_window` allows up to 3 entry ATTEMPTS inside one
-        #: 5-minute window, all against the same market slug, and each is a
-        #: separate simulated fill this file must count separately - keying
-        #: on slug alone would let a second attempt silently overwrite the
-        #: first's tracking entry and undercount how many are actually open.
-        #: Pruned on every `evaluate()` call. See the module docstring's
-        #: concurrency section.
+        #: `max_trades_per_window` allows up to `MAX_TRADES_PER_WINDOW` (12,
+        #: D-327) entry ATTEMPTS inside one 5-minute window, all against the
+        #: same market slug, and each is a separate simulated fill this file
+        #: must count separately - keying on slug alone would let a second
+        #: attempt silently overwrite the first's tracking entry and
+        #: undercount how many are actually open. Pruned on every
+        #: `evaluate()` call. See the module docstring's concurrency section.
         self._open: Dict[tuple, float] = {}
         self._open_order = []
 
