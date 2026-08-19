@@ -769,10 +769,11 @@ def test_the_first_eight_registry_slots_did_not_move():
         'PM_corridor_collector', 'PM_temporal_arbitrage', 'PM_corridor_pair',
         'PM_spread_harvest_taker', 'PM_fair_value_arb',
     ]
-    # 20 since `PM_maker_rebate_quote_ladder` was APPENDED at index 19
+    # 21 since `PM_smart_money_callers` was APPENDED at index 20
+    # (proposal 027), after `PM_maker_rebate_quote_ladder` at index 19
     # (proposal 024). The prefix pin above is what protects the historical log
     # positions; the total is free to grow as long as nothing before it moves.
-    assert len(names) == 20
+    assert len(names) == 21
 
 
 def test_a_fill_is_priced_at_our_own_limit_and_pays_the_maker_fee(tmp_path):

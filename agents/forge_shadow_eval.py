@@ -292,6 +292,29 @@ SKIP_CLASSIFICATION: Dict[str, Tuple[str, str]] = {
     'copied_trade_stale': (GENUINE, ''),
     'ask_above_max_entry_price': (GENUINE, ''),
 
+    # --- smart money callers (proposal 027) ---------------------------------
+    # Same discipline as smart money copy directly above: a caller feed that
+    # could not be read, or a caller this file has never tracked, is
+    # NOT_TESTED. A play that failed to MAP to this market, or that has
+    # already been entered, or that lost the book's price/depth gates, is a
+    # real evaluated condition - GENUINE.
+    'caller_feed_unavailable': (DATA_BLOCKER, "the watched caller's Reddit "
+                                              'feed (redlib mirror unreachable '
+                                              'or every watched caller failed '
+                                              'this cycle)'),
+    'caller_record_unknown': (
+        DATA_BLOCKER, "a data/caller_record.json entry for this caller - "
+                      'strategies/polymarket/caller_feed.py has never '
+                      'recorded a parseable declared play from them yet'),
+    'outcome_side_unresolvable': (
+        DATA_BLOCKER, "an outcome-side label pair (Yes/No or Up/Down) on "
+                      'this market - the direction mapping refuses to guess '
+                      'a side when neither pair is present'),
+    'no_declared_plays': (GENUINE, ''),
+    'no_declared_play_for_market': (GENUINE, ''),
+    'already_entered_this_play': (GENUINE, ''),
+    'book_cannot_fill': (GENUINE, ''),
+
     # --- dip arb ------------------------------------------------------------
     'insufficient_tape': (DATA_BLOCKER, 'enough price tape to compute a mean'),
     # 2026-08-18: split out of `insufficient_tape` (proposal 031 phase 1,

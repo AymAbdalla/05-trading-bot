@@ -359,6 +359,8 @@ from strategies.polymarket.maker_rebate_corridor_quote_ladder import \
 from strategies.polymarket.mid_price_continuation import MidPriceContinuation
 from strategies.polymarket.near_liq_trigger import NearLiqTrigger
 from strategies.polymarket.small_liq_continuation import SmallLiqContinuation
+from strategies.polymarket.smart_money_callers import \
+    SmartMoneyCallers
 from strategies.polymarket.smart_money_copy import SmartMoneyCopy
 from strategies.polymarket.spread_harvest_maker import SpreadHarvestMaker
 from strategies.polymarket.streak_snapper import StreakSnapper
@@ -422,6 +424,10 @@ def build_strategies(dip_arb_tape_db_path=None):
         # Carries per-window resting-quote state like `GridHedge`, so it needs
         # the same fresh-instance isolation as everything above it.
         MakerRebateCorridorQuoteLadder(),
+        # APPENDED, at index 20 (proposal 027). Carries per-instance feed and
+        # caller-record cache state like `SmartMoneyCopy` and `WeatherArb`, so
+        # it needs the same fresh-instance isolation as everything above it.
+        SmartMoneyCallers(),
     ]
 
 
@@ -436,6 +442,6 @@ __all__ = [
     'FairValueArbHFT', 'FairValueArbInverse', 'ExitDecision',
     'LiqCascadeChaser', 'SmallLiqContinuation', 'NearLiqTrigger',
     'SmartMoneyCopy', 'WeatherArb', 'GridHedge', 'DipArb',
-    'MakerRebateCorridorQuoteLadder',
+    'MakerRebateCorridorQuoteLadder', 'SmartMoneyCallers',
     'build_strategies',
 ]

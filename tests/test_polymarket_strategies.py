@@ -33,7 +33,8 @@ from strategies.polymarket import (BoxBuilder, CorridorCollector,  # noqa: E402
                                    MidPriceContinuation, StreakSnapper,
                                    build_strategies, cap_bids,
                                    p_corridor_lookup)
-from strategies.polymarket.base import MarketContext, Window  # noqa: E402
+from strategies.polymarket.base import (MARKET_TYPE_CRYPTO_UPDOWN,  # noqa: E402
+                                        MarketContext, Window)
 import strategies.polymarket.box_builder as box_mod  # noqa: E402
 import strategies.polymarket.corridor_collector as corridor_mod  # noqa: E402
 import strategies.polymarket.mid_price_continuation as mid_mod  # noqa: E402
@@ -198,15 +199,32 @@ def test_every_strategy_implements_the_house_interface():
 
 
 def test_no_strategy_raises_on_garbage():
-    empty = MarketContext(window_ts=0)
     garbage_candles = [
         {}, {'closes': []}, {'closes': [1.0], 'timestamps': [1]},
         {'closes': [float('nan')] * 20, 'timestamps': list(range(20))},
     ]
     for strategy in build_strategies():
+        # `MarketContext.market_type` defaults to crypto_updown. A strategy
+        # that never declared that type (proposal 027's SmartMoneyCallers is
+        # the first one that both narrows `supported_market_types` AND
+        # enforces it via `assert_supports`) is correctly SUPPOSED to raise
+        # on a mismatched type - that is convention 22, not a crash on
+        # garbage. So the empty context here is built in a type the strategy
+        # under test actually declared, exactly what the real loop would hand
+        # it.
+        empty = MarketContext(window_ts=0,
+                              market_type=strategy.supported_market_types[0])
         decision = strategy.evaluate(empty)
         assert decision.action in ('ENTER', 'QUOTE', 'SKIP')
         assert decision.reason, f'{strategy.name} skipped without a reason'
+        # `scan()` is a crypto-candles-ONLY adapter (base.py's own docstring:
+        # "candles must be BTC 5-MINUTE bars"). A strategy that never declared
+        # crypto_updown support cannot be exercised through it at all -
+        # calling it would be asking `assert_supports` to catch a mismatch
+        # `scan()` itself manufactured, which is not "raising on garbage", it
+        # is the wrong adapter for that strategy.
+        if MARKET_TYPE_CRYPTO_UPDOWN not in strategy.supported_market_types:
+            continue
         for candles in garbage_candles:
             assert strategy.scan(candles) is None
 
@@ -222,6 +240,11 @@ def test_scan_without_a_book_never_invents_an_entry():
         'volumes': [1.0] * 20,
     }
     for strategy in build_strategies():
+        # Same accommodation as test_no_strategy_raises_on_garbage above:
+        # `scan()` can only ever build a crypto_updown context, so it is not
+        # a usable adapter for a strategy that never declared that type.
+        if MARKET_TYPE_CRYPTO_UPDOWN not in strategy.supported_market_types:
+            continue
         assert strategy.scan(candles) is None
 
 
