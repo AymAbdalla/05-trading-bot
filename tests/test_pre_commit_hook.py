@@ -39,6 +39,7 @@ sys.path.insert(0, REPO_ROOT)
 from engine.concurrency import ensure_schema, hash_bytes  # noqa: E402
 
 HOOK = os.path.join(REPO_ROOT, 'scripts', 'pre-commit-conflict-check')
+INSTALLER = os.path.join(REPO_ROOT, 'scripts', 'install_conflict_hook.sh')
 
 #: Cleared from the child environment in every run. The hook reads AGENT_ID and
 #: TRADING_BOT_AGENT_ID as identity declarations, and whoever runs pytest may
@@ -114,19 +115,45 @@ class Sandbox(object):
         self.record(rel, agent_id, digest)
         return digest
 
-    def run(self, **env_overrides):
-        """Run the hook. Returns subprocess.CompletedProcess."""
+    def env(self, **overrides):
         env = dict(os.environ)
         for key in CLEARED:
             env.pop(key, None)
         env['CONFLICT_CHECK_DB'] = str(self.db)
-        for key, value in env_overrides.items():
+        for key, value in overrides.items():
             if value is None:
                 env.pop(key, None)
             else:
                 env[key] = value
-        return subprocess.run(['bash', HOOK], cwd=str(self.repo),
-                              capture_output=True, text=True, env=env)
+        return env
+
+    def run(self, _argv=(), **env_overrides):
+        """Run the hook. Returns subprocess.CompletedProcess.
+
+        `_argv` is what git forwards: nothing for pre-commit, the composed
+        message file for commit-msg. The script picks its job from it.
+        """
+        return subprocess.run(['bash', HOOK] + list(_argv), cwd=str(self.repo),
+                              capture_output=True, text=True,
+                              env=self.env(**env_overrides))
+
+    def run_msg(self, message, **env_overrides):
+        """Run the hook in commit-msg mode over `message`."""
+        path = os.path.join(str(self.repo), 'MSG_UNDER_TEST')
+        with open(path, 'wb') as fh:
+            fh.write(message.encode('utf-8'))
+        return self.run(_argv=[path], **env_overrides)
+
+    def install_hooks(self):
+        """Run the REAL installer into this sandbox."""
+        return subprocess.run(['bash', INSTALLER], cwd=str(self.repo),
+                              capture_output=True, text=True, env=self.env())
+
+    def commit(self, message, **env_overrides):
+        """A real `git commit`, hooks and all. Not a direct hook call."""
+        return subprocess.run(['git', 'commit', '-m', message],
+                              cwd=str(self.repo), capture_output=True,
+                              text=True, env=self.env(**env_overrides))
 
 
 @pytest.fixture
@@ -136,8 +163,10 @@ def sandbox(tmp_path):
     _git(repo, 'init', '-q')
     _git(repo, 'config', 'user.email', 'test@example.invalid')
     _git(repo, 'config', 'user.name', 'Test')
-    # So the hook imports the real engine.concurrency rather than its stub.
+    # So the hook imports the real engine.concurrency rather than its stub,
+    # and so the real installer can find the real logic script.
     os.symlink(os.path.join(REPO_ROOT, 'engine'), str(repo / 'engine'))
+    os.symlink(os.path.join(REPO_ROOT, 'scripts'), str(repo / 'scripts'))
     db = tmp_path / 'coordination.db'
     ensure_schema(str(db))
     return Sandbox(repo, db)
@@ -482,3 +511,247 @@ def test_the_refusal_offers_the_author_form_as_an_escape_hatch(sandbox):
     result = sandbox.run()
     assert result.returncode == REFUSED
     assert '--author=' in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Step 4: the D-335 Agent-Id commit trailer, in commit-msg mode.
+#
+# The four the ruling asked for are the first four. The rest pin the corners
+# that decide whether this gate is real: git's trailer semantics (last
+# paragraph only, `#` comments stripped), and the measurement that says the
+# check cannot live in pre-commit at all.
+# ---------------------------------------------------------------------------
+
+TRAILED = 'subject line\n\nbody\n\nAgent-Id: cody-alpha\n'
+
+
+def test_a_matching_trailer_is_allowed(sandbox):
+    """(a) The sanctioned path. If this fails, nothing can ever be committed."""
+    result = sandbox.run_msg(TRAILED, CONFLICT_CHECK_AGENT_ID='cody-alpha')
+    assert result.returncode == ALLOWED
+    assert 'matches the resolved identity' in result.stdout
+
+
+def test_a_missing_trailer_is_refused(sandbox):
+    """(b) The whole point of D-335: identity resolved, nothing recorded."""
+    result = sandbox.run_msg('subject line\n\nbody, no trailer\n',
+                             CONFLICT_CHECK_AGENT_ID='cody-alpha')
+    assert result.returncode == REFUSED
+    assert 'carries no Agent-Id trailer' in result.stdout
+
+
+def test_a_mismatched_trailer_is_refused(sandbox):
+    """(c) A trailer naming somebody else is worse than none: it misattributes."""
+    result = sandbox.run_msg('subject\n\nAgent-Id: cody-somebody-else\n',
+                             CONFLICT_CHECK_AGENT_ID='cody-alpha')
+    assert result.returncode == REFUSED
+    assert 'cody-somebody-else' in result.stdout
+    assert 'cody-alpha' in result.stdout
+
+
+def test_no_identity_needs_no_trailer(sandbox):
+    """(d) The human path. D-335(2) gates on a RESOLVED identity only."""
+    result = sandbox.run_msg('just a human commit\n')
+    assert result.returncode == ALLOWED
+    assert 'no identity declared' in result.stdout
+
+
+def test_the_refusal_prints_the_exact_line_to_add(sandbox):
+    """Convention 33: a gate has to name its own sanctioned path."""
+    result = sandbox.run_msg('subject\n', CONFLICT_CHECK_AGENT_ID='cody-alpha')
+    assert result.returncode == REFUSED
+    assert 'Agent-Id: cody-alpha' in result.stdout
+
+
+@pytest.mark.parametrize('var', ['CONFLICT_CHECK_AGENT_ID', 'AGENT_ID',
+                                 'TRADING_BOT_AGENT_ID'])
+def test_every_identity_variable_gates_the_trailer(sandbox, var):
+    """Same resolution order as step 3, or the two steps disagree on WHO."""
+    assert sandbox.run_msg(TRAILED, **{var: 'cody-alpha'}).returncode == ALLOWED
+    assert sandbox.run_msg('subject\n',
+                           **{var: 'cody-alpha'}).returncode == REFUSED
+
+
+def test_an_agent_shaped_git_author_also_gates_the_trailer(sandbox):
+    result = sandbox.run_msg('subject\n', GIT_AUTHOR_NAME='cody-alpha')
+    assert result.returncode == REFUSED
+
+
+def test_a_human_git_author_does_not_gate_the_trailer(sandbox):
+    """git sets GIT_AUTHOR_NAME on every commit. Aym's commits stay unchanged."""
+    result = sandbox.run_msg('subject\n', GIT_AUTHOR_NAME='Aym Abdalla')
+    assert result.returncode == ALLOWED
+
+
+def test_the_trailer_key_is_case_insensitive(sandbox):
+    """git parses trailer keys case-insensitively, so this hook must too."""
+    result = sandbox.run_msg('subject\n\nagent-id: cody-alpha\n',
+                             CONFLICT_CHECK_AGENT_ID='cody-alpha')
+    assert result.returncode == ALLOWED
+
+
+def test_the_identity_comparison_ignores_case_and_space(sandbox):
+    result = sandbox.run_msg('subject\n\nAgent-Id:   CODY-Alpha  \n',
+                             CONFLICT_CHECK_AGENT_ID='cody-alpha')
+    assert result.returncode == ALLOWED
+
+
+def test_a_trailer_that_is_not_the_last_paragraph_is_refused(sandbox):
+    """Trailer semantics are git's, not "the string appears somewhere".
+
+    A message with prose after the trailer block has NO trailers as far as git
+    is concerned, so `git log --grep` would not find it either. Accepting it
+    here would record provenance that the tooling cannot read back.
+    """
+    result = sandbox.run_msg(
+        'subject\n\nAgent-Id: cody-alpha\n\nafterthought prose\n',
+        CONFLICT_CHECK_AGENT_ID='cody-alpha')
+    assert result.returncode == REFUSED
+
+
+def test_git_comment_lines_do_not_hide_the_trailer(sandbox):
+    """A real `git commit` message file is full of `#` lines at this point.
+
+    If these were counted as a trailing paragraph, EVERY interactive commit
+    would be refused and the gate would be bypassed within a day.
+    """
+    result = sandbox.run_msg(
+        'subject\n\nAgent-Id: cody-alpha\n'
+        '# Please enter the commit message for your changes.\n'
+        '# On branch main\n',
+        CONFLICT_CHECK_AGENT_ID='cody-alpha')
+    assert result.returncode == ALLOWED
+
+
+def test_a_trailer_beside_other_trailers_is_found(sandbox):
+    result = sandbox.run_msg(
+        'subject\n\nCo-Authored-By: Someone <s@x.invalid>\n'
+        'Agent-Id: cody-alpha\n',
+        CONFLICT_CHECK_AGENT_ID='cody-alpha')
+    assert result.returncode == ALLOWED
+
+
+def test_two_conflicting_trailers_are_refused(sandbox):
+    """Ambiguous provenance is not provenance."""
+    result = sandbox.run_msg(
+        'subject\n\nAgent-Id: cody-alpha\nAgent-Id: cody-beta\n',
+        CONFLICT_CHECK_AGENT_ID='cody-alpha')
+    assert result.returncode == REFUSED
+
+
+def test_a_missing_message_file_could_not_run_and_allows(sandbox):
+    """Convention 11: COULD NOT RUN is not a refusal and not a pass."""
+    result = sandbox.run(_argv=[os.path.join(str(sandbox.repo), 'nope.txt')],
+                         CONFLICT_CHECK_AGENT_ID='cody-alpha')
+    assert result.returncode == ALLOWED
+    assert 'COULD NOT RUN' in result.stdout
+    assert 'NOTHING was verified' in result.stdout
+
+
+def test_skip_conflict_check_bypasses_the_trailer_check_too(sandbox):
+    """A bypass has to bypass all of it or it lies about what it skipped."""
+    result = sandbox.run_msg('subject\n', CONFLICT_CHECK_AGENT_ID='cody-alpha',
+                             SKIP_CONFLICT_CHECK='1')
+    assert result.returncode == ALLOWED
+    assert 'BYPASSED' in result.stdout
+
+
+def test_pre_commit_mode_never_requires_a_trailer(sandbox):
+    """The two modes must not both claim the trailer, or one of them is wrong."""
+    sandbox.owned_by('mine.txt', 'cody-alpha', 'my work\n')
+    result = sandbox.run(CONFLICT_CHECK_AGENT_ID='cody-alpha')
+    assert result.returncode == ALLOWED
+    assert 'own-work=1' in result.stdout
+    assert 'verified by the commit-msg hook' in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Why the check is NOT in pre-commit. This is the measurement, as a test.
+# ---------------------------------------------------------------------------
+
+def test_commit_editmsg_at_pre_commit_time_is_the_previous_message(sandbox):
+    """D-335 says to read .git/COMMIT_EDITMSG from pre-commit. It is STALE.
+
+    git composes the new message only after pre-commit returns, so at that
+    moment the file still holds the message of the commit BEFORE this one.
+    Gating on it would refuse the first agent commit for a predecessor written
+    before the rule existed, and pass every commit that follows a correct one
+    no matter what it said. That is why step 4 runs as commit-msg instead.
+
+    If this test ever fails, git changed its ordering and the design decision
+    behind step 4 should be revisited.
+    """
+    probe = os.path.join(str(sandbox.repo), '.git', 'hooks', 'pre-commit')
+    with open(probe, 'w') as fh:
+        fh.write('#!/bin/bash\n'
+                 'M="$(git rev-parse --git-dir)/COMMIT_EDITMSG"\n'
+                 'if [ -f "$M" ]; then echo "SAW:[$(head -1 "$M")]";'
+                 ' else echo "SAW:<NO FILE>"; fi\n')
+    os.chmod(probe, 0o755)
+
+    seen = []
+    for msg in ('FIRST', 'SECOND', 'THIRD'):
+        sandbox.write_and_stage('a.txt', msg + '\n')
+        result = sandbox.commit(msg)
+        assert result.returncode == 0, result.stderr
+        seen.append((result.stdout + result.stderr))
+
+    assert 'SAW:<NO FILE>' in seen[0]      # nothing to read at all
+    assert 'SAW:[FIRST]' in seen[1]        # one behind
+    assert 'SAW:[SECOND]' in seen[2]       # still one behind
+
+
+# ---------------------------------------------------------------------------
+# Convention 33: exercise the sanctioned path as one of the agents it governs.
+# These drive a REAL `git commit` through the REAL installed shims.
+# ---------------------------------------------------------------------------
+
+def test_the_installer_installs_both_shims(sandbox):
+    result = sandbox.install_hooks()
+    assert result.returncode == 0, result.stderr
+    for name in ('pre-commit', 'commit-msg'):
+        path = os.path.join(str(sandbox.repo), '.git', 'hooks', name)
+        assert os.access(path, os.X_OK), '%s not installed executable' % name
+
+
+def test_a_real_agent_commit_with_the_trailer_succeeds(sandbox):
+    """The end-to-end sanctioned path: identity declared, trailer present."""
+    assert sandbox.install_hooks().returncode == 0
+    sandbox.owned_by('mine.txt', 'cody-alpha', 'my work\n')
+    result = sandbox.commit('records: a thing\n\nAgent-Id: cody-alpha',
+                            AGENT_ID='cody-alpha')
+    assert result.returncode == 0, result.stdout + result.stderr
+    log = _git(sandbox.repo, 'log', '-1', '--pretty=%B')
+    assert 'Agent-Id: cody-alpha' in log
+
+
+def test_a_real_agent_commit_without_the_trailer_is_refused(sandbox):
+    """The failure D-335 exists to stop, through the real hooks."""
+    assert sandbox.install_hooks().returncode == 0
+    sandbox.owned_by('mine.txt', 'cody-alpha', 'my work\n')
+    result = sandbox.commit('records: a thing', AGENT_ID='cody-alpha')
+    assert result.returncode != 0
+    assert 'carries no Agent-Id trailer' in (result.stdout + result.stderr)
+    # and nothing was committed
+    ok = subprocess.run(['git', 'rev-parse', '--verify', '--quiet', 'HEAD'],
+                        cwd=str(sandbox.repo), capture_output=True)
+    assert ok.returncode != 0, 'a refused commit still created a commit'
+
+
+def test_a_real_human_commit_needs_no_trailer(sandbox):
+    """Aym's own commits must behave exactly as they did before D-335."""
+    assert sandbox.install_hooks().returncode == 0
+    sandbox.write_and_stage('a.txt', 'human work\n')
+    result = sandbox.commit('a plain human commit')
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_the_trailer_lands_where_git_log_grep_can_find_it(sandbox):
+    """D-335(1) promises greppable provenance. Pin the promise, not the intent."""
+    assert sandbox.install_hooks().returncode == 0
+    sandbox.owned_by('mine.txt', 'cody-alpha', 'my work\n')
+    assert sandbox.commit('records: a thing\n\nAgent-Id: cody-alpha',
+                          AGENT_ID='cody-alpha').returncode == 0
+    found = _git(sandbox.repo, 'log', '--grep=^Agent-Id: cody-alpha',
+                 '--pretty=%h')
+    assert found.strip(), 'git log --grep cannot find the trailer'

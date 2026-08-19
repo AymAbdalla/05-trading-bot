@@ -264,13 +264,28 @@ CREATE INDEX IF NOT EXISTS idx_hyperliquid_positions_symbol_ts
 -- political, weather): a crypto token id is new every window and
 -- TAPE_MAX_AGE_SEC already outlives any realistic restart gap, so persisting
 -- it would multiply this table's volume for no benefit.
+--
+-- `condition_id` and `complement_id` are Forge proposal 036
+-- (pm_complement_pair_keying). `condition_id` is Gamma's `conditionId`,
+-- already parsed by `engine/polymarket/markets.py` into every `Market` this
+-- process ever holds and previously thrown away at the tape write boundary.
+-- `complement_id` is the OTHER token id sharing that `condition_id`, read
+-- directly off the same `Market` object's `outcomes` tuple at write time -
+-- never inferred from price. Both are NULL for a market with other than two
+-- outcomes (no single complement exists) and for every row written before
+-- this column existed - a NULL here means "not keyed", not "no complement",
+-- and must never be treated as a price-based match candidate.
 CREATE TABLE IF NOT EXISTS market_tape (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    market_id   TEXT NOT NULL,
-    ts          REAL NOT NULL,
-    mid         REAL,
-    best_bid    REAL,
-    best_ask    REAL,
-    source      TEXT NOT NULL
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    market_id     TEXT NOT NULL,
+    ts            REAL NOT NULL,
+    mid           REAL,
+    best_bid      REAL,
+    best_ask      REAL,
+    source        TEXT NOT NULL,
+    condition_id  TEXT,
+    complement_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_market_tape_market_ts ON market_tape(market_id, ts);
+CREATE INDEX IF NOT EXISTS idx_market_tape_condition_ts
+    ON market_tape(condition_id, ts);

@@ -12,6 +12,12 @@
 # logic change: bumping it would make the already-installed shim fail that
 # script's `is_ours` test and get backed up as a stranger's hook.
 #
+# TWO HOOKS, ONE SCRIPT. The job is chosen by argv, not by a copy of this file:
+#   no argument  -> pre-commit  mode: steps 1-3 below.
+#   a file path  -> commit-msg  mode: step 4 only, on the message git composed.
+# The trailer CANNOT be checked from pre-commit; the step 4 comment has the
+# measurement that says why. Install both shims with install_conflict_hook.sh.
+#
 # WHAT IT DOES
 #   1. Reports active checkouts from engine.concurrency.who_is_editing().
 #      WARNS ONLY. An agent may legitimately have finished without checkin, and
@@ -19,6 +25,9 @@
 #   2. Verifies every staged file's hash against what the coordination table
 #      says the last coordinated write produced. THIS refuses.
 #   3. Verifies that the staged files are YOURS. THIS refuses too.
+#   4. Verifies the commit message carries `Agent-Id: <resolved identity>` when
+#      an identity resolved at all (D-335). THIS refuses. No identity, no
+#      requirement -- a human interactive commit is untouched.
 #
 # WHY STEP 3 EXISTS (convention 16 enforcement)
 #   Twice in two nights an agent ran `git add -A`, swept another session's
@@ -57,6 +66,7 @@
 #     CONFLICT_CHECK_DB=/tmp/x.db scripts/pre-commit-conflict-check
 #     CONFLICT_CHECK_AGENT_ID=cody-foo scripts/pre-commit-conflict-check
 #     CONFLICT_CHECK_ALLOW_SWEEP=1 scripts/pre-commit-conflict-check
+#     scripts/pre-commit-conflict-check /path/to/a/commit/message   # step 4
 #
 # ENVIRONMENT
 #   SKIP_CONFLICT_CHECK=1       bypass entirely, loudly
@@ -84,7 +94,8 @@
 # EXIT CODES
 #   0  allowed (verified, or could-not-verify, or bypassed, or declared sweep)
 #   1  REFUSED: a staged file changed outside the coordination module, and/or a
-#      staged file belongs to another agent and the sweep was not declared
+#      staged file belongs to another agent and the sweep was not declared,
+#      and/or (commit-msg mode) the Agent-Id trailer is missing or mismatched
 set -euo pipefail
 
 if [ "${SKIP_CONFLICT_CHECK:-0}" = "1" ]; then
@@ -794,16 +805,195 @@ def say_sweep_warning(findings):
 
 
 # --------------------------------------------------------------------------
+# Step 4: the Agent-Id commit trailer (D-335). THIS can refuse.
+#
+# WHY THIS RUNS AS commit-msg AND NOT AS pre-commit
+#   D-335 says to read "the commit message in progress (.git/COMMIT_EDITMSG)".
+#   MEASURED 2026-08-19, three commits into a throwaway repo, hook printing
+#   that file: <NO FILE>, then "FIRST MESSAGE", then "SECOND MESSAGE". At
+#   pre-commit time the file still holds the PREVIOUS commit message, because
+#   git composes the new one AFTER pre-commit returns.
+#
+#   Verifying it there would gate every commit on its predecessor: the first
+#   agent commit is refused for a message written before the rule existed, and
+#   every commit following a correct one passes no matter what it says. That is
+#   an off-by-one gate, which is worse than no gate -- it reports PASS about the
+#   wrong object. Convention 33: a gate its own agents cannot satisfy honestly
+#   gets bypassed, and one that passes for the wrong reason gets trusted.
+#
+#   git hands the commit-msg hook the composed message file as $1. So this one
+#   script serves both hooks and picks its job from argv: a message path means
+#   "verify the trailer", no argument means "verify hashes and provenance".
+#   Total coverage per commit is identical; nothing is checked twice.
+# --------------------------------------------------------------------------
+
+#: The trailer key D-335(1) requires. Matched case-insensitively, per git.
+TRAILER_KEY = 'Agent-Id'
+
+
+def message_path():
+    """The commit-msg file git handed us, or None in pre-commit mode."""
+    for arg in sys.argv[1:]:
+        value = arg.strip()
+        if value:
+            return value if os.path.isabs(value) else os.path.join(ROOT, value)
+    return None
+
+
+def parse_trailers(path):
+    """(trailers, error) -- [(key, value)] in file order, or a read failure.
+
+    Delegated to `git interpret-trailers --parse` rather than hand-rolled.
+    Trailer semantics (last paragraph only, `#` comment lines ignored, folded
+    continuations) are git's definition; a second implementation here would be
+    a second thing to keep in sync, and it would drift.
+
+    A git failure returns an ERROR, never an empty list. "could not read the
+    message" is not the fact "the message has no trailer" (convention 11), and
+    conflating them would refuse a correct commit for an unrelated reason.
+    """
+    ok, out = git(['interpret-trailers', '--parse', path])
+    if not ok:
+        detail = out.decode('utf-8', 'replace') if isinstance(out, bytes) \
+            else str(out)
+        return None, detail.strip() or 'git interpret-trailers failed'
+    trailers = []
+    for line in out.splitlines():
+        if ':' not in line:
+            continue
+        key, value = line.split(':', 1)
+        trailers.append((key.strip(), value.strip()))
+    return trailers, None
+
+
+def say_trailer_refusal(reason, found):
+    """Name the sanctioned path (convention 33), not just the violation."""
+    rule('!')
+    say('conflict-check: REFUSED. %s' % reason)
+    say('')
+    say('D-335: every commit from a spawned session records WHO made it, in '
+        'the commit object itself. The hook checks the declaration at commit '
+        'time and then the terminal is discarded; without a trailer nothing '
+        'machine-readable survives into history.')
+    say('')
+    if found:
+        say('This message carries: %s'
+            % ', '.join('%s: %s' % (k, v) for k, v in found))
+        say('')
+    say('The sanctioned path: end the commit message with a blank line and '
+        'then, as its own last paragraph:')
+    say('')
+    say('    %s: %s' % (TRAILER_KEY, DECLARED_ID))
+    say('')
+    say('It must be the LAST paragraph and it must be on its own line, or git '
+        'does not parse it as a trailer. Check before committing with:')
+    say('    git interpret-trailers --parse <message-file>')
+    say('')
+    say('If %s is not who you are, fix the identity rather than the trailer: '
+        'it was declared via %s.' % (DECLARED_ID, DECLARED_SRC))
+    say('')
+    say('conflict-check: ' + BYPASS_NOTE)
+    rule('!')
+
+
+def verify_trailer(path):
+    """Step 4, the whole of commit-msg mode. Returns an exit code."""
+    say()
+    rule('=')
+    say('conflict-check  commit message trailer (D-335)')
+    say('repo: %s' % ROOT)
+    say('as:   %s' % (DECLARED_ID if DECLARED_ID else 'UNDECLARED identity'))
+    say('msg:  %s' % path)
+    rule('=')
+    say('[trailer] %s must match the resolved identity (this can REFUSE)'
+        % TRAILER_KEY)
+
+    if DECLARED_ID is None:
+        say('      committing identity: NOT DECLARED, so no trailer is '
+            'required.')
+        say('      D-335(2) gates on a RESOLVED identity only; a human '
+            'interactive commit is unchanged.')
+        say()
+        say('conflict-check: OK (no identity declared, nothing to verify).')
+        rule()
+        return 0
+
+    say('      committing identity: %s   (declared via %s)'
+        % (DECLARED_ID, DECLARED_SRC))
+
+    if not os.path.exists(path):
+        say('      COULD NOT RUN: no message file at %s' % path)
+        say()
+        say('conflict-check: WARNING -- the trailer check COULD NOT RUN, so '
+            'NOTHING was verified. Allowing the commit.')
+        rule()
+        return 0
+
+    trailers, error = parse_trailers(path)
+    if error is not None:
+        say('      COULD NOT RUN: %s' % error)
+        say()
+        say('conflict-check: WARNING -- the trailer check COULD NOT RUN, so '
+            'NOTHING was verified. Allowing the commit.')
+        rule()
+        return 0
+
+    matches = [(k, v) for k, v in trailers
+               if k.strip().lower() == TRAILER_KEY.lower()]
+    say('      trailers parsed: %d  (%s: %d)'
+        % (len(trailers), TRAILER_KEY, len(matches)))
+
+    if not matches:
+        say()
+        say_trailer_refusal(
+            'the commit message carries no %s trailer, but this session '
+            'resolved the identity "%s".' % (TRAILER_KEY, DECLARED_ID),
+            trailers)
+        return 1
+
+    distinct = sorted(set(v.strip().lower() for _k, v in matches))
+    wrong = [v for v in distinct if not same_identity(v, DECLARED_ID)]
+    if wrong:
+        say()
+        say_trailer_refusal(
+            '%s says %s, but this session resolved the identity "%s".'
+            % (TRAILER_KEY, ' and '.join(repr(v) for v in distinct),
+               DECLARED_ID),
+            matches)
+        return 1
+
+    say()
+    say('conflict-check: OK. %s: %s matches the resolved identity.'
+        % (TRAILER_KEY, DECLARED_ID))
+    rule()
+    return 0
+
+
+# --------------------------------------------------------------------------
 # main
 # --------------------------------------------------------------------------
 
 def main():
+    # argv decides the job. git gives commit-msg the message file and
+    # pre-commit nothing at all, so one script covers both hooks and neither
+    # repeats the other's work. See the step 4 comment for why the trailer
+    # cannot be checked from pre-commit.
+    msg = message_path()
+    if msg is not None:
+        return verify_trailer(msg)
+
     say()
     rule('=')
     say('conflict-check  (engine.concurrency, conventions 16 / 21)')
     say('repo: %s' % ROOT)
     say('db:   %s' % DB_PATH)
     say('as:   %s' % (DECLARED_ID if DECLARED_ID else 'UNDECLARED identity'))
+    say('note: the %s trailer (D-335) is verified by the commit-msg hook, not '
+        'here -- at' % TRAILER_KEY)
+    say('      pre-commit time .git/COMMIT_EDITMSG is still the PREVIOUS '
+        'message. Install both')
+    say('      hooks with scripts/install_conflict_hook.sh, or that check '
+        'never runs.')
     rule('=')
 
     degraded = not report_active_checkouts()

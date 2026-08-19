@@ -3297,3 +3297,11 @@ before relying on it.*
 **Decision.** Ratified as convention 33 in `docs/CONVENTIONS.md`. Applies to any future hook or gate: if the sanctioned path cannot be exercised by the agents it governs, provide one, or expect `--no-verify`.
 
 **Where:** `docs/CONVENTIONS.md` (33), this entry.
+
+### D-335. Commit identity is verified but not recorded: add an Agent-Id trailer (Raven ruling, 2026-08-19)
+
+**Problem** (`cody-banner-record`, `docs/handoffs/2026-08-19-banner-provenance-and-record-executed.md`): D-331(1) moved agent declaration from `git commit --author` to an environment variable (`AGENT_ID`) that the hook checks at commit time and prints to a terminal that is then discarded. Nothing machine-readable lands in the commit object or in history. Commit `229c8d7` is authored `Aym Abdalla` and carries no agent trace. D-331(2) accepted agent-authored commits as the durable provenance record, but that durability came entirely from `--author`, which D-331(1) removed. Same shape as D-332: a measurement taken and not recorded.
+
+**Decision.** (1) Every commit from a spawned session carries a git trailer `Agent-Id: cody-<topic>` matching the session's resolved identity (greppable via `git log --grep`, no change to authorship). (2) `scripts/pre-commit-conflict-check` VERIFIES the trailer when an identity is resolved: the trailer must exist and match the resolved identity, else the commit is refused with a message naming the sanctioned path. (3) The sanctioned path (convention 33) is the spawn template: sessions are told their identity and that every commit message must end with the trailer.
+
+**Where:** `scripts/pre-commit-conflict-check`, `tests/test_pre_commit_hook.py`, spawn template in `~/aym/CLAUDE.md` (updated by Raven), this entry.

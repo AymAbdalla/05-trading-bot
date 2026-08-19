@@ -32,6 +32,7 @@ NOT_TESTED until the resolution-PnL harness exists.
 import inspect
 import math
 import os
+import sqlite3
 import sys
 import types
 from collections import Counter
@@ -885,3 +886,122 @@ class TestMarketTapePersistence:
         s = DipArb()
         d = _warm(s, n=dip_mod.MIN_OBSERVATIONS - 2)
         assert d.features['tape_rows_available'] == dip_mod.MIN_OBSERVATIONS - 2
+
+
+class TestComplementKeying:
+    """Proposal 036 (pm_complement_pair_keying).
+
+    `condition_id` and `complement_id` are read straight off the `Market`
+    object already in hand at `observe()` time - never inferred from price -
+    and stamped onto every persisted `market_tape` row. These pin down: both
+    columns land correctly on a two-outcome market, `complement_id` is None
+    on a market that has no single complement, and a database whose
+    `market_tape` predates these columns (every live db as of this proposal)
+    is migrated in place rather than silently left without them.
+    """
+
+    @staticmethod
+    def _event_ctx(seconds_into_window=10.0, condition_id='cond-2'):
+        market = Market(id='m2', question='Will it happen?',
+                        slug='event-slug', condition_id=condition_id,
+                        outcomes=(Outcome('Yes', 'tok-yes'),
+                                  Outcome('No', 'tok-no')))
+        books = {'tok-yes': _book('tok-yes', ((0.60, 200.0),),
+                                  ((0.59, 200.0),)),
+                 'tok-no': _book('tok-no', ((0.42, 200.0),),
+                                 ((0.40, 200.0),))}
+        return MarketContext(window_ts=WINDOW_TS, market=market, books=books,
+                             seconds_into_window=seconds_into_window,
+                             market_type=MARKET_TYPE_EVENT)
+
+    def test_condition_id_and_complement_id_are_stamped_on_the_row(self, tmp_path):
+        db_path = str(tmp_path / 'tape.db')
+        s = DipArb(tape_db_path=db_path)
+        s.observe(self._event_ctx())
+
+        conn = sqlite3.connect(db_path)
+        rows = {r[0]: r for r in conn.execute(
+            'SELECT market_id, condition_id, complement_id FROM market_tape')}
+        conn.close()
+
+        assert rows['tok-yes'][1] == 'cond-2'
+        assert rows['tok-yes'][2] == 'tok-no'
+        assert rows['tok-no'][1] == 'cond-2'
+        assert rows['tok-no'][2] == 'tok-yes'
+
+    def test_a_market_with_no_single_complement_gets_a_null_complement_id(
+            self, tmp_path):
+        db_path = str(tmp_path / 'tape.db')
+        market = Market(id='m3', question='Which?', slug='three-way',
+                        condition_id='cond-3',
+                        outcomes=(Outcome('A', 'tok-a'), Outcome('B', 'tok-b'),
+                                  Outcome('C', 'tok-c')))
+        books = {tok: _book(tok, ((0.30, 100.0),), ((0.31, 100.0),))
+                 for tok in ('tok-a', 'tok-b', 'tok-c')}
+        ctx = MarketContext(window_ts=WINDOW_TS, market=market, books=books,
+                            seconds_into_window=10.0,
+                            market_type=MARKET_TYPE_EVENT)
+        s = DipArb(tape_db_path=db_path)
+        s.observe(ctx)
+
+        conn = sqlite3.connect(db_path)
+        rows = {r[0]: r for r in conn.execute(
+            'SELECT market_id, condition_id, complement_id FROM market_tape')}
+        conn.close()
+
+        for tok in ('tok-a', 'tok-b', 'tok-c'):
+            assert rows[tok][1] == 'cond-3'
+            assert rows[tok][2] is None
+
+    def test_a_market_tape_table_that_predates_the_columns_is_migrated(
+            self, tmp_path):
+        # The exact shape of every live database as of this proposal: the
+        # table exists, built by the old SCHEMA_SQL, with no condition_id or
+        # complement_id column. CREATE TABLE IF NOT EXISTS alone would leave
+        # it that way forever; the ALTER TABLE migration must run first.
+        db_path = str(tmp_path / 'old_tape.db')
+        conn = sqlite3.connect(db_path)
+        conn.executescript("""
+            CREATE TABLE market_tape (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                market_id TEXT NOT NULL,
+                ts REAL NOT NULL,
+                mid REAL,
+                best_bid REAL,
+                best_ask REAL,
+                source TEXT NOT NULL
+            );
+            CREATE INDEX idx_market_tape_market_ts ON market_tape(market_id, ts);
+        """)
+        conn.commit()
+        conn.close()
+
+        s = DipArb(tape_db_path=db_path)
+        # Would raise OperationalError: no such column: condition_id if the
+        # migration were missing or ran after executescript's CREATE INDEX.
+        s.observe(self._event_ctx())
+
+        conn = sqlite3.connect(db_path)
+        cols = {r[1] for r in conn.execute('PRAGMA table_info(market_tape)')}
+        row = conn.execute(
+            'SELECT condition_id, complement_id FROM market_tape '
+            "WHERE market_id = 'tok-yes'").fetchone()
+        conn.close()
+
+        assert {'condition_id', 'complement_id'} <= cols
+        assert row == ('cond-2', 'tok-no')
+
+    def test_crypto_windows_are_still_never_persisted_with_the_new_columns(
+            self, tmp_path):
+        db_path = str(tmp_path / 'tape.db')
+        s = DipArb(tape_db_path=db_path)
+        d = s.observe(_ctx())  # crypto window: persist=False regardless
+        assert d == {UP_TOK: True, DOWN_TOK: True}
+        # persist=False never opens the connection at all (docstring: "most
+        # callers ... never persist at all"), so the table was never created.
+        conn = sqlite3.connect(db_path)
+        table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='market_tape'").fetchone()
+        conn.close()
+        assert table is None

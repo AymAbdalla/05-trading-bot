@@ -276,18 +276,63 @@ class Observation:
 #: column in this repo - named `ts` for consistency with the rest of the
 #: schema, documented here so nobody joins it against `signals.ts` expecting
 #: the same units.
+#:
+#: `condition_id` / `complement_id`: Forge proposal 036
+#: (pm_complement_pair_keying). Stamped from the `Market` object already in
+#: hand at `observe()` time - `condition_id` is Gamma's own join key,
+#: `complement_id` is the other outcome's token id read straight off
+#: `market.outcomes`, never inferred from price. NULL on a market with other
+#: than two outcomes, and on every row written before this column existed;
+#: see `db/schema.sql` for the full note, which `tests/test_schema_matches_feed_modules.py`
+#: asserts this copy agrees with.
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS market_tape (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    market_id   TEXT NOT NULL,
-    ts          REAL NOT NULL,
-    mid         REAL,
-    best_bid    REAL,
-    best_ask    REAL,
-    source      TEXT NOT NULL
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    market_id     TEXT NOT NULL,
+    ts            REAL NOT NULL,
+    mid           REAL,
+    best_bid      REAL,
+    best_ask      REAL,
+    source        TEXT NOT NULL,
+    condition_id  TEXT,
+    complement_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_market_tape_market_ts ON market_tape(market_id, ts);
+CREATE INDEX IF NOT EXISTS idx_market_tape_condition_ts
+    ON market_tape(condition_id, ts);
 """
+
+#: (name, sql_type) pairs added by proposal 036. `CREATE TABLE IF NOT EXISTS`
+#: above is a no-op against a `market_tape` table that already exists on
+#: disk - every live database this class has ever bootstrapped predates these
+#: columns - and `SCHEMA_SQL` also declares `idx_market_tape_condition_ts` on
+#: `condition_id`, so running `executescript` unmigrated raises
+#: `OperationalError: no such column` on the CREATE INDEX statement, not a
+#: silent no-op. Same shape and same fix as
+#: `ShadowStore._migrate_positions_pair_linkage_columns` in
+#: `engine/polymarket/shadow_loop.py`.
+_MARKET_TAPE_COMPLEMENT_COLUMNS = (
+    ('condition_id', 'TEXT'),
+    ('complement_id', 'TEXT'),
+)
+
+
+def _migrate_market_tape_complement_columns(conn: 'sqlite3.Connection') -> None:
+    """`ALTER TABLE ADD COLUMN` for the two above if missing. Must run before
+    `executescript(SCHEMA_SQL)` for the reason in the constant's docstring.
+    """
+    table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' "
+        "AND name='market_tape'").fetchone()
+    if not table_exists:
+        return
+    existing = {row[1] for row in conn.execute('PRAGMA table_info(market_tape)')}
+    for name, sql_type in _MARKET_TAPE_COMPLEMENT_COLUMNS:
+        if name in existing:
+            continue
+        conn.execute('ALTER TABLE market_tape ADD COLUMN {} {}'.format(
+            name, sql_type))
+    conn.commit()
 
 
 class PriceTapeByToken:
@@ -331,6 +376,7 @@ class PriceTapeByToken:
             conn = sqlite3.connect(self.db_path, timeout=5.0)
             conn.execute('PRAGMA journal_mode=WAL;')
             conn.execute('PRAGMA busy_timeout=5000;')
+            _migrate_market_tape_complement_columns(conn)
             conn.executescript(SCHEMA_SQL)
             conn.commit()
         except sqlite3.Error:
@@ -377,7 +423,9 @@ class PriceTapeByToken:
             self.tapes[str(token_id)] = restored
 
     def _persist_row(self, token_id: str, ts: float, price: float,
-                      best_bid, best_ask, source: str) -> None:
+                      best_bid, best_ask, source: str,
+                      condition_id: Optional[str] = None,
+                      complement_id: Optional[str] = None) -> None:
         conn = self._ensure_conn()
         if conn is None:
             return
@@ -385,10 +433,12 @@ class PriceTapeByToken:
             with conn:
                 conn.execute(
                     'INSERT INTO market_tape (market_id, ts, mid, best_bid, '
-                    'best_ask, source) VALUES (?, ?, ?, ?, ?, ?)',
+                    'best_ask, source, condition_id, complement_id) '
+                    'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
                     (str(token_id), float(ts), float(price),
                      None if best_bid is None else float(best_bid),
-                     None if best_ask is None else float(best_ask), source))
+                     None if best_ask is None else float(best_ask), source,
+                     condition_id, complement_id))
         except sqlite3.Error:
             logger.warning('market_tape: write failed for %s', token_id,
                             exc_info=True)
@@ -398,14 +448,19 @@ class PriceTapeByToken:
         return False
 
     def observe(self, token_id: str, ts, price, source: str,
-                persist: bool = False, best_bid=None, best_ask=None) -> bool:
+                persist: bool = False, best_bid=None, best_ask=None,
+                condition_id: Optional[str] = None,
+                complement_id: Optional[str] = None) -> bool:
         """Record one observation. Returns False if it was refused.
 
         `persist` opts this call into `market_tape` (proposal 031 phase 1) -
         default False keeps every existing caller and test pure in-memory.
         `best_bid`/`best_ask` are written alongside `price` (the mid, or the
         ask when the book is one-sided) purely for the persisted row; they
-        are never read back into the in-memory mean.
+        are never read back into the in-memory mean. `condition_id` /
+        `complement_id` (proposal 036) are likewise write-only passengers -
+        the caller already resolved them from a `Market` object, this class
+        never derives or matches them itself.
         """
         if not token_id:
             return self._drop('no_token_id')
@@ -439,7 +494,7 @@ class PriceTapeByToken:
 
         if persist and self.db_path:
             self._persist_row(str(token_id), ts_f, price_f, best_bid,
-                               best_ask, source)
+                               best_ask, source, condition_id, complement_id)
         return True
 
     def observations(self, token_id: Optional[str]) -> List[Observation]:
@@ -817,13 +872,30 @@ class DipArb(PolymarketStrategy):
         it anyway would multiply `market_tape` volume for no benefit. An
         off-crypto token id lives for days, polls twelve times slower, and is
         exactly the tape a restart currently resets to empty.
+
+        `condition_id` / `complement_id` (proposal 036,
+        pm_complement_pair_keying) are read straight off `ctx.market` - the
+        complement of a token is simply the OTHER outcome on the same
+        `Market` object, which is already known by construction (Gamma pairs
+        `clobTokenIds` positionally with `outcomes`, see
+        `engine/polymarket/markets.py`). No price is consulted and no
+        candidate is ever chosen among more than one: a market with other
+        than two outcomes has no single complement and gets `None`.
         """
         out: Dict[str, bool] = {}
         now = self.clock(ctx)
         if now is None or ctx.market is None:
             return out
         persist = not ctx.is_crypto_window
-        for outcome in getattr(ctx.market, 'outcomes', ()) or ():
+        outcomes = getattr(ctx.market, 'outcomes', ()) or ()
+        condition_id = getattr(ctx.market, 'condition_id', None) or None
+        complements: Dict[str, str] = {}
+        if len(outcomes) == 2:
+            a, b = outcomes
+            if getattr(a, 'token_id', None) and getattr(b, 'token_id', None):
+                complements[a.token_id] = b.token_id
+                complements[b.token_id] = a.token_id
+        for outcome in outcomes:
             token = getattr(outcome, 'token_id', None)
             if not token:
                 continue
@@ -834,7 +906,9 @@ class DipArb(PolymarketStrategy):
             out[token] = self.tape.observe(
                 token, now, price, source, persist=persist,
                 best_bid=(None if book is None else book.best_bid),
-                best_ask=(None if book is None else book.best_ask))
+                best_ask=(None if book is None else book.best_ask),
+                condition_id=condition_id,
+                complement_id=complements.get(token))
         return out
 
     def mean_for(self, token_id: Optional[str]) -> Optional[float]:

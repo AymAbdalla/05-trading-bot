@@ -746,6 +746,43 @@ class ShadowStore:
                     name, sql_type))
         self.conn.commit()
 
+    #: Forge proposal 036 (pm_complement_pair_keying). Same reasoning as
+    #: `_POSITIONS_FILL_PROVENANCE_COLUMNS`: `CREATE TABLE IF NOT EXISTS` is a
+    #: no-op against a `market_tape` table that already exists on disk, and
+    #: `db/schema.sql` also declares `idx_market_tape_condition_ts` on
+    #: `condition_id` - `CREATE INDEX` against a column that does not exist
+    #: yet raises `OperationalError` immediately, unlike the no-op table
+    #: statement before it. Every live and every test database that has ever
+    #: run the off-crypto tape predates these columns.
+    _MARKET_TAPE_COMPLEMENT_COLUMNS = (
+        ('condition_id', 'TEXT'),
+        ('complement_id', 'TEXT'),
+    )
+
+    def _migrate_market_tape_complement_columns(self) -> None:
+        """`ALTER TABLE ADD COLUMN` for the two above if missing.
+
+        Same table-existence guard and same "must run before executescript"
+        ordering as `_migrate_positions_pair_linkage_columns` - see that
+        method's docstring for why. A `market_tape` table that does not exist
+        yet is left alone: schema.sql creates it a moment later with these
+        columns already in the `CREATE TABLE`.
+        """
+        table_exists = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='market_tape'").fetchone()
+        if not table_exists:
+            return
+        existing = {row[1] for row in
+                    self.conn.execute('PRAGMA table_info(market_tape)')}
+        for name, sql_type in self._MARKET_TAPE_COMPLEMENT_COLUMNS:
+            if name in existing:
+                continue
+            self.conn.execute(
+                'ALTER TABLE market_tape ADD COLUMN {} {}'.format(
+                    name, sql_type))
+        self.conn.commit()
+
     def ensure_schema(self) -> None:
         """Idempotent migration. Replays db/schema.sql verbatim.
 
@@ -758,6 +795,7 @@ class ShadowStore:
                 .format(self.SCHEMA_PATH))
         self._migrate_positions_pair_linkage_columns()
         self._migrate_positions_fill_provenance_column()
+        self._migrate_market_tape_complement_columns()
         with open(self.SCHEMA_PATH) as f:
             self.conn.executescript(f.read())
         self.conn.commit()
