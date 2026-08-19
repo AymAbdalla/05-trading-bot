@@ -202,6 +202,7 @@ from engine.polymarket.orderbook import fetch_orderbook, walk_book
 from engine.polymarket.prices import resolution_price
 from engine.polymarket.types import (LOSING_REDEMPTION, MIN_SHARES, PRICE_TICK,
                                      WINNING_REDEMPTION, Fill, Orderbook)
+from engine.risk import constraints as risk_constraints
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +233,19 @@ DEFAULT_MAKER_FEE_RATE = 0.0
 # and an order with no expiry at all would make "this never filled" unreachable,
 # which would quietly delete the most important outcome the maker path has.
 DEFAULT_MAKER_TTL_SECONDS = 300
+
+# Per-trade premium at risk, as this adapter's own fill-size sanity check reads
+# it. DELEGATED to engine.risk.constraints (D-343 R1 residual): the adapter used
+# to carry a bare 10.0 inline in __init__ - a THIRD independent copy of a number
+# engine.risk.constraints and engine.polymarket.risk_gate had already been made
+# to agree on, and exactly the drift the D-343 R1 ruling exists to end ("three
+# copies of a kill switch is three chances for one of them to point somewhere
+# else"). The VALUE does not change ($10); what changes is that there is now one
+# place it is defined. See risk_gate.DEFAULT_NOTIONAL_CAP_USDC, which sources
+# the same field. Note this cap is a fill-size sanity check on an order the gate
+# has already passed, not a second gate - it binds `shares * limit_price`, and
+# `affordable_shares` sizes down to it.
+DEFAULT_NOTIONAL_CAP_USDC = risk_constraints.DEFAULT_LIMITS.per_trade_notional_usd
 
 # Names the exact fill rule below, so a log row, a strategy feature and a
 # summary block all say the same thing and a later change to the rule is a
@@ -564,7 +578,8 @@ class PolymarketPaperAdapter:
                                             DEFAULT_MAKER_FEE_RATE))
         self.maker_ttl_seconds = float(cfg.get('maker_ttl_seconds',
                                                DEFAULT_MAKER_TTL_SECONDS))
-        self.notional_cap_usdc = float(cfg.get('notional_cap_usdc', 10.0))
+        self.notional_cap_usdc = float(cfg.get('notional_cap_usdc',
+                                               DEFAULT_NOTIONAL_CAP_USDC))
         self.max_concurrent_positions = int(cfg.get('max_concurrent_positions', 10))  # D-321: raised 5->10, shadow only
         self.min_shares = int(cfg.get('min_shares', MIN_SHARES))
         self.price_tick = float(cfg.get('price_tick', PRICE_TICK))

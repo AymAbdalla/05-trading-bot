@@ -1625,3 +1625,35 @@ class TestTheBlockedMakerStrategies:
         assert pos.entry_liquidity == 'maker'
         assert pos.stop_price < pos.avg_price
         assert a.summary()['maker']['orders_filled'] == 1
+
+
+# -- delegation (D-343 R1 residual) -------------------------------------------
+
+def test_paper_adapter_no_longer_defines_its_own_notional_cap(tmp_path):
+    """D-343 R1 residual: the adapter's per-trade cap default used to be a bare
+    `10.0` inline in `__init__` - a THIRD independent declaration of a number
+    `engine.risk.constraints` and `engine.polymarket.risk_gate` had already been
+    made to agree on. It is now SOURCED from that module, not redeclared.
+
+    Mirrors `test_pm_gate_no_longer_defines_its_own_notional_caps` in
+    `tests/test_polymarket_risk_gate.py`. The structural half carries the weight
+    here: unlike the gate's aggregate cap, this number did NOT change value, so
+    equality with `DEFAULT_LIMITS` alone would pass just as well against the old
+    hardcoded literal and would prove nothing about delegation.
+    """
+    from engine.risk import constraints as risk_constraints
+
+    assert pa_module.DEFAULT_NOTIONAL_CAP_USDC == pytest.approx(
+        risk_constraints.DEFAULT_LIMITS.per_trade_notional_usd)
+
+    # An adapter built with no config override gets the delegated number, not
+    # some other default reached by a second path.
+    assert make_adapter(tmp_path).notional_cap_usdc == pytest.approx(
+        risk_constraints.DEFAULT_LIMITS.per_trade_notional_usd)
+
+    # Structural: the module must SOURCE the number rather than redeclare a
+    # literal that merely happens to match today.
+    import inspect
+    source = inspect.getsource(pa_module)
+    assert 'risk_constraints.DEFAULT_LIMITS.per_trade_notional_usd' in source
+    assert "cfg.get('notional_cap_usdc', 10.0)" not in source
