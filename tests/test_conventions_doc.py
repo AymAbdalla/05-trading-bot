@@ -188,6 +188,57 @@ class TestUnsatisfiableHookConvention:
         assert 'AGENT_ID=cody-<topic>' in body
 
 
+class TestPathspecCommitConvention:
+    """34, added 2026-08-19 after the third cross-session index sweep.
+
+    The rule is a mechanism, not a sentiment. The working directory AND the git
+    index are shared (convention 21), so the difference between `git commit` and
+    `git commit -- <paths>` is whether another session's staged work lands in a
+    commit whose message never names it. Strip the mechanism out and what is
+    left is advice nobody can follow at the moment it matters.
+    """
+
+    def test_34_is_the_pathspec_commit_rule(self, conventions):
+        body = conventions[34]
+        # the mechanism, which is the whole convention
+        assert ('Commit your own paths out of a shared index with a pathspec'
+                in body)
+        assert 'git commit -- <paths>' in body
+        # the forbidden thing
+        assert 'Never `git add -A`' in body
+        # why it is not merely style: the index is shared, so a bare commit
+        # takes whatever a sibling already staged
+        assert "another session's files may already be staged" in body
+        assert "leaves another session's staged entries untouched" in body
+        # the plausible-looking repair that is itself a mutation of their index
+        assert 'git restore --staged' in body
+        # the conventions it rests on
+        assert 'convention 16' in body
+        assert 'convention 21' in body
+
+    def test_34_names_the_sweeps_it_was_earned_by(self, conventions):
+        """Three real commits took files their messages never named, and the
+        third went through the hook built to stop the first two. Without them
+        the convention reads as caution about something hypothetical."""
+        body = conventions[34]
+        for sha in ('b1d44bb', '4d03681', '26555f2'):
+            assert sha in body, (
+                'convention 34 no longer names the sweep %s that earned it'
+                % sha)
+        assert 'D-337' in body
+
+    def test_34_ships_the_commands_not_just_the_rule(self, conventions):
+        """Convention 33: a rule whose sanctioned path is not spelled out gets
+        approximated by the agents it governs. 34 carries the literal commands,
+        the D-335 trailer included, and the one-line diagnostic that tells you
+        somebody else got to the index first."""
+        body = conventions[34]
+        assert 'git add -- <your path>' in body
+        assert 'Agent-Id: cody-<topic>' in body
+        assert 'git status --porcelain' in body
+        assert 'FIRST column' in body
+
+
 class TestClaudeDirIsGitignored:
     """Raven ruling, 2026-08-18: `.claude/` is an internal agent directory."""
 
