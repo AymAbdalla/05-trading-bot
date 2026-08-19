@@ -115,3 +115,67 @@ larger uncensored samples, which is what this proposal is.
   PREDICTION_MARKET, EVENT and SPORTS: the graveyard has no rows in those
   classes. The hypothesis_graph ids cited above are the substitute and they are
   engaged, not dodged.
+
+
+## AMENDMENT 2026-08-19 (forge cycle 2)
+
+**Additive. Nothing above is retracted or rewritten.** Appended by the forge
+reasoner cycle-2 session after measuring the salvage floor's realised cost in
+`db/trading.db` at ~11:30 UTC. Three corrections, in order of how much they
+change this proposal.
+
+**(1) This proposal's MECHANISM is confirmed. Its framing as a bleed is not.**
+The thesis says a position reaches the salvage floor "precisely when it is
+losing, so the censored subset is the loser subset by construction." That is
+now measured rather than reasoned: of the 37 `sell:salvage_floor` exits, 21
+have a recoverable market-side resolution and **21 of 21 settled at 0.00. Zero
+settled at 1.00.** The censored subset is the loser subset, exactly as claimed,
+and the one-directional censoring this repair exists to remove is real.
+
+But the separate claim, made in the 2026-08-19 cycle-2 Raven brief rather than
+in this file, that `salvage_floor` is "a new, expensive exit" and "the
+settlement-exit family's censoring mechanism" costing -130.56, conflates two
+different things. The -130.56 is a loss that was already incurred by the time
+the floor fired. Against holding those same 21 positions to resolution, the
+salvage floor **saved 26.09 USD**: actual -70.79 versus a counterfactual
+-96.88. Selling at a mean 0.0650 into a realised 0.000 was the correct
+economic decision on every recoverable observation. `salvage_floor` is a
+measurement problem, which is this proposal's point, and it is NOT a P&L
+problem. Do not repair it as though it were, and do not widen or remove the
+floor to stop the bleeding - the bleeding is upstream of the exit.
+
+**(2) The refutation in (1) is itself computed on a biased sample, and this
+proposal now has a hard precondition.** Resolution is recoverable only by
+inferring it from a sibling position on the same market and side that was held
+into settlement. That covers 325 of 864 distinct (pair, outcome_side)
+market-sides, 37.6%, and the recoverable subset over-represents markets that
+settled 0.00 by roughly 20 points, because a winning side gets sold early by
+`profit_target` and leaves no settlement row. **The 0-of-21 result above sits
+in exactly the stratum that bias favours**, so it is directionally right and
+quantitatively soft. More seriously, this proposal's own censoring-rate
+measurement - the number in its kill condition - would be computed on the same
+biased recovery, which means the instrument proposed to fix the censoring
+inherits a second selection effect from the recovery method.
+
+**Proposal 038, `pm_settlement_resolution_ledger`, is therefore a BLOCKING
+precondition for grading this repair**, though not for building it. The
+uncensored arm can be forked and run at any time; its censoring rate and its
+settlement frequency must not be graded until resolution is read from the 038
+ledger rather than inferred. Recorded here rather than by editing the kill
+condition above, which stays as written.
+
+**(3) One data_requirement above is now STALE.** It states that
+`positions.fill_was_maker` "is NOT a column of the positions table in either
+db/trading.db or db/trading-survivors.db, because both live loops run commit
+e033078." That was true when written and is no longer. After the 2026-08-19
+03:28 EDT restart the column exists and carries 2,261 non-null values in
+`db/trading.db`. **Re-derive before trusting it:** only 8 rows read 1, all
+opened between 07:29 and 08:52 UTC, and the 2,253 zeros run back to 2026-08-18
+03:02 - well before the column existed. Pre-restart zeros are BACKFILL, not
+observations. Convention 32 is now mechanically checkable on positions opened
+after 2026-08-19 07:28:34 UTC and on no others, so the caveat in that
+data_requirement still binds for every position booked before then.
+
+*Numbers above re-derive from `db/trading.db` at 2026-08-19 ~11:30 UTC and are
+claims about that read (convention 25). See `038-pm-settlement-resolution-ledger.md`
+and `039-pm-time-stop-hold-through.md`.*
