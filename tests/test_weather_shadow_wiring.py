@@ -568,13 +568,14 @@ def test_the_registry_still_returns_twenty_and_weather_arb_is_index_16():
     `PM_smart_money_callers` (proposal 027) at index 20,
     `PM_status_quo_collector` (proposal 028) at index 21,
     `PM_longshot_fade_hold_to_resolution` (proposal 032) at index 22,
-    `PM_weather_bracket_width_matched` (proposal 033) at index 23, and
-    `PM_fair_value_settlement_exit` (proposal 034) at index 24, so the
-    total is now 25 and every historical position before 19 is unchanged.
+    `PM_weather_bracket_width_matched` (proposal 033) at index 23,
+    `PM_fair_value_settlement_exit` (proposal 034) at index 24, and
+    `PM_fair_value_mirror_fade` (D-326) at index 25, so the total is now 26
+    and every historical position before 19 is unchanged.
     """
     from strategies.polymarket import build_strategies
     names = [s.strategy_name for s in build_strategies()]
-    assert len(names) == 25
+    assert len(names) == 26
     assert names[16] == 'PM_weather_arb'
     assert names[19] == 'PM_maker_rebate_quote_ladder'
     assert names[23] == 'PM_weather_bracket_width_matched'
