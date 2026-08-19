@@ -137,6 +137,37 @@ and the wording of the conventions that have been contested.
     message named none of them; the third went through the hook built to stop
     the first two (D-337).
 
+35. **A commit trailer block is the LAST paragraph of the message and nothing
+    else, so `Co-Authored-By` and `Agent-Id` go in ONE final paragraph,
+    `Agent-Id` last.** The D-335 hook does not hand-roll trailer parsing: step 4
+    of `scripts/pre-commit-conflict-check` delegates to
+    `git interpret-trailers --parse`, and git parses only the final paragraph of
+    a message as trailers. That makes `-m` ORDER a correctness question, not a
+    style one. A message ending
+
+        Agent-Id: cody-<topic>
+
+        Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+
+    has TWO paragraphs; git reads the second one only; the hook prints
+    `trailers parsed: 1  (Agent-Id: 0)` and REFUSES. It is right to: by the
+    definition git itself uses, that message carries no `Agent-Id`. The trailer
+    is present in the text and absent from the object, which is the same class
+    of failure as convention 31. Write one paragraph instead, and build the
+    message in python rather than in bash, where the embedded newline is
+    awkward:
+
+        subject = "records: ..."
+        body = "..."
+        trailers = "Co-Authored-By: ...\nAgent-Id: cody-<topic>"
+        subprocess.run(["git", "commit", "-m", subject, "-m", body,
+                        "-m", trailers, "--"] + paths, env=env)
+
+    This cost two failed commit attempts on 2026-08-19 before the SHAPE of the
+    message, rather than its content, was suspected. Verify before committing,
+    not after: `git interpret-trailers --parse <message-file>` prints exactly
+    what the hook will see. Convention 34 carries the rest of the commit line.
+
 ---
 
 ## Numbering note for 27, 28 and 29 (closed by Raven ruling, 2026-08-19)

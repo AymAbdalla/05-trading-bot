@@ -3467,3 +3467,78 @@ Note, 2026-08-19 (cody-open-items): the 03:28:34 EDT restart IS attributable, by
 **Gate 1 pre-registered (split):** Gate 1-BUILD (shadow crypto: 30 consecutive days no self-caused blowup/restart, per-trade net PnL not significantly negative, Gate 0 closed, asset_family re-cut + portfolio cap landed) and Gate 1-FUND (real money: t >= 3.0 after fees/fills, n >= 200, >=3 distinct market epochs defined in code, t computed post-proposal only, max DD within limits). t >= 3.0 from Bonferroni on ~25 Forge strategies and Harvey/Liu/Zhu (2016). Report K with every t-claim; block-bootstrap or Newey-West SEs.
 
 **Recording-session note.** Records-only entry per the ruling (section 10 items 1 and 5). No code changed. No cron touched. The 03:45 2026-08-20 keying restart is unaffected. Sequencing Gate 0 + asset_family re-cut, and the Topstep rule-page PDF freeze, are tracked as ledger items. Aym input still needed: current closed trades per week (re-cuts n and epoch definition if under ~10) and whether Topstep API access requires an active Combine subscription.
+
+### D-349. Proposal 036 shipped in commit 26555f2 and is COMPLETE; the missing D-number is recorded now (Raven ruling, 2026-08-19)
+
+**Problem** (`cody-forge-review-cont`, `docs/handoffs/2026-08-19-forge-tick4-review-continuation.md`): proposal 036 (`pm_complement_pair_keying`) was found PROPOSED in its proposal file while the live tape already carries `condition_id` / `complement_id` columns with every success condition MET. Convention 24: no D-number claimed the implementation. The probe measured: 24,227/34,700 rows keyed (69.8%), missingness purely temporal (last unkeyed 07:28:02 UTC, first keyed 07:28:36 UTC, zero overlap), post-wiring NULL fraction 0.000000, ambiguity resolution fraction 0.000, 8,696 synchronous complement pairs with both non-null `best_ask`, 56/56 reciprocal links resolving into the same `condition_id` group, and 10,473/10,473 pre-wiring rows left NULL (instruction 3 honored, no backfill).
+
+**Decision.** 036 IS the shipped implementation: commit `26555f2` (2026-08-19 03:18 EDT, session `raven-036-commit`, "proposal 036: complement pair keying + migration guard", 16 tests, 3,949 pass) added the columns, the index, and the write-time population, and the 03:28:34 EDT restart brought it live (keyed window begins 07:28:36 UTC). The repair is DONE. Success conditions all read MET against live data; nothing is to be rebuilt, re-wired, or re-tested. The missing record is now closed. The old 61.7% pairing-ambiguity figure applied to the pre-keying era under mid-sum heuristic matching and is retired with the 10,473 NULL rows it described; it must never be quoted as a current measurement.
+
+**Where:** commit `26555f2`, `engine/polymarket/shadow_loop.py` (writer), `strategies/polymarket/dip_arb.py` (tape), `db/trading.db`, this entry.
+
+### D-350. Proposal 037 stays NOT_TESTED; the 8,696-pair ask-sum measurement is recorded as strong indicative evidence, not a verdict (Raven ruling, 2026-08-19)
+
+**Problem** (`cody-forge-review-cont`): proposal 037 (`pm_complement_no_arbitrage_taker`) was NOT_TESTED pending keyed tape. The keyed window now holds 8.81 hours / 8,696 synchronous pairs. Over those pairs the ask sum reads min = p01 = p05 = median = 1.001000, mean 1.006349, max 1.410, with zero pairs below 1.000000 and zero at or below the 0.996 gate. This reproduces CLAUDE.md's structural no-arb claim on 8,696 pairs instead of 17.
+
+**Decision.** 037 is NOT retired and NOT unblocked. The measurement is indicative, not dispositive: it covers 8.81 hours, the proposal's kill condition runs on 14 days of keyed tape, and the ask sum is a top-of-book upper bound on opportunity (depth is not stored; Phase 0's count is an upper bound by the proposal's own rule 5 note). The verdict is deferred to the 24h+ re-derivation from ~03:28 2026-08-20, which the restarted main loop now makes possible. If the 24h+ window reproduces zero pairs at or below 0.996 over a full day, THAT is the evidence on which to record 037's retirement on observation (kill condition branch 2) without writing any strategy code. Until then: status NOT_TESTED, no build, no unblock.
+
+**Where:** `strategies/proposals/037-pm-complement-no-arbitrage-taker.md`, `db/trading.db` market_tape, this entry.
+
+### D-351. The prediction-market edge floor is ratified at 20 bps on the observed tick; the 200 bps premise is struck from the record (Raven ruling, 2026-08-19)
+
+**Problem** (`cody-forge-review-cont`): the review brief asked whether 200 bps sits above every empirically observed per-trade edge. Measurement: every observed quote in both databases lies on a 0.001 grid with zero exceptions (370/370, 131/131, 130/130 distinct values) and the minimum adjacent gap is exactly 0.001000; `market_tape.mid` is a derived half-tick (equals (bid+ask)/2 exactly on 31,544/31,544 rows) and `positions.entry_px`/`exit_px` carry slippage/fee arithmetic (33% on-grid) - neither is a venue quote. Realized per-share P&L cannot bracket a pre-trade floor: 100% of closes settle at 0.00 or 1.00 (148/148, 70/70, 43/43, 98/98), so every trade returns approximately +/-10000 bps, a coin landing, not an edge; and only 26/2,840 positions carry `leg_ask_at_signal` (data requirement 6, still unmet).
+
+**Decision.** D-336 stands and is ratified on fresh evidence: one tick on a 0.50 premium is 20 bps, the floor is 20, and the constant already reads 20 at `agents/forge.py:124` (the `forge.py:109` citation in the review brief was a comment line, part of the D-336 block; there is no live 200 bps constant to dispute). Any list still carrying a "200 bps vs 20 bps floor dispute" has it struck as of this entry. Future floor decisions are to be grounded on the tick grid measurement, never on realized settlement P&L, until data requirement 6 (entry-quote capture) is met.
+
+**Where:** `agents/forge.py:124`, D-336, `db/trading.db` + `db/trading-survivors.db` market_tape, this entry.
+
+### D-352. Main shadow loop death on 2026-08-19 and Raven's tmux restart are recorded; the launch mode lesson is binding (Raven ruling, 2026-08-19)
+
+**Problem** (`cody-forge-review-cont`): the main shadow loop (db/trading.db) died at 12:17:57 EDT 2026-08-19 with no error in its log. The tape froze at 16:17:06 UTC, halting keyed accrual 8.81 hours into the complement window. Root cause: the loop wrapper was a DIRECT child of the Hermes gateway (parent-pid 32931 in its 03:28:34 EDT banner), and the gateway replaced itself at 12:18 EDT, killing the loop with it. This is the exact mechanism D-332 warned about; the survivors loop survived because it runs under tmux.
+
+**Decision.** (1) The main loop is to run under tmux (`shadow-main`), never as a direct gateway child, so gateway replacement cannot kill it. (2) Raven restarted it 2026-08-19 16:06 EDT via `run_polymarket_shadow.sh` with `AGENT_ID=raven-shadow-restart`, HEAD `99e3ca5`, paper mode, pid 52733; the 24h complement window warm-up (~03:28 EDT 2026-08-20) is preserved and the ~03:45 EDT cron restart (`b4b677c33385`) remains scheduled as the ONE planned restart carrying its bundle. (3) The restarted loop loads HEAD, so the D-343 risk wiring is NOW ACTIVE in the main loop (early vs. the "restart-after" sequencing, accepted: tested, shadow-only, conservative). The survivors loop stays on its pre-wiring snapshot until its own restart.
+
+**Where:** tmux session `shadow-main`, `logs/polymarket_shadow_20260819T200630Z.log`, D-332, this entry.
+
+*Recording-session note (`cody-record-rulings`, 2026-08-19). This
+paragraph and the four below it sit OUTSIDE the verbatim ruling text above, per
+the transcription convention.*
+
+*The four entries above are the ruling text of
+`docs/handoffs/from-raven/2026-08-19-record-rulings-036-037-floor-loop.md`. They
+were not retyped: the blockquote blocks were EXTRACTED from that file
+programmatically, the quote prefix stripped, and every non-empty line asserted
+back against the brief before the write, so the transcription is mechanically
+verbatim rather than verbatim by care. Nothing was added to, removed from, or
+reordered inside any of the four blocks. D-349 through D-352 were verified FREE
+before writing: 151 `### D-` headings parsed, highest 344, with D-345 to D-348
+living inside the merged D-344 multi-asset entry rather than as headings of
+their own.*
+
+*Records-only session. No strategy code, no `config.yaml`, no schema change, no
+constant, no loop restart, no process signal, per the constraints of the brief.
+The full suite and `backtest/validate_harness.py` were NOT re-run and are NOT
+claimed fresh here: 4,085 passed / 1 skipped / 0 failed and 21/21 rc 0 are
+INHERITED readings from `cody-forge-review-cont` earlier the same day
+(convention 25 - a pass count in a doc is a claim, this one included). No
+importable file was touched by this session, so there was nothing for a re-run
+to measure.*
+
+*`AGENT_ID` was measured with python at session start and read EMPTY on this
+gateway spawn, so the sanctioned `CONFLICT_CHECK_AGENT_ID` fallback carried the
+commit. No running tally is asserted here: `CLAUDE.md` currently carries two
+DIFFERENT counts of this same probe (5 SET against 6 EMPTY in its `AGENT_ID`
+section, 4 SET against 5 EMPTY in open item 10), and a count that disagrees with
+itself is not a series worth adding a reading to. One reading is recorded; open
+item 10 stays open. `engine.concurrency who` reported ZERO active checkouts at
+session start, the first session in several to see none, which means the
+long-lived `cody-discovery-design` checkout on `CLAUDE.md` aged out of the
+3600-second window rather than being released.*
+
+*Convention 35 (commit trailer order) was added to `docs/CONVENTIONS.md` in the
+same commit, per task 3 of the brief. Its mechanism was verified against the
+hook source rather than copied from the brief: `scripts/pre-commit-conflict-check`
+delegates trailer parsing to `git interpret-trailers --parse`, whose definition
+of a trailer block is the LAST paragraph of the message only, and the count line
+that convention quotes is the format string `trailers parsed: %d  (%s: %d)` in
+its `verify_trailer` function - two spaces before the parenthesis, not one.*
