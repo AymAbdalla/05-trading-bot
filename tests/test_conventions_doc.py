@@ -156,6 +156,38 @@ class TestCommitMessageConvention:
         assert '79ba55d' in body
 
 
+class TestUnsatisfiableHookConvention:
+    """33, added 2026-08-19 on Raven's ruling D-334.
+
+    Pinned because the incident is the whole convention. Strip the example and
+    what is left is a platitude nobody would apply to their own hook; the
+    example is what makes a future author check whether the agents they govern
+    can actually reach the sanctioned path.
+    """
+
+    def test_33_is_the_unsatisfiable_hook_rule(self, conventions):
+        body = conventions[33]
+        assert 'cannot be satisfied by the agents it governs' in body
+        assert 'bypassed by them' in body
+        # the actionable half: what a future hook author is told to do
+        assert 'AS ONE OF THE AGENTS IT GOVERNS' in body
+        # the incident that earned it, so a rewrite cannot soften it into advice
+        assert 'cody-hook-harden' in body
+        assert '--author' in body
+        assert '--no-verify' in body
+        # and the fact that the escape was NOT a bypass, which is the whole
+        # reason this is a convention rather than a disciplinary note
+        assert 'WITHOUT bypassing the hook' in body
+
+    def test_33_names_the_fix_that_removed_the_corner(self, conventions):
+        """A convention that only describes a trap, and not the exit that was
+        built, sends the next reader looking for a corner that no longer
+        exists."""
+        body = conventions[33]
+        assert 'D-331' in body
+        assert 'AGENT_ID=cody-<topic>' in body
+
+
 class TestClaudeDirIsGitignored:
     """Raven ruling, 2026-08-18: `.claude/` is an internal agent directory."""
 

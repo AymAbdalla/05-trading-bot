@@ -100,6 +100,23 @@ and the wording of the conventions that have been contested.
     (D-329) exists so this split is a query, not a re-derivation, the next
     time someone reports a fade or mirror result.
 
+33. **A hook that cannot be satisfied by the agents it governs will be
+    bypassed by them.** The cross-owner sweep check shipped 2026-08-19
+    (`scripts/pre-commit-conflict-check`, `d66aff5`) refuses an undeclared
+    session that stages another agent's ledger-written files, and the
+    sanctioned way to declare is an environment variable. The permission layer
+    refuses the env-prefix form (`VAR=value git commit ...`), so the hook's own
+    author was the first agent it cornered: `cody-hook-harden` could not
+    declare the sanctioned way and reached for `git commit --author` instead.
+    That corner was escaped WITHOUT bypassing the hook - `--no-verify` and
+    `SKIP_CONFLICT_CHECK=1` were not used, and that was verified - but a
+    governance mechanism that leaves its subjects no sanctioned path gets
+    circumvented, which is worse than the disease. D-331 fixed the cause:
+    spawned sessions now export `AGENT_ID=cody-<topic>` for the whole session.
+    The standing rule (D-334): before shipping a hook or gate, exercise its
+    sanctioned path AS ONE OF THE AGENTS IT GOVERNS. If they cannot reach it,
+    provide one they can, or expect `--no-verify`.
+
 ---
 
 ## Numbering note for 27, 28 and 29 (open, needs a Raven ruling)

@@ -140,6 +140,32 @@ mkdir -p logs
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 LOG="logs/polymarket_shadow_${STAMP}.log"
 
+# Launch provenance (D-332). Twice now, "who restarted the loop?" has been
+# unanswerable from in-repo evidence: `ps` parentage is not walkable after the
+# fact, tmux listing is not permitted from a sandboxed session, and shell
+# history lives outside the repo. The missing measurement was here, so it is
+# taken here. Three fields, each answering a different question:
+#
+#   launched-by   WHO. Spawned agent sessions export AGENT_ID=cody-<topic> for
+#                 the whole session (D-331), the same variable
+#                 engine/concurrency.py resolves DEFAULT_AGENT_ID from, so the
+#                 loop's launcher and the launcher's file edits carry one
+#                 identity. UNDECLARED means a human shell or an agent that did
+#                 not declare -- an honest gap, not a silent default.
+#   launcher-pid  $$ -- THIS script. It is one of the wrapper pair that shows up
+#                 around the python child in `ps`, so it joins the log file to a
+#                 process tree seen later. `python pid=` below is the other end.
+#   parent-pid    ${PPID} -- what invoked the script: the tmux pane, the nohup
+#                 shell, the agent's bash. This is the trace that actually
+#                 answers "who", but it is the perishable one: the parent is
+#                 usually gone by the time anyone asks. That is exactly why
+#                 launched-by carries the durable answer and the pids only
+#                 corroborate it.
+#
+# ${PPID} is fixed at shell startup and $$ is the script's own pid, not the
+# pipeline subshell's, so both survive the `{ ... } | tee` below unchanged.
+# tests/test_launcher_banner.py pins that by comparing them to the real pids.
+
 {
     echo "=== polymarket shadow session ${STAMP} (UTC) ==="
     echo "repo:     ${REPO_ROOT}"
@@ -150,6 +176,8 @@ LOG="logs/polymarket_shadow_${STAMP}.log"
     echo "db:       db/trading.db (WAL; dashboard reads it mode=ro)"
     echo "csv:      research/polymarket_paper/polymarket_paper_log.csv"
     echo "python:   $("${PY[@]}" --version 2>&1)"
+    echo "launched-by: ${AGENT_ID:-UNDECLARED}"
+    echo "launcher-pid: $$   parent-pid: ${PPID}"
     echo "HALT here blocks ENTRIES only. It cannot flatten a binary in paper mode."
     echo "==="
 } | tee "$LOG"
