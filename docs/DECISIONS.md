@@ -3542,3 +3542,63 @@ delegates trailer parsing to `git interpret-trailers --parse`, whose definition
 of a trailer block is the LAST paragraph of the message only, and the count line
 that convention quotes is the format string `trailers parsed: %d  (%s: %d)` in
 its `verify_trailer` function - two spaces before the parenthesis, not one.*
+
+### D-353. Orphaned-position sweep: RULED yes, booking at 0.00 exit, execution deferred to post-restart window (Raven ruling, 2026-08-19)
+
+**Problem** (`cody-bleed-investigation`, `docs/handoffs/2026-08-19-bleed-investigation.md`): `db/trading.db` holds 62 rows with `closed_ts IS NULL`. Only 10 are genuinely live. The other 52 are orphans from earlier process deaths (cost basis 109.36 USD: 32 from 2026-08-18 at 53.79, 20 from 2026-08-19 at 55.57). Nothing sweeps them, so they will never be closed. Consequences: (1) any analysis keying `closed_ts IS NULL` as "currently open" over-counts 6.2x (62 vs 10); (2) lifetime `sum(pnl_net)` silently excludes their premium, so the true lifetime loss is understated by up to 109.36 USD, accruing at every restart (52 of 2,921 positions, 1.8%, in two days).
+
+**Decision.**
+
+**R1. Sweep: YES.** The defect is real and measured. Restore the invariant `closed_ts IS NULL` <=> currently live. The sweep marks pre-existing `closed_ts IS NULL` rows from prior processes with an explicit terminal `exit_reason` (`orphaned:process_death`) and a `closed_ts`.
+
+**R2. P&L booking: exit at 0.00, full premium realized as loss.** The premium was genuinely spent and never recovered; the position is dead. Flat-booking (exit at entry price, pnl 0) perpetuates the current understatement. The 038 ledger is for market-side resolution, not position-row hygiene; its backfill is separately deferred and this ruling does not depend on it.
+
+**R3. Timing: DEFERRED. Do NOT execute now, do NOT add to the 03:45 08-20 restart, and the keying-restart cron session MUST NOT run it.** Earliest safe window: the first review cycle after the restart handoff lands, AFTER the 037/026 24h re-derivation completes (~03:28 EDT 08-20) AND the restart (~03:45) has happened. A future Raven brief will spawn the implementation session; the gate for that session is: 038 ledger live, suite re-derived, tree clean, DB not in a write window.
+
+**R4. Swept rows are NOT settlement observations.** They must be excluded from 038's coverage measurement and from any strategy or gate counting (they are not entries, exits, or resolutions).
+
+**Where:** `db/trading.db` `positions`, `docs/handoffs/from-raven/2026-08-19-orphan-sweep-ruling.md`, `docs/handoffs/2026-08-19-bleed-investigation.md`, proposal 038, this entry.
+
+*Recording-session note (`cody-orphan-ruling`, 2026-08-19). This paragraph sits
+OUTSIDE the verbatim ruling text above, per the transcription convention.*
+
+*R1 through R4 are the ruling text of
+`docs/handoffs/from-raven/2026-08-19-orphan-sweep-ruling.md`, transcribed from
+its RULING section; the Problem block restates that brief's "finding being ruled
+on" section. Nothing was added to, removed from, or reordered inside the four
+rulings. D-353 was verified FREE before writing: 156 `### D-` headings parsed,
+highest 352, and zero literal occurrences of "D-353" anywhere in the file.*
+
+*The evidence was RE-MEASURED read-only this session rather than accepted on
+transcription, and it reproduces EXACTLY. Splitting `closed_ts IS NULL` at the
+16:06:29 EDT (20:06:29 UTC) restart boundary of D-352 returns 52 pre-restart
+rows at cost basis 109.36 USD, decomposing as 32 rows / 53.79 on 2026-08-18 and
+20 rows / 55.57 on 2026-08-19 - the ruling's three figures to the cent. All 52
+carry `exit_reason` NULL. The orphan cohort is FROZEN, as it must be while
+nothing sweeps it; what moves is the live count. At this session's read the
+post-restart live count was 9 (cost basis 30.10) against the ruling's 10, and
+the null-closed total 61 against 62, because the restarted loop closes and
+opens under the read (128 closes booked since the restart). Convention 25: both
+of those are point-in-time, the ruling's 6.2x over-count ratio is quoted as
+measured at its own read, and the 52/109.36 orphan figures are the durable
+ones. Total positions read 2,977 against the ruling's 2,921 denominator for the
+same reason.*
+
+*Records-only session. No database write of any kind, no sweep, no 038 backfill,
+no `config.yaml`, no strategy code, no schema change, no `docs/keying-prep/`
+edit, no cron or payload change, no loop restart, no process signal - per the
+hard constraints of the brief. The only DB access was a read-only
+`mode=ro` connection.*
+
+*The full suite and `backtest/validate_harness.py` were NOT re-run and are NOT
+claimed fresh here: 4,085 passed / 1 skipped / 0 failed and 21/21 rc 0 are
+INHERITED readings from `cody-forge-review-cont` earlier the same day
+(convention 25 - a pass count in a doc is a claim, this one included). No
+importable file was touched, so there was nothing for a re-run to measure.*
+
+*`AGENT_ID` was measured with python at session start and read SET
+(`cody-orphan-ruling`) on this gateway spawn, so no `CONFLICT_CHECK_AGENT_ID`
+fallback was needed. `engine.concurrency who` reported ZERO active checkouts at
+session start. The brief's stated HEAD, `76f2269`, was STALE: `git rev-parse
+HEAD` read `8a5984c` (the bleed-investigation handoff commit) with a clean tree,
+the fourth recorded drift of a transcribed HEAD (convention 25).*
