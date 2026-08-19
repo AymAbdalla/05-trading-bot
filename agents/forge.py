@@ -92,23 +92,38 @@ POOLED_PATH = os.path.join(ROOT, 'research', 'graveyard', 'pooled.json')
 # so one number cannot serve both. On crypto/equity spot the denominator is
 # notional and the round-trip cost floor is roughly 22bps, so a 30bps floor is
 # "clears costs with a little room". On a Polymarket binary the denominator is
-# the PREMIUM, quoted in cents, and the minimum price increment is 1c. A 1c
-# edge on a 50c contract is 200bps. Read the other way: a 30bps "edge" on a 50c
-# contract is 0.15c, a sixth of a tick, a quantity the venue cannot even
-# represent. So on a binary the floor is set to ONE TICK of a mid-priced
-# contract, which is the smallest edge that can physically exist there.
+# the PREMIUM, quoted in cents. So on a binary the floor is set to ONE TICK of
+# a mid-priced contract, which is the smallest edge that can physically exist
+# there.
+#
+# D-336: the tick used to derive the binary floor was assumed to be 1c. It is
+# not. The live tape (9,033 non-null best_ask observations) sits on a 0.001
+# grid: only 14.7% land on the 0.01 grid, the rest need the finer grid to be
+# represented at all. The real tick is 0.1c, not 1c, so the floor derived from
+# it is 20bps, not 200, and is now BELOW the 30bps spot floor rather than
+# ~6.7x above it - a binary edge can be smaller than a spot edge and
+# still be real, because the binary's denominator (premium) is smaller.
 #
 # Convention 17: both numbers are assumptions with expiry dates. The spot floor
 # expires when the cost model says 30bps no longer nets positive; the binary
-# floor expires if Polymarket changes its tick size.
+# floor expires if the venue's OBSERVED quoting grid changes (D-336: the grid
+# is a measurement off the tape, not a documented venue constant, so it gets
+# re-checked rather than trusted).
 MIN_GROSS_EDGE_BPS = 30
 
 MIN_GROSS_EDGE_BPS_BY_ASSET_CLASS: Dict[str, int] = {
-    # 1c tick / 50c premium = 200bps. One tick is the floor of what is
-    # expressible, so anything under it is not a small edge, it is not an edge.
-    'PREDICTION_MARKET': 200,
-    'EVENT': 200,
-    'SPORTS': 200,
+    # Observed tick 0.001 (a TENTH of a cent, measured off the live tape) on a
+    # 50c premium: 0.001 / 0.50 = 20bps (D-336). One tick is the floor of what
+    # is expressible, so anything under it is not a small edge, it is not an
+    # edge.
+    #
+    # The tick is a VENUE property, not an asset-class property. EVENT and
+    # SPORTS have no tape of their own yet, so they inherit the Polymarket
+    # venue tick here and are FLAGGED FOR RE-CONFIRMATION the moment either of
+    # them has a tape to measure.
+    'PREDICTION_MARKET': 20,
+    'EVENT': 20,
+    'SPORTS': 20,
 }
 
 

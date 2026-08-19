@@ -477,17 +477,19 @@ FORECAST_CACHE_TTL_SEC = 900.0
 #: harness scores a win rate at 8c, never because 8c produced too few trades.
 #:
 #: CONVENTION 5, IN THE RIGHT UNITS FOR THIS INSTRUMENT. The generic 30 bps
-#: dead-on-arrival floor is a CRYPTO number. On a Polymarket binary the smallest
-#: expressible price move is one cent, and one cent on a 50-cent contract is
-#: 0.01 / 0.50 = 200 bps. So 200 bps is the floor here, not 30, and an "edge"
-#: under it is a rounding artefact of the tick grid.
+#: dead-on-arrival floor is a CRYPTO number. D-336: the smallest expressible
+#: price move on the live tape is 0.001 (9,033 non-null best_ask observations
+#: sit on that grid; only 14.7% land on 0.01), not one cent as previously
+#: assumed. 0.001 on a 50-cent contract is 0.001 / 0.50 = 20 bps. So 20 bps is
+#: the floor here, not 200, and an "edge" under it is a rounding artefact of
+#: the tick grid.
 #:
-#: 8 cents on a 50-cent contract is 1,600 bps, eight times that floor. That is
+#: 8 cents on a 50-cent contract is 1,600 bps, eighty times that floor. That is
 #: the gross modelled edge this gate demands BEFORE costs, and the taker fee on
 #: Polymarket is currently zero (`config.yaml: polymarket.taker_fee_rate`), so
 #: gross and net differ only by the book walk, which `effective_ask` already
 #: charges us for.
-POLYMARKET_TICK_ON_FIFTY_CENTS_BPS = 200.0
+POLYMARKET_TICK_ON_FIFTY_CENTS_BPS = 20.0
 MIN_EDGE = 0.08
 
 #: Uncertainty in the final reading, in degrees F, as a function of hours
@@ -4244,8 +4246,9 @@ class WeatherArb(PolymarketStrategy):
             'realized_edge': round(edge, 4),
             'realized_edge_bps': edge_bps,
             # CONVENTION 5, IN THE RIGHT UNITS. The 30 bps dead-on-arrival floor
-            # is a crypto number; on a binary the smallest expressible move is a
-            # cent, which is 200 bps on a 50-cent contract. Carried on the row
+            # is a crypto number; on a binary the smallest expressible move is
+            # 0.001 (a tenth of a cent, observed on the live tape), which is
+            # 20 bps on a 50-cent contract (D-336). Carried on the row
             # rather than gated on, because `min_edge` already gates far above
             # it (8c on 50c is 1,600 bps) and a second gate on the same fact
             # would make the binding one ambiguous.

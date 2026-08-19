@@ -222,9 +222,9 @@ def test_the_prompt_states_the_schema_and_the_instrument_edge_floors(
 
     # Convention 5, instrument aware. Both floors must be visible or the model
     # wastes a proposal under one of them.
-    assert re.search(r'PREDICTION_MARKET\s+200 bps', prompt)
+    assert re.search(r'PREDICTION_MARKET\s+20 bps', prompt)
     assert re.search(r'CRYPTO\s+30 bps', prompt)
-    assert re.search(r'SPORTS\s+200 bps', prompt)
+    assert re.search(r'SPORTS\s+20 bps', prompt)
     assert str(forge.MIN_GROSS_EDGE_BPS) in prompt
 
     # Convention 6: the model has to know which scorer names are recognised.
@@ -457,9 +457,9 @@ def test_a_kill_condition_with_no_number_is_refused_by_validate(
 
 def test_an_edge_below_the_binary_floor_is_refused(temp_vault, temp_graph,
                                                    monkeypatch, tmp_path):
-    """Convention 5, instrument aware: 30bps is under the 200bps binary floor."""
+    """Convention 5, instrument aware: 10bps is under the 20bps binary floor (D-336)."""
     monkeypatch.setattr(llm_client, 'run_task', _fake_turn(
-        _reply([_good_candidate('pm_thin', expected_edge_bps=30)])))
+        _reply([_good_candidate('pm_thin', expected_edge_bps=10)])))
     monkeypatch.setattr(forge, 'PROPOSALS_DIR', str(tmp_path))
 
     outcome = fr.reason(_brief(temp_graph))

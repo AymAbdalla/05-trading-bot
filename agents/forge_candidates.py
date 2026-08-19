@@ -7,7 +7,8 @@ so the content can be rewritten every cycle without touching the validator.
 Each dict is a CANDIDATE, not a proposal. `agents/forge.py` decides which ones
 become files. As of the 2026-08-17 creative mandate the refusal set is much
 smaller: a candidate is refused for a missing core field, an edge below its
-INSTRUMENT'S floor (30bps on spot, 200bps = one 1c tick on a 50c binary), a
+INSTRUMENT'S floor (30bps on spot, 20bps = one 0.001 tick on a 50c binary,
+D-336), a
 kill condition with no number or no named harness, or a repair/experiment
 claiming an edge it cannot know. Duplicating a swept name, an unlisted asset
 class and a missing graveyard link are now WARNINGS, not refusals. Candidates

@@ -97,12 +97,14 @@ bps is a ratio and the denominator is not the same instrument to instrument.
 | Instrument | Floor | Why |
 |---|---|---|
 | CRYPTO, EQUITY, ETF, FUTURES, OPTIONS | 30bps | round-trip cost floor is ~22bps, so 30 clears it with a little room |
-| PREDICTION_MARKET, EVENT, SPORTS | 200bps | one 1c tick on a 50c contract IS 200bps |
+| PREDICTION_MARKET, EVENT, SPORTS | 20bps | one 0.001 tick on a 50c contract is 20bps (D-336) |
 
-On a binary the denominator is the PREMIUM, in cents. A 1c edge on a 50c
-contract is 200bps. Read the other way: a 30bps "edge" on a 50c contract is
-0.15c, a sixth of a tick, a quantity the venue cannot represent. So the binary
-floor is one tick, the smallest edge that can physically exist there.
+On a binary the denominator is the PREMIUM, in cents. D-336: the live tape
+(9,033 non-null `best_ask` observations) sits on a 0.001 grid, not 0.01 - only
+14.7% land on the coarser grid. A 0.001 edge on a 50c contract is 20bps, not
+200. So the binary floor is one tick of the REAL grid, the smallest edge that
+can physically exist there, and it is now BELOW the 30bps spot floor rather
+than ~6.7x above it.
 
 On Polymarket, always state edge as **cents per share AND as bps of the premium
 paid**. One without the other is unreadable.

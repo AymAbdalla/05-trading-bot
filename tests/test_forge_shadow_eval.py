@@ -536,16 +536,18 @@ def test_kill_condition_without_a_named_harness_is_refused():
 
 
 def test_edge_floor_is_instrument_aware():
-    # 100bps clears the 30bps spot floor and fails the 200bps binary floor,
-    # because one 1c tick on a 50c contract IS 200bps.
+    # D-336: the binary floor (0.001 tick / 50c = 20bps) is now BELOW the
+    # 30bps spot floor, not ~6.7x above it. 25bps clears the 20bps
+    # binary floor but fails the 30bps spot floor.
     assert forge.validate(
-        _candidate(asset_class='CRYPTO', expected_edge_bps=100,
+        _candidate(asset_class='PREDICTION_MARKET', expected_edge_bps=25,
                    kill_condition='under 30bps over 200 trades in the '
                                   'vectorized harness'), []) is not None
     with pytest.raises(forge.ProposalRefused) as exc:
-        forge.validate(_candidate(expected_edge_bps=100), [])
+        forge.validate(_candidate(asset_class='CRYPTO', expected_edge_bps=25),
+                       [])
     assert exc.value.category == 'below_min_edge_bps'
-    assert forge.min_edge_bps_for('PREDICTION_MARKET') == 200
+    assert forge.min_edge_bps_for('PREDICTION_MARKET') == 20
     assert forge.min_edge_bps_for('CRYPTO') == forge.MIN_GROSS_EDGE_BPS
 
 
