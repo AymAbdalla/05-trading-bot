@@ -66,3 +66,12 @@ research/polymarket_lp_tool/
 # produces (research/weather_sigma_calibration.json) is tracked; the
 # bytes it was fitted from are not.
 backtest/data/weather_calibration_cache/
+
+# D-319: live runtime artifacts, untracked 2026-08-18. Written continuously
+# by running processes (shadow loop, hyperliquid poller, validate_harness),
+# so a commit only ever captures a torn snapshot - and the paper log had
+# reached 419MB on disk, past GitHub 100MB push limit. Working copies stay
+# on disk; the loop and the harness read them live.
+research/graveyard/harness_validation.json
+research/hyperliquid/leaderboard_wallets.json
+research/polymarket_paper/polymarket_paper_log.csv
