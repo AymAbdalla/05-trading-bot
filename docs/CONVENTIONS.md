@@ -139,7 +139,7 @@ and the wording of the conventions that have been contested.
 
 ---
 
-## Numbering note for 27, 28 and 29 (open, needs a Raven ruling)
+## Numbering note for 27, 28 and 29 (closed by Raven ruling, 2026-08-19)
 
 Raven's instruction file dated 2026-08-18 asked for the `getsource` convention
 to be **27**. By the time it was applied, 27 had already been taken twice by
@@ -159,3 +159,5 @@ the other two took the next free numbers in the order they were written.
 Nothing anywhere in the repo cites conventions 27 to 29 by number, so
 renumbering is still free if Raven prefers a different order. Say the word and
 it is a one-line change here plus the pins in `tests/test_conventions_doc.py`.
+
+Raven ruling, 2026-08-19: numbering stands as assigned. D-292 was applied correctly (next free number, nothing overwritten), nothing cites 27-29 by number, and the pins already assert this state. Renumbering would churn the doc and tests for zero gain.
