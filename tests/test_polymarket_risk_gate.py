@@ -1479,6 +1479,26 @@ class TestConfigWiring:
         assert from_yaml.portfolio_daily_loss_limit_usdc == 0.0
         assert from_defaults.daily_loss_limit_usdc == DEFAULT_DAILY_LOSS_LIMIT_USDC
 
+    def test_config_yaml_classification_tables_match_the_module(self):
+        """YAML gives lists where the module gives tuples, so compare the
+        behaviour rather than the container type."""
+        with open(os.path.join(REPO_ROOT, 'config.yaml')) as fh:
+            cfg = yaml.safe_load(fh)
+        from_yaml = PolymarketRiskGate(cfg)
+
+        def norm(d):
+            return {k: tuple(v) for k, v in d.items()}
+
+        assert norm(from_yaml.market_type_patterns) == norm(
+            DEFAULT_MARKET_TYPE_PATTERNS)
+        assert norm(from_yaml.correlation_groups) == norm(
+            DEFAULT_CORRELATION_GROUPS)
+
+        for slug, expected in [(BTC5M, 'btc_5m'), (ETH5M, 'eth_5m'),
+                               (EVENT, 'event')]:
+            assert from_yaml.market_type(slug) == expected
+        assert from_yaml.correlation_key(BTC15M, 'Up') == 'btc:up'
+
 
 # -- delegation (D-343 R1) ----------------------------------------------------
 
@@ -1521,23 +1541,3 @@ def test_config_yaml_max_total_exposure_matches_the_delegated_default():
         cfg = yaml.safe_load(fh)
     assert (cfg['polymarket']['risk']['max_total_exposure_usdc']
            == risk_constraints.DEFAULT_LIMITS.aggregate_notional_usd)
-
-    def test_config_yaml_classification_tables_match_the_module(self):
-        """YAML gives lists where the module gives tuples, so compare the
-        behaviour rather than the container type."""
-        with open(os.path.join(REPO_ROOT, 'config.yaml')) as fh:
-            cfg = yaml.safe_load(fh)
-        from_yaml = PolymarketRiskGate(cfg)
-
-        def norm(d):
-            return {k: tuple(v) for k, v in d.items()}
-
-        assert norm(from_yaml.market_type_patterns) == norm(
-            DEFAULT_MARKET_TYPE_PATTERNS)
-        assert norm(from_yaml.correlation_groups) == norm(
-            DEFAULT_CORRELATION_GROUPS)
-
-        for slug, expected in [(BTC5M, 'btc_5m'), (ETH5M, 'eth_5m'),
-                               (EVENT, 'event')]:
-            assert from_yaml.market_type(slug) == expected
-        assert from_yaml.correlation_key(BTC15M, 'Up') == 'btc:up'
