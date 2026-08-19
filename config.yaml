@@ -135,7 +135,7 @@ polymarket:
   starting_equity_usdc: 2000.0   # simulated USDC bankroll; also Kelly's default bankroll
   taker_fee_rate: 0.0            # Polymarket charges no CLOB taker fee TODAY. An assumption, not a law.
   notional_cap_usdc: 10.0        # adapter's own per-order premium cap
-  max_concurrent_positions: 5    # adapter's own open-position cap
+  max_concurrent_positions: 10   # adapter's own open-position cap (D-321: raised 5->10, shadow only)
   min_shares: 5                  # exchange minimum order size, in shares
   price_tick: 0.01               # CLOB price increment
 
@@ -214,7 +214,7 @@ polymarket:
   risk:
     notional_cap_usdc: 10.0                 # max premium at risk on ONE trade
     max_total_exposure_usdc: 100.0          # max premium at risk across ALL open positions (10x one trade)
-    max_concurrent_positions: 5             # max open Polymarket positions at once
+    max_concurrent_positions: 10            # max open Polymarket positions at once (D-321: raised 5->10, shadow only)
     max_positions_per_market_side: 1        # stops a strategy averaging into the same side of the same market
     max_positions_per_market: 2             # 2 so a deliberate Up+Down hedge stays expressible; 1 would ban hedging
     daily_loss_limit_usdc: 0.0              # DISABLED in shadow: let strategies run to zero. Shadow is for learning, not capital preservation.

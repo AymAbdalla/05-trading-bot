@@ -633,9 +633,11 @@ class TestPerAssetDailyLossBreaker:
         That must not quietly take the exposure and position caps with it.
         """
         g = gate(daily_loss_limit_usdc=0.0, portfolio_daily_loss_limit_usdc=0.0)
-        v = g.check_order(BTC5M, 'Up', 0.50,
-                          open_positions=[expo() for _ in range(5)],
-                          realized_pnl_today_usdc=-9_999.0)
+        v = g.check_order(
+            BTC5M, 'Up', 0.50,
+            open_positions=[expo() for _ in
+                            range(rg.DEFAULT_MAX_CONCURRENT_POSITIONS)],
+            realized_pnl_today_usdc=-9_999.0)
         assert not v.approved
         assert v.reason.startswith('max_concurrent_positions')
 
@@ -1366,9 +1368,10 @@ class TestVerdictShape:
             g.check_order(BTC5M, 'Up', 0.50, realized_pnl_today_usdc=-500.0),
             g.check_order(BTC5M, 'Up', 0.0),
             g.check_order(BTC5M, 'Up', 'junk'),
-            g.check_order(BTC5M, 'Up', 0.50,
-                          open_positions=[expo(slug='m{}'.format(i))
-                                          for i in range(9)]),
+            g.check_order(
+                BTC5M, 'Up', 0.50,
+                open_positions=[expo(slug='m{}'.format(i)) for i in
+                                range(rg.DEFAULT_MAX_CONCURRENT_POSITIONS + 1)]),
             g.check_order(BTC5M, 'Up', 0.50, open_positions=[expo(side='Up')]),
             gate(notional_cap_usdc=1.0).check_order(BTC5M, 'Up', 0.90),
             gate(sizing_mode='kelly').check_order(BTC5M, 'Up', 0.50),

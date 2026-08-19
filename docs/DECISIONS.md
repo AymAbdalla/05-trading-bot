@@ -2804,3 +2804,100 @@ settlement_exit`) is the experiment built to decide between them.
 base.py` (`tiered_stop_price`), `engine/polymarket/shadow_loop.py`
 (`record_entry`, `_entry_stop_px`) - all as of commit `ea30111`. No code
 changed by this entry; it is a finding, ratified as read.
+
+### D-321. Raise the shadow Polymarket concurrent-position cap 5 -> 10 (RATIFIED by execution under Aym's overnight directive, 2026-08-18)
+
+Aym's overnight order (`docs/handoffs/from-raven/2026-08-18-overnight-profitability-push.md`,
+Task 2): make the shadow realm profitable or as close as possible by morning,
+full authority granted, shadow only, never live, no backtesting.
+
+**Finding.** The Polymarket strategy registry has grown to 25 strategies
+(`strategies/polymarket/__init__.py`) sharing one global
+`max_concurrent_positions: 5` cap (`config.yaml`, `polymarket.max_concurrent_
+positions` and `polymarket.risk.max_concurrent_positions`, both formerly 5).
+The cap was set when the registry was 19 strategies. Querying `signals`
+(convention 30) over a 30.4-minute shadow window showed 39 real ENTER
+decisions from `PM_fair_value_settlement_exit` (034) alone, all killed
+downstream: 17 by `adapter:SKIP:max_concurrent_positions`, 10 by
+`risk_gate:max_concurrent_positions: 5 open (limit: 5)`, 12 by
+`risk_gate:max_positions_per_market_side`. The cap is permanently full,
+held mostly by the losing fair_value family, and the tail of the registry
+(new strategies including 034) can never enter. This is orthogonal to and
+does not fix 034's own `_open` tracker leak (separately owned by session
+cody-034-openleak) - raising the cap gives 034 (and every other starved
+strategy) a chance to actually be tested; it does not touch its bookkeeping
+bug.
+
+**Decision.** Raise `polymarket.max_concurrent_positions` and
+`polymarket.risk.max_concurrent_positions` from 5 to 10 in `config.yaml`.
+Shadow only - there is no live execution path in `engine/polymarket/`
+(D-267). `max_total_exposure_usdc: 100.0` (10x the $10 per-trade cap) already
+covers 10 concurrent positions at the existing `notional_cap_usdc: 10.0`, so
+no other risk-gate number needs to move with it.
+
+**Not a fix for the fair_value bleed.** Doubling the cap alone would let the
+known-bleed fair_value variants hold twice as many losing slots; see D-322
+(same session) for the paired action pausing `fair_value_arb_hft` and
+`fair_value_arb_inverse` to keep the freed slots from being re-captured by
+the same losing family.
+
+**Expiry.** This number is not derived from measurement, same as the 5 it
+replaces (convention 17 applies to config-block risk numbers generally, per
+the block's own header comment). Re-derive once 10 strategies are routinely
+filling the cap, or lower it if 10 concurrent positions turns out to dilute
+signal quality rather than free the tail of the registry.
+
+**Where:** `config.yaml` lines ~138, ~217. No code changed.
+
+### D-322. Pause fair_value_arb_hft and fair_value_arb_inverse: pure bleed, holding slots the tail of the registry needs (RATIFIED by execution under Aym's overnight directive, 2026-08-18)
+
+Aym's overnight order (`docs/handoffs/from-raven/2026-08-18-overnight-profitability-push.md`,
+Task 3), paired with D-321 (same session): raising the concurrent-position
+cap only helps if the freed slots do not get re-captured by the same losing
+family that filled the old cap.
+
+**Finding.** The critic's post-mortem recommended KILL for `fair_value_arb`
+(parent), `fair_value_arb_hft`, `fair_value_arb_inverse`, and `dip_arb`.
+034 (`PM_fair_value_settlement_exit`) inherits the PARENT's fair-value model
+and price tape, so the parent stays live. `dip_arb` is proposal 031's tape
+experiment subject and stays live. `fair_value_arb_hft` and `fair_value_arb_
+inverse` are not needed by any live experiment and are measured pure bleed:
+hft -$221 over its live shadow trades at 22.7% win rate against a 66.7%
+break-even; inverse -$65 at 48.1% win rate, still negative against its 75%
+break-even. Neither is close to profitable at its own break-even, so neither
+is a candidate for "give it more slots and see."
+
+**Decision.** Pause both, reversibly, by declaring `supported_market_types =
+('smart_money',)` on each class (`strategies/polymarket/fair_value_arb_hft.py`,
+`strategies/polymarket/fair_value_arb_inverse.py`), overriding the inherited
+`FairValueArb` declaration. `'smart_money'` is a real enum value in
+`MARKET_TYPES` (so `MarketContext` construction and the generic
+`test_no_strategy_raises_on_garbage` house-interface test both stay valid),
+but no cycle in `shadow_loop.py` (`run_cycle`, `run_weather_cycle`,
+`run_space_cycle`) ever calls `_supporting(pool, 'smart_money')` - it is used
+only as `PM_smart_money_copy`'s own discovery-path tag, never as a routed
+polling universe. Declaring it is therefore equivalent to declaring
+membership in no universe any cycle polls, which is the D-312 mechanism
+("a strategy joins a universe by declaring it") pointed the other way. Full
+suite (923 tests across every file touching these two classes or the
+registry) passes green.
+
+**Explicitly NOT a deletion.** `build_strategies()` is unchanged:
+`FairValueArbHFT()` and `FairValueArbInverse()` still construct at their
+pinned indices 10 and 11, `len(names) == 25` still holds
+(`test_the_first_eight_did_not_move` and every `len(names) == 25` pin were
+re-run and pass). Reverting is one line per file: delete the
+`supported_market_types` override (or restore it to `FairValueArb.
+supported_market_types`) to rejoin every universe the parent declares.
+
+**Not touched, and explicitly out of scope:** `fair_value_arb` (parent,
+034 depends on its tape), `fair_value_arb_wide`, `fair_value_arb_patient`
+(not named by the critic's KILL list in this directive), `dip_arb` (031's
+subject). `PM_box_builder` and `PM_grid_hedge` also bleed live
+(-$54.30 and -$178.16 respectively, both from REAL maker fills - see the
+correction to Task 1 in the same session's handoff) but pausing them was
+not authorized by this directive's Task 3, which named only the two
+fair-value variants; flagged for Raven, not acted on unilaterally.
+
+**Where:** `strategies/polymarket/fair_value_arb_hft.py`,
+`strategies/polymarket/fair_value_arb_inverse.py`. No registry file touched.

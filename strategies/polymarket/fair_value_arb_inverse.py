@@ -344,6 +344,19 @@ class FairValueArbInverse(FairValueArb):
     strategy_name = 'PM_fair_value_arb_inverse'
     paper_mode = PAPER_MODE
 
+    #: PAUSED (D-322, 2026-08-19, Aym's overnight profitability directive,
+    #: shadow only). The critic's post-mortem measured this variant at -$65
+    #: over its live shadow trades, 48.1% win rate - still negative against a
+    #: 75% break-even. Declaring a market type nothing in the loop ever asks
+    #: for is the D-312 mechanism: "a strategy joins a universe by declaring
+    #: it", so leaving every universe is the same declaration pointed the
+    #: other way. This is NOT a deletion - `build_strategies()` still returns
+    #: this instance at its pinned index 11, `len(names) == 25` still holds,
+    #: and reverting is one line: restore `supported_market_types =
+    #: FairValueArb.supported_market_types` (or delete this override) to
+    #: rejoin every universe the parent has.
+    supported_market_types = ('smart_money',)  # sentinel: no cycle ever routes this type generically (see comment above)
+
     def __init__(self,
                  inverse_slippage_allowance: float = INVERSE_SLIPPAGE_ALLOWANCE,
                  **kwargs):
