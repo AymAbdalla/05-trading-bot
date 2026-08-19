@@ -118,3 +118,45 @@ what the throttle costs at ENTRY, this asks what the clock costs at EXIT.
   failures are the fair_value family's hypothesis_graph entries, cited above by
   P&L rather than by id because the argument is about one exit rule shared
   across the family rather than about any single burial.
+
+
+## Amendment 2026-08-19 (forge cycle tick 4): the observation source is gone
+
+Rule 1 makes proposal 038 a blocking precondition. A second blocker has since
+appeared and it is operational rather than methodological, so it is recorded
+here rather than folded into rule 1.
+
+This experiment forks `PM_fair_value_arb`. Read read-only on 2026-08-19:
+`db/trading.db` holds all 976 of that strategy's positions and 33 of the
+system's 49 `time_stop` exits; `db/trading-survivors.db` holds **zero**
+`PM_fair_value_arb` rows, because environment B's whitelist does not include
+it, and its only 15 time-stopped positions belong to `PM_fair_value_arb_wide`
+and `PM_fair_value_arb_patient`, which are different strategies with different
+entry gates and are not substitutes.
+
+The main shadow loop that writes `db/trading.db` stopped at **2026-08-19
+16:17:57 UTC** (last position close; last equity snapshot 619.05 at 16:17:44
+UTC). Confirmed by `ps` the same day: only PID 71442/71444, the environment B
+survivors loop, is running. So the count of matched observations available to
+this experiment is currently growing at **zero per hour**, and environment B
+cannot supply them.
+
+Three consequences, none of which change the design:
+
+1. The 14-day `NOT_TESTED` clock in the kill condition starts when the 038
+   ledger goes live **and** the loop that runs `PM_fair_value_arb` is running.
+   Either one alone is not enough. If the clock is started on the ledger date
+   while the loop is down, the experiment will record `NOT_TESTED` for a
+   reason that has nothing to do with the hypothesis.
+2. Do **not** satisfy the observation gap by adding `PM_fair_value_arb` or the
+   forked arm to environment B. That book is mid-measurement on a
+   survivors-only A/B and its results are never crossed with the main loop's;
+   an arm added to it would produce observations that cannot be compared with
+   the 33 time stops the thesis is built on.
+3. The thesis figures are now **frozen**, not merely stale. The 16 recoverable
+   observations and the +0.184 per share cannot grow until the loop runs
+   again, so re-deriving them before then will reproduce the same numbers and
+   should not be read as confirmation.
+
+Restarting the loop is not this proposal's lane and this amendment does not
+request it. It records that the experiment's clock has not started.
