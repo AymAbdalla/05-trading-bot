@@ -2757,3 +2757,50 @@ research-file exclusions" meant; it is now policy, not an exception.
 **Where:** `.gitignore`, git index; commit 032 + D-319 together. No shadow
 loop restart (convention 13): 032 enters evaluation at the next natural
 restart.
+
+### D-320. The stop_px-vs-live-exit contradiction proposal 034 was gated on was already resolved, in commit ea30111, before the proposal was written (RATIFIED by execution, 2026-08-18)
+
+Task 0 of `docs/handoffs/from-raven/2026-08-18-proposal-034.md`: find whether
+the exit path reads `positions.stop_px` (0.00 on all 67 `stop_too_tight`
+fair-value rows the critic flagged) or a different field, before any change to
+the exit path can be interpreted.
+
+**Finding.** `FairValueArb.manage_exit` (`strategies/polymarket/
+fair_value_arb.py:811-813`) computes the discretionary stop LIVE on every
+check via `self.stop_price_for(entry, outcome_side)` ->
+`strategies.polymarket.base.tiered_stop_price`, compared against the book's
+live best bid. It never reads `positions.stop_px`. That DB column is written
+separately, for record-keeping only, by `ShadowStore.record_entry`
+(`engine/polymarket/shadow_loop.py:844-868`) via `_entry_stop_px`
+(`engine/polymarket/shadow_loop.py:2270-2300`), which calls the same
+`stop_price_for` method at entry time and stores its answer.
+
+**The two facts are not in tension; they are two eras of the same column.**
+`record_entry`'s own docstring says the column "used to be hardcoded to 0.00
+for every Polymarket row." Commit `ea30111` (2026-08-18 16:22 EDT, "D-312 to
+D-315: wire the general binary market spaces, register proposal 024") is
+where `_entry_stop_px` and the tiered stop both landed - already on `main`
+before proposal 034 was written. The 67 flagged trades predate that commit:
+their rows were written under the old hardcoded-0.00 path, and their LIVE
+exits at the time ran a flat `entry - 0.03` stop
+(`fair_value_arb.py:144-157`), not the tiered rule that exists now and not
+the value the column claims. `stop_px = 0.00` on those 67 rows is a
+bookkeeping gap already closed for every row written since, not evidence the
+live exit ran with no stop.
+
+**No new fix required.** Commit `ea30111` already did it, as an uncredited
+byproduct of unrelated market-space wiring work - its own commit message does
+not name the stop_px fix, which is why nothing in this file closed the
+question until now. This entry exists so a future reader does not have to
+re-derive the same git-log trail.
+
+**Open, and out of scope for this entry:** the deterministic classifier's
+`model_miscalibrated` verdict and the critic's `stop_too_tight` verdict on the
+fair-value family remain both live - this only establishes which field the
+exit path reads, not which verdict is right. Proposal 034 (`PM_fair_value_
+settlement_exit`) is the experiment built to decide between them.
+
+**Where:** `strategies/polymarket/fair_value_arb.py`, `strategies/polymarket/
+base.py` (`tiered_stop_price`), `engine/polymarket/shadow_loop.py`
+(`record_entry`, `_entry_stop_px`) - all as of commit `ea30111`. No code
+changed by this entry; it is a finding, ratified as read.

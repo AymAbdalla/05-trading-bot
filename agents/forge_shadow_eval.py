@@ -864,6 +864,17 @@ SKIP_CLASSIFICATION: Dict[str, Tuple[str, str]] = {
     # strategy's own module docstring for why this substitutes for real
     # open-position visibility, which this strategy does not have.
     'bracket_already_attempted_this_station_day': (GENUINE, ''),
+
+    # === proposal 034 (2026-08-18) ==========================================
+    # `FairValueSettlementExit.evaluate()` post-filters the parent
+    # `FairValueArb` decision with one genuinely new gate: a real `best_ask`
+    # (already stamped by the parent) checked against a real 0.60 cap and
+    # found above it. Same shape as `ask_above_cap` / `effective_ask_above_
+    # cap` elsewhere in this file. Its OTHER new gate reuses the existing
+    # `strategy_concurrency_cap_reached` key rather than a second name for
+    # the same fact (this strategy's own module docstring explains the
+    # per-instance-per-asset limit that entry does not, by itself, describe).
+    'settlement_entry_ask_above_cap': (GENUINE, ''),
 }
 
 #: Reasons NO STRATEGY CAN EMIT ANY MORE, kept because rows logged before the

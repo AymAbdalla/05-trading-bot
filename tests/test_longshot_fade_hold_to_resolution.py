@@ -432,13 +432,14 @@ class TestExit:
 
 class TestRegistry:
 
-    def test_registry_is_twenty_four_and_this_strategy_is_index_22(self):
-        # 24 since `PM_weather_bracket_width_matched` was APPENDED at index
-        # 23 (proposal 033), after this strategy. This test's own name is
+    def test_registry_is_twenty_five_and_this_strategy_is_index_22(self):
+        # 25 since `PM_weather_bracket_width_matched` (proposal 033) and
+        # `PM_fair_value_settlement_exit` (proposal 034) were APPENDED at
+        # indices 23 and 24, after this strategy. This test's own name is
         # about THIS strategy's index (22), which did not move.
         from strategies.polymarket import build_strategies
         names = [s.strategy_name for s in build_strategies()]
-        assert len(names) == 24
+        assert len(names) == 25
         assert names[:8] == [
             'PM_streak_snapper', 'PM_mid_price_continuation', 'PM_box_builder',
             'PM_corridor_collector', 'PM_temporal_arbitrage', 'PM_corridor_pair',

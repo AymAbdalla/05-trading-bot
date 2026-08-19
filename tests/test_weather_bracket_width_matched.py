@@ -674,10 +674,12 @@ class TestManageExit:
 
 class TestRegistry:
 
-    def test_registry_is_twenty_four_and_this_strategy_is_index_23(self):
+    def test_registry_is_twenty_five_and_this_strategy_is_index_23(self):
+        # 25 since `PM_fair_value_settlement_exit` (proposal 034) was
+        # APPENDED at index 24, after this strategy.
         from strategies.polymarket import build_strategies
         names = [s.strategy_name for s in build_strategies()]
-        assert len(names) == 24
+        assert len(names) == 25
         assert names[:8] == [
             'PM_streak_snapper', 'PM_mid_price_continuation', 'PM_box_builder',
             'PM_corridor_collector', 'PM_temporal_arbitrage', 'PM_corridor_pair',

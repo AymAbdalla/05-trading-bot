@@ -378,6 +378,28 @@ today. The other two are refusals, and each refuses for its own reason.
                               authority on which parts of proposal 033's rules
                               are live versus written-to-interface-but-dead
                               pending a shared shadow_loop.py change.
+
+## Proposal 034, appended at index 24
+
+  PM_fair_value_settlement_exit   `FairValueArb`'s entry model, tightened
+                              (edge_threshold 0.04 -> 0.05, plus a new 0.60
+                              entry-ask cap the parent does not have), held
+                              to resolution instead of sold on convergence -
+                              one spread crossing instead of two. Salvage-
+                              floor stop only (bid <= 0.10 sells), no
+                              converged/model_stop/time_stop/window_close.
+                              An EXPERIMENT deciding between the deterministic
+                              classifier's `model_miscalibrated` verdict and
+                              the critic's `stop_too_tight`/execution-cost
+                              verdict on the fair-value family - not a repair
+                              of either in advance. Its own module docstring
+                              carries the Task 0 finding: the stop_px-vs-
+                              live-exit contradiction the proposal was gated
+                              on was already resolved in commit `ea30111`,
+                              before this proposal was written (see D-320).
+                              Per-instance (per-asset) `max 2 concurrent`
+                              self-cap, same honest system-wide limit as
+                              proposal 032's.
 """
 from strategies.polymarket.base import (BINARY_STOP, BINARY_TARGET, PAPER_MODE,
                                         Decision, Leg, MarketContext,
@@ -396,6 +418,8 @@ from strategies.polymarket.fair_value_arb_hft import FairValueArbHFT
 from strategies.polymarket.fair_value_arb_inverse import FairValueArbInverse
 from strategies.polymarket.fair_value_arb_patient import FairValueArbPatient
 from strategies.polymarket.fair_value_arb_wide import FairValueArbWide
+from strategies.polymarket.fair_value_settlement_exit import \
+    FairValueSettlementExit
 from strategies.polymarket.grid_hedge import GridHedge
 from strategies.polymarket.liq_cascade_chaser import LiqCascadeChaser
 from strategies.polymarket.longshot_fade_hold_to_resolution import \
@@ -493,6 +517,13 @@ def build_strategies(dip_arb_tape_db_path=None):
         # above it. See its module docstring for the ladder-accumulation
         # design and the two shadow_loop.py wiring gaps it surfaced.
         WeatherBracketWidthMatched(),
+        # APPENDED, at index 24 (proposal 034). Carries per-instance open-
+        # position tracking (`_open`) for its concurrency self-cap, the same
+        # shape `LongshotFadeHoldToResolution` needs, so it needs the same
+        # fresh-instance isolation as everything above it. Reuses
+        # `FairValueArb`'s price tape via inheritance rather than a second
+        # one - see its own module docstring.
+        FairValueSettlementExit(),
     ]
 
 
@@ -509,5 +540,6 @@ __all__ = [
     'SmartMoneyCopy', 'WeatherArb', 'GridHedge', 'DipArb', 'StatusQuoCollector',
     'MakerRebateCorridorQuoteLadder', 'SmartMoneyCallers',
     'LongshotFadeHoldToResolution', 'WeatherBracketWidthMatched',
+    'FairValueSettlementExit',
     'build_strategies',
 ]
