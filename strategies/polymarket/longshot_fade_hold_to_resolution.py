@@ -151,6 +151,22 @@ ladders into one market twice); a market that would push the COUNT of unpruned
 entries to `MAX_CONCURRENT_POSITIONS = 2` is refused under
 `strategy_concurrency_cap_reached`.
 
+**Recorded from the position stream, not the ENTER decision (2026-08-19
+fix, same shape as `FairValueSettlementExit`'s own fix the same day).**
+`evaluate()` only PROPOSES an entry; the shadow loop's adapter
+(`max_concurrent_positions`) and `PolymarketRiskGate` both run downstream of
+it and can still refuse the trade. The first cut of this file called
+`_note_open` inside `evaluate()`, at ENTER-decision time, with no rollback on
+a downstream refusal - so a burst of refused ENTERs alone could fill
+`self._open` and trip `strategy_concurrency_cap_reached` against positions
+that were never opened (self-starvation, the identical failure mode
+`FairValueSettlementExit` measured live: 25 self-inflicted skips against 0
+opened positions). `_note_open` is now called from `manage_exit`, the first
+time this instance sees a given position's `market_slug` - i.e. only once
+the adapter has actually filled it. `evaluate()` still PRUNES `self._open` on
+every call (unchanged - pruning is time-based, not fill-based), it just no
+longer ADDS to it.
+
 **What this does NOT guarantee**: with three asset instances (BTC, ETH, SOL)
 each independently capped at 2, the strategy FAMILY could hold up to 6
 positions at once if all three fire simultaneously - not the flat 2 a naive
@@ -557,6 +573,28 @@ class LongshotFadeHoldToResolution(PolymarketStrategy):
         while len(self._open_order) > OPEN_TRACKING_MAX:
             self._open_order.pop(0)
 
+    @staticmethod
+    def _resolve_at_for(position) -> Optional[float]:
+        """The believed resolve-at timestamp for a FILLED position, read back
+        off it rather than recomputed from a fresh clock - see `manage_exit`'s
+        note-open call. `position.features['parent_15m_ts']` is stamped by
+        every `evaluate()` decision path (including ENTER, via `decide`'s own
+        `setdefault`) and carried through unchanged into `PaperPosition.
+        features` by `PaperAdapter.simulate_taker_buy`, so it is present on
+        every real fill. Falls back to re-deriving it from `position.
+        window_ts` (the 5m window_ts, always present) for the case that
+        should not happen (convention 11: never assume) where the feature is
+        missing.
+        """
+        features = getattr(position, 'features', None) or {}
+        ts15 = features.get('parent_15m_ts')
+        if ts15 is None:
+            window_ts = getattr(position, 'window_ts', None)
+            if window_ts is None:
+                return None
+            ts15 = CorridorPairLive.parent_15m_ts(window_ts)
+        return float(ts15) + T_WINDOW_SEC
+
     @property
     def stop_fire_rate_this_instance(self) -> Optional[float]:
         """Exit B fires / total entries, this instance only. None until at
@@ -736,8 +774,14 @@ class LongshotFadeHoldToResolution(PolymarketStrategy):
         if effective is None:
             return decide('SKIP', 'unfillable_at_favorite_ask_cap', **feats)
 
+        # No `_note_open` here. This is a PROPOSED entry - the adapter's own
+        # `max_concurrent_positions` and `PolymarketRiskGate` both still run
+        # downstream and can refuse it. Recording open state at this point,
+        # before either gate runs, is the bug this file was fixed for
+        # (2026-08-19, same shape as `FairValueSettlementExit`'s own fix) -
+        # see `manage_exit` below. `self._open` is only ADDED TO once the
+        # position has actually filled.
         resolve_at = float(ts15 + T_WINDOW_SEC)
-        self._note_open(slug_15, resolve_at)
         self._entries_count += 1
         feats['notional_usdc_actual'] = round(shares * effective, 4)
         feats['resolve_at_estimate'] = resolve_at
@@ -786,6 +830,19 @@ class LongshotFadeHoldToResolution(PolymarketStrategy):
         open_15m = pos_features.get('open_15m')
         spot_now = fair_value
         best_bid = None if book is None else book.best_bid
+
+        # The position stream is the source of truth for "this instance's
+        # concurrency cap has one more slot filled" - see `_resolve_at_for`'s
+        # docstring and the module docstring's concurrency section. Runs
+        # before every other branch below (including the unreadable/no-book
+        # early returns) because a position that filled still occupies a slot
+        # regardless of what its exit decision turns out to be this cycle.
+        # Idempotent: a position already in `self._open` is a no-op.
+        slug = getattr(position, 'market_slug', None)
+        if slug and slug not in self._open:
+            resolve_at = self._resolve_at_for(position)
+            if resolve_at is not None:
+                self._note_open(slug, resolve_at)
 
         feats = {
             'entry_price': round(entry, 4),

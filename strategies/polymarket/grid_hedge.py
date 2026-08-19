@@ -595,6 +595,27 @@ class GridHedge(PolymarketStrategy):
     uses_maker_orders = True
     paper_mode = PAPER_MODE
 
+    #: PAUSED (D-323, 2026-08-19, Raven ruling on the maker-path post-mortem,
+    #: shadow only). Same critic methodology that justified D-322: measured
+    #: -$178.16 net over its CLOSED live shadow positions at a 26.0% win rate,
+    #: against a break-even nearer 66-75% - the single largest measured bleed
+    #: on the maker path. Declaring a market type nothing in the loop ever asks
+    #: for is the D-312 mechanism: "a strategy joins a universe by declaring
+    #: it", so leaving every universe is the same declaration pointed the other
+    #: way. This is NOT a deletion - `build_strategies()` still returns this
+    #: instance at its pinned index 17, `len(names) == 25` still holds, and
+    #: reverting is one line: delete this override to fall back to the
+    #: parent's `('crypto_updown',)`.
+    #:
+    #: DELIBERATE CONSEQUENCE: this and `PM_box_builder` (D-323's other half)
+    #: are the ONLY two strategies carrying `uses_maker_orders = True`, so
+    #: pausing both makes `observe_maker_orders` unreachable again - the exact
+    #: condition that let the "maker fill not wired" claim survive unchallenged
+    #: for hours (convention 31). That is intended here: stop the bleed, keep
+    #: the wiring. Reopen on either a maker strategy with a defensible
+    #: measured edge, or a maker-path post-mortem - whichever comes first.
+    supported_market_types = ('smart_money',)  # sentinel: no cycle ever routes this type generically (see comment above)
+
     #: Each filled rung would be managed to its own profit target rather than
     #: held to resolution - but since no rung can fill, no exit ever runs. False,
     #: honestly, rather than True describing code nothing reaches.

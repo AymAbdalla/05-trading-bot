@@ -109,15 +109,25 @@ def build_loop(tmp_path, strategies=None, **kw):
     """One asset, injected strategies, its own tmp db and CSV."""
     store = ShadowStore(str(tmp_path / 'trading.db'))
     kw.setdefault('assets', ('btc',))
-    return PolymarketShadowLoop(
+    injected = list(strategies) if strategies is not None else [BoxBuilder()]
+    loop = PolymarketShadowLoop(
         client=NoNetworkClient(), store=store,
         log_dir=str(tmp_path / 'paperlog'),
-        strategies=(list(strategies) if strategies is not None
-                    else [BoxBuilder()]),
+        strategies=injected,
         candle_source=lambda: None,
         include_15m=False,
         enable_weather=False,
         **kw)
+    # D-323 paused box_builder/grid_hedge out of the crypto_updown routing
+    # (`supported_market_types = ('smart_money',)`), so the constructor's own
+    # `_supporting()` filter drops them even when explicitly injected above.
+    # This fixture exists to exercise the maker-fill wiring THROUGH these two
+    # strategies regardless of their live-routing status, so restore the
+    # exact injected list post-construction.
+    loop.strategies = injected
+    for runtime in loop.runtimes.values():
+        runtime.strategies = injected
+    return loop
 
 
 def book(token, asks=(), bids=()):

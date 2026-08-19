@@ -2901,3 +2901,152 @@ fair-value variants; flagged for Raven, not acted on unilaterally.
 
 **Where:** `strategies/polymarket/fair_value_arb_hft.py`,
 `strategies/polymarket/fair_value_arb_inverse.py`. No registry file touched.
+
+---
+
+### D-323. Pause PM_box_builder and PM_grid_hedge: the maker path is measured bleed (RATIFIED by execution under Raven's ruling, 2026-08-19)
+
+**Finding.** D-322 paused the two fair-value bleeders but explicitly left
+`PM_box_builder` and `PM_grid_hedge` alone, because that directive's Task 3
+named only the fair-value variants. Raven reviewed the flag raised in the
+same handoff and ruled the same critic methodology applies. Measured over
+CLOSED live shadow positions from REAL maker fills (not proposals, not
+backtest): `PM_box_builder` -$54.30 net at a 24.6% win rate;
+`PM_grid_hedge` -$178.16 net at a 26.0% win rate. Break-even for both sits
+nearer 66-75%. Neither is close to profitable at its own break-even, so
+neither is a candidate for "give it more slots and see" - the same test
+D-322 applied.
+
+**Decision.** Pause both, reversibly, by the identical D-322 mechanism:
+declare `supported_market_types = ('smart_money',)` on each class
+(`strategies/polymarket/box_builder.py`, `strategies/polymarket/grid_hedge.py`),
+overriding the inherited `('crypto_updown',)`. `'smart_money'` is a real
+enum value in `MARKET_TYPES` (so `MarketContext` construction and the
+generic house-interface test that builds a context from
+`supported_market_types[0]` both stay valid), but no cycle in
+`shadow_loop.py` ever selects on it.
+
+**Re-verified for this decision, not inherited from D-322** (convention 31 -
+a prior decision's premise is a claim until re-checked). `_supporting(` has
+exactly two call sites: `shadow_loop.py:1269` passes the constant
+`MARKET_TYPE_CRYPTO_UPDOWN`, and `shadow_loop.py:1509` passes `market_type`
+bound only from `space_defs`, i.e. `MARKET_TYPE_EVENT`,
+`MARKET_TYPE_SPORTS`, `MARKET_TYPE_POLITICAL`. The weather space does not
+use `_supporting` at all; it tests `MARKET_TYPE_WEATHER in
+supported_market_types` directly at `shadow_loop.py:1452`. Across all three
+selection paths, `'smart_money'` is never the selector. Declaring it is
+therefore membership in no polled universe.
+
+**DELIBERATE CONSEQUENCE, stated up front.** `PM_box_builder` and
+`PM_grid_hedge` are the ONLY two strategies carrying
+`uses_maker_orders = True`. Pausing both makes `observe_maker_orders`
+unreachable again - the exact condition under which the false "maker fill
+model exists but is not wired" claim survived unchallenged for hours until
+D-320/convention 31. This is accepted, not overlooked: stop the bleed, keep
+the wiring. The code path stays live and tested; nothing routes to it.
+
+**Reopen criterion.** Either (a) a maker strategy with a defensible measured
+edge, or (b) a maker-path post-mortem explaining the 24-26% win rates,
+whichever comes first. Until one of those exists, the maker path stays
+dormant.
+
+**Explicitly NOT a deletion.** `build_strategies()` is unchanged: both still
+construct at their pinned indices 2 and 17, `len(names) == 25` still holds,
+and `test_the_first_eight_did_not_move` (which pins index 2) still passes.
+Reverting is one line per file: delete the `supported_market_types` override.
+
+**Where:** `strategies/polymarket/box_builder.py`,
+`strategies/polymarket/grid_hedge.py`. No registry file touched.
+
+---
+
+### D-324. Fix 032's latent `_open` leak preemptively, before its tape warms (RATIFIED by execution under Raven's ruling, 2026-08-19)
+
+**Finding.** `PM_longshot_fade_hold_to_resolution` (032) carried the
+identical bug shape that `PM_fair_value_settlement_exit` (034) was fixed for
+in commit `9d9a234`: `_note_open()` was called from `evaluate()` at
+ENTER-DECISION time, with no rollback if the trade was refused downstream.
+`evaluate()` only PROPOSES; the paper adapter's own
+`max_concurrent_positions` and `PolymarketRiskGate` both run after it and
+can still refuse. A burst of refused ENTERs therefore fills `self._open` and
+trips `strategy_concurrency_cap_reached` against positions that were never
+opened - self-starvation. 034 measured this live: 25 self-inflicted skips
+against 0 actually-opened positions.
+
+032 had NOT yet fired (0 ENTERs, sigma tape cold), so this is a preemptive
+fix, not an incident response. Fixing it while the counter reads 0 is free;
+fixing it after its ~5h tape warms costs real slots and contaminates the
+data 032 exists to gather.
+
+**Decision.** Apply 034's proven pattern, adapted to 032's actual structure:
+`_note_open` is called from `manage_exit()`, on first sight of a given
+position in the adapter's position stream (i.e. only once it has really
+filled), and is idempotent on repeat sightings. `evaluate()` still PRUNES
+`self._open` on every call - pruning is time-based and unchanged - it just no
+longer ADDS to it.
+
+**Deliberately NOT keyed by `(market_slug, attempt_number)`,** which is how
+034 keys it and what the directive proposed. 032 has no `attempt_number`
+concept at all (grep: zero occurrences; 034 has five) because 032 refuses
+re-entry into a window it already entered, under
+`already_entered_this_window`. Its `_open` is documented as
+`dict[market_15m_slug -> resolve_at_ts]` and the cap check reads
+`if slug_15 in self._open` with a bare slug key, so the fill-side key must
+be the bare slug to match. It is: the ENTER decision stamps
+`market_slug=slug_15`, so `position.market_slug` on the resulting fill is
+already the 15m slug. Keying by a tuple here would have silently never
+matched the cap check - a regression the directive's literal instruction
+would have introduced.
+
+**Resolve-at is read back off the position, not recomputed** from a fresh
+clock: `position.features['parent_15m_ts']` is stamped on every decision
+path (`feats.setdefault('parent_15m_ts', ts15)`) and carried into
+`PaperPosition.features` by the adapter. A fallback re-derives it from
+`position.window_ts` for the case that should not happen (convention 11).
+
+**Not touched, explicitly:** entry gates, the salvage floor, and
+hold-to-resolution semantics are all unchanged.
+
+**Where:** `strategies/polymarket/longshot_fade_hold_to_resolution.py`,
+`tests/test_longshot_fade_hold_to_resolution.py`.
+
+---
+
+### D-325. caller_feed stays BLOCKED; the fix path is a venv rebuild, not a code change (RATIFIED by execution under Raven's ruling, 2026-08-19)
+
+**Finding.** `caller_feed.py` cannot fetch its source, and the cause is two
+INDEPENDENT blockers, either of which alone is sufficient. Both were proven
+live, not inferred:
+
+1. **TLS.** The project `.venv` runs a Python linked against LibreSSL 2.8.3,
+   which fails the TLS handshake outright against Cloudflare-fronted hosts.
+   Confirmed on 2 mirrors. Not fixable by forcing `TLSv1_2`; that library
+   does not support `TLSv1_3` at all.
+2. **No mirror.** Even where TLS succeeds, every mirror tried is either
+   down, WAF-blocked regardless of User-Agent, or lacks the
+   `/user/<handle>.json` route entirely. Direct Reddit and the `r.jina.ai`
+   fallback were both tried and both failed.
+
+**Decision.** Do not touch `caller_feed.py`. Do not rebuild or modify
+`.venv` - the liquidation recorder and the hyperliquid poller both run off
+it, and breaking their runtime to chase a blocked feed is a bad trade. A
+curl-based transport was considered and rejected: it fixes blocker (1) only,
+and would still have no working mirror to talk to. `PM_smart_money_callers`
+(027) stays NOT_TESTED (convention 11: "could not run", never "ran and found
+nothing").
+
+**Recon fact recorded for the future fix** (throwaway venv, real handshake,
+`/tmp/callerfeed-recon`, does not touch the project `.venv`): CPython
+3.12.13 with OpenSSL 3.5.7 completes the TLS handshake against
+`redlib.catsarch.com` at TLSv1.3 (`TLS_AES_256_GCM_SHA384`). So blocker (1)
+is confirmed to be the venv's OpenSSL vintage and nothing else, and it is
+confirmed removable by a modern Python. Blocker (2) is NOT addressed by this
+- reachable TLS is not a working `/user/<handle>.json` route, which was not
+tested here.
+
+**Fix path when someone picks this up:** rebuild the venv on a modern Python
+FIRST (which removes blocker 1), and only then re-survey mirrors for one
+that actually serves the route (blocker 2). Both must clear. Neither alone
+unblocks 027.
+
+**Where:** no code changed. This entry is the record.

@@ -37,6 +37,7 @@ from engine.polymarket import shadow_loop
 from engine.polymarket.shadow_loop import PolymarketShadowLoop, ShadowStore
 from strategies.polymarket import build_strategies
 from strategies.polymarket.base import MARKET_TYPE_CRYPTO_UPDOWN
+from strategies.polymarket.box_builder import BoxBuilder
 
 WINDOW = 300
 
@@ -676,6 +677,14 @@ def test_maker_quote_never_becomes_an_entry(tmp_path, entry_time):
     """
     client = FakeClient(gamma_ok(), books_ok)
     loop = build_loop(tmp_path, client, candles=streak_candles(entry_time))
+    # D-323 paused box_builder out of the crypto_updown routing, so the
+    # default registry build_loop() uses no longer includes it. This test
+    # exercises box_builder's own maker-rest behavior specifically, so
+    # inject it directly rather than relying on production routing.
+    box_strategy = BoxBuilder()
+    loop.strategies = [box_strategy]
+    for runtime in loop.runtimes.values():
+        runtime.strategies = [box_strategy]
 
     loop.run_cycle(now=entry_time)
 

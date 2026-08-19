@@ -139,13 +139,13 @@ def _baseline_ctx(**overrides):
 
 
 def _position(entry=0.94, shares=10.0, open_15m=OPEN_15M, position_id='pos-1',
-             include_features=True):
+             include_features=True, market_slug=SLUG_15M, window_ts=WINDOW_TS):
     features = {'open_15m': open_15m} if include_features else {}
     return PaperPosition(
         position_id=position_id, strategy='PM_longshot_fade_hold_to_resolution',
-        market_slug=SLUG_15M, token_id=UP_TOK, outcome_side='Up',
+        market_slug=market_slug, token_id=UP_TOK, outcome_side='Up',
         shares=shares, avg_price=entry, cost_usdc=entry * shares, fee_usdc=0.0,
-        opened_ts=WINDOW_TS, window_ts=WINDOW_TS, features=features)
+        opened_ts=WINDOW_TS, window_ts=window_ts, features=features)
 
 
 # ============ 1. sigma estimation ============
@@ -297,6 +297,9 @@ class TestSizeCap:
         _seed_tape(s)
         d1 = s.evaluate(_baseline_ctx())
         assert d1.action == 'ENTER'
+        pos1 = _position(position_id='pos-1')
+        book = _book(UP_TOK, bids=((0.55, 500.0),))
+        s.manage_exit(pos1, book, now=WINDOW_TS + 10.0, fair_value=OPEN_15M)
         d2 = s.evaluate(_baseline_ctx())
         assert d2.reason == 'already_entered_this_window'
 
@@ -304,14 +307,56 @@ class TestSizeCap:
         assert MAX_CONCURRENT_POSITIONS == 2
         s = LongshotFadeHoldToResolution()
         _seed_tape(s)
+        book = _book(UP_TOK, bids=((0.55, 500.0),))
+
         d1 = s.evaluate(_baseline_ctx(slug_15m='btc-updown-15m-a'))
-        d2 = s.evaluate(_baseline_ctx(slug_15m='btc-updown-15m-b'))
-        d3 = s.evaluate(_baseline_ctx(slug_15m='btc-updown-15m-c'))
         assert d1.action == 'ENTER'
+        pos1 = _position(position_id='pos-1', market_slug='btc-updown-15m-a')
+        s.manage_exit(pos1, book, now=WINDOW_TS + 10.0, fair_value=OPEN_15M)
+
+        d2 = s.evaluate(_baseline_ctx(slug_15m='btc-updown-15m-b'))
         assert d2.action == 'ENTER'
+        pos2 = _position(position_id='pos-2', market_slug='btc-updown-15m-b')
+        s.manage_exit(pos2, book, now=WINDOW_TS + 10.0, fair_value=OPEN_15M)
+
+        d3 = s.evaluate(_baseline_ctx(slug_15m='btc-updown-15m-c'))
         assert d3.action == 'SKIP'
         assert d3.reason == 'strategy_concurrency_cap_reached'
         assert d3.features['open_count'] == 2
+
+    def test_downstream_rejection_no_longer_leaks_the_cap(self):
+        """The bug this file was fixed for (2026-08-19, same shape as
+        `FairValueSettlementExit`'s own fix): before the fix, `evaluate()`
+        noted every ENTER as open at decision time, so three ENTER decisions
+        in a row - none of which ever became a real position (`manage_exit`
+        is never called here, simulating the adapter/risk gate refusing every
+        one downstream) - used to cap the third one under
+        `strategy_concurrency_cap_reached` against zero real positions."""
+        s = LongshotFadeHoldToResolution()
+        _seed_tape(s)
+        d1 = s.evaluate(_baseline_ctx(slug_15m='btc-updown-15m-a'))
+        d2 = s.evaluate(_baseline_ctx(slug_15m='btc-updown-15m-b'))
+        d3 = s.evaluate(_baseline_ctx(slug_15m='btc-updown-15m-c'))
+        assert d1.action == 'ENTER', (d1.reason, d1.features)
+        assert d2.action == 'ENTER', (d2.reason, d2.features)
+        assert d3.action == 'ENTER', (d3.reason, d3.features)
+        assert len(s._open) == 0
+
+    def test_manage_exit_notes_the_open_on_first_sight_of_a_filled_position(self):
+        s = LongshotFadeHoldToResolution()
+        _seed_tape(s)
+        d1 = s.evaluate(_baseline_ctx())
+        assert d1.action == 'ENTER', (d1.reason, d1.features)
+        pos = _position(position_id='pos-1')
+        book = _book(UP_TOK, bids=((0.90, 500.0),))  # above the stop ceiling
+        assert len(s._open) == 0
+        s.manage_exit(pos, book, now=WINDOW_TS + 60.0, fair_value=OPEN_15M)
+        assert len(s._open) == 1
+        assert SLUG_15M in s._open
+        # Idempotent: seeing the SAME still-open position again on a later
+        # cycle does not double-count it.
+        s.manage_exit(pos, book, now=WINDOW_TS + 90.0, fair_value=OPEN_15M)
+        assert len(s._open) == 1
 
 
 # ============ 6. exit ============

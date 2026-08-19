@@ -111,7 +111,7 @@ DEFAULT_NOTIONAL_CAP_USDC = 10.0
 # what makes it safe to leave open positions out of the daily loss breaker.
 DEFAULT_MAX_TOTAL_EXPOSURE_USDC = 100.0
 
-# Concurrent open positions. Matches the paper adapter's default of 5.
+# Concurrent open positions. Matches the paper adapter's default of 10.
 DEFAULT_MAX_CONCURRENT_POSITIONS = 10  # D-321: raised 5->10, shadow only
 
 # Positions per (market, outcome side). 1 stops a strategy averaging into the
