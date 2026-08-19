@@ -54,6 +54,9 @@ and the wording of the conventions that have been contested.
     This covers REVIEW files as much as any other doc: a review that names a
     PID must carry the timestamp it was verified at, and a stale citation in an
     older review never overrides a live `ps` check.
+    A quotation of another document is a claim about a version (D-330):
+    handoffs are mutable - quote with the timestamp you read, or re-read
+    before relying on it.
 26. **Hash-before-write.** Use `engine.concurrency.checkout()` / `checkin()` /
     `safe_edit(path, fn)` before writing a file another agent might be editing.
     `env -u PYTHONPATH python3 -m engine.concurrency who` lists open checkouts.

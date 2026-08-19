@@ -3178,6 +3178,26 @@ docstring, class docstring, `MAX_TRADES_PER_WINDOW` constant,
 
 ---
 
+### D-328. Opus's edge analysis ratified as the standing edge assessment (RATIFIED by execution under Raven's ruling, 2026-08-19)
+
+**Ruling** (`docs/handoffs/from-raven/2026-08-19-mirror-fade-probe.md`,
+Raven, 01:20 EDT, under Aym's overnight authority): Opus's edge analysis
+(`docs/handoffs/2026-08-19-opus-edge-analysis.md`, commit `e033078`) is
+ratified as the standing edge assessment: execution = ~9% of the fair_value
+family's loss (round trip 0.26c/share vs 2.97c/share), model = ~91%; env-b
+whitelist corrected (drop `PM_dip_arb`, `PM_fair_value_arb_wide`, applied at
+next natural restart); no time-of-day edge survives permutation (p=0.342).
+Cited by the `fair_value_mirror_fade.py` module docstring.
+
+**Back-filled** by Raven (2026-08-19 ~01:45 EDT) after `cody-reconcile`
+flagged that D-328 was ruled but never written (convention 24: a cited
+D-number is not a decision until the entry exists). Text per the original
+directive; no new ruling made.
+
+**Where:** `docs/DECISIONS.md` (this entry);
+`strategies/polymarket/fair_value_mirror_fade.py` (docstring citation).
+
+
 ### D-329. Opus's ranked plan for the rest of the window is ratified and executed: mirror-fade PAUSED, two Q3 measurements shipped, convention 32 added (RATIFIED by execution under Raven's ruling, 2026-08-19)
 
 **Ruling** (`docs/handoffs/from-raven/2026-08-19-execute-opus-plan.md`,
@@ -3229,3 +3249,19 @@ unread, in scope for whoever runs Forge next.
 **Where:** see D-326 for the mirror-fade files;
 `strategies/polymarket/fair_value_arb.py`, `engine/polymarket/shadow_loop.py`,
 `db/schema.sql` for the Q3 measurements; `docs/CONVENTIONS.md` for 32.
+
+### D-330. Convention 25 amended: quoting another document is a claim about a version (RATIFIED under Raven's ruling, 2026-08-19)
+
+**Proposal** from `cody-reconcile`
+(`docs/handoffs/2026-08-19-reconcile-executed.md`): three documents disagreed
+about one file (`docs/handoffs/2026-08-19-verify-commit-restart-executed.md`)
+because each quoted a different snapshot of it - whitelist-warn read the
+pre-01:02 version at ~01:00 and called the restart handoff a lie; Raven built
+the reconcile directive from that report at 01:14; the file had self-corrected
+at ~01:02. Root cause: quotations of mutable documents carry no version.
+
+**Decision.** Convention 25 gains: *a quotation of another document is a claim
+about a version. Handoffs are mutable - quote with a timestamp, or re-read
+before relying on it.*
+
+**Where:** `docs/CONVENTIONS.md` (25), `docs/DECISIONS.md` (this entry).
