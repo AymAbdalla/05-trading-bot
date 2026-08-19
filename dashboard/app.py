@@ -130,6 +130,8 @@ def sidebar() -> Dict[str, Any]:
     with st.sidebar:
         st.markdown('### Controls')
 
+        theme = ui.theme_toggle()
+
         auto = st.toggle('Auto-refresh', value=True,
                          help='Live tabs refresh every {}s, research tabs every {}s.'.format(
                              config.REFRESH_LIVE, config.REFRESH_SLOW))
@@ -148,14 +150,19 @@ def sidebar() -> Dict[str, Any]:
         st.code(config.DB_PATH, language=None)
         st.caption('This dashboard never writes. `mode=ro` + `PRAGMA query_only`.')
 
-    return {'auto': auto, 'mode': None if mode == 'ALL' else mode}
+    return {'auto': auto, 'mode': None if mode == 'ALL' else mode, 'theme': theme or 'Dark'}
 
 
 # --------------------------------------------------------------------------
 # Tab renderers
 # --------------------------------------------------------------------------
 
-def render_overview(mode: Optional[str]) -> None:
+#: Passed to every `st.plotly_chart` call: no mode bar (dense terminal look)
+#: and `responsive: True` so a chart rescales with its container on a phone.
+CHART_CONFIG = {'displayModeBar': False, 'responsive': True}
+
+
+def render_overview(mode: Optional[str], theme: str) -> None:
     status = _status(mode)
     equity = _equity(mode)
     trades = _trades(mode, None, None, None, None, config.MAX_TRADE_ROWS)
@@ -202,8 +209,8 @@ def render_overview(mode: Optional[str]) -> None:
     ], per_row=6)
 
     ui.section('Equity')
-    st.plotly_chart(charts.equity_curve(equity), config={'displayModeBar': False})
-    st.plotly_chart(charts.drawdown_curve(equity), config={'displayModeBar': False})
+    st.plotly_chart(charts.equity_curve(equity, theme=theme), config=CHART_CONFIG)
+    st.plotly_chart(charts.drawdown_curve(equity, theme=theme), config=CHART_CONFIG)
 
     ui.section('Performance')
     ppy = metrics.get('periods_per_year')
@@ -226,7 +233,7 @@ def render_overview(mode: Optional[str]) -> None:
     col_a, col_b = st.columns([3, 2], gap='medium')
     with col_a:
         ui.section('PnL distribution')
-        st.plotly_chart(charts.pnl_distribution(trades), config={'displayModeBar': False})
+        st.plotly_chart(charts.pnl_distribution(trades, theme=theme), config=CHART_CONFIG)
     with col_b:
         ui.section('Risk events')
         events = _risk_events(8)
@@ -301,7 +308,7 @@ def render_live_trades(mode: Optional[str]) -> None:
     ui.order_table(_orders(mode, config.MAX_ORDER_ROWS))
 
 
-def render_strategies(mode: Optional[str]) -> None:
+def render_strategies(mode: Optional[str], theme: str) -> None:
     perf = _strategy_perf(mode)
 
     if perf.empty:
@@ -331,7 +338,7 @@ def render_strategies(mode: Optional[str]) -> None:
                 'named differently so they are not compared by accident.')
 
         ui.section('Net PnL by strategy')
-        st.plotly_chart(charts.strategy_pnl_bar(perf), config={'displayModeBar': False})
+        st.plotly_chart(charts.strategy_pnl_bar(perf, theme=theme), config=CHART_CONFIG)
 
     ui.section('Lifecycle')
     lifecycle = _lifecycle()
@@ -340,12 +347,12 @@ def render_strategies(mode: Optional[str]) -> None:
                        'Read from the append-only audit log, not the registry - the '
                        'registry keeps only the current status.')
     else:
-        st.plotly_chart(charts.lifecycle_timeline(lifecycle), config={'displayModeBar': False})
+        st.plotly_chart(charts.lifecycle_timeline(lifecycle, theme=theme), config=CHART_CONFIG)
         st.dataframe(lifecycle.assign(time=lifecycle['time'].apply(ui.fmt_ts))
                      .drop(columns=['ts']), width='stretch', hide_index=True, height=240)
 
 
-def render_graveyard() -> None:
+def render_graveyard(theme: str) -> None:
     summary, s_note = _graveyard_summary()
     pack, p_note = _judge_pack()
 
@@ -405,14 +412,14 @@ def render_graveyard() -> None:
 
     if counts:
         ui.section('Verdict mix')
-        st.plotly_chart(charts.verdict_composition(counts), config={'displayModeBar': False})
+        st.plotly_chart(charts.verdict_composition(counts, theme=theme), config=CHART_CONFIG)
 
     col_a, col_b = st.columns(2, gap='medium')
     with col_a:
         ui.section('Top PASS concentrations')
         st.plotly_chart(
-            charts.pass_concentration_bar(summary.get('pass_concentration_top5') or []),
-            config={'displayModeBar': False})
+            charts.pass_concentration_bar(summary.get('pass_concentration_top5') or [], theme=theme),
+            config=CHART_CONFIG)
     with col_b:
         ui.section('Judge assertions')
         assertions = ((pack or {}).get('silent_assertions') or {})
@@ -453,13 +460,13 @@ def render_graveyard() -> None:
         ], per_row=3)
         ui.note('A strategy that produced no trades did not run and fail - it did not '
                 'run. Different verdicts, kept apart here.')
-        st.plotly_chart(charts.strategy_firing_bar(health), config={'displayModeBar': False})
+        st.plotly_chart(charts.strategy_firing_bar(health, theme=theme), config=CHART_CONFIG)
         st.dataframe(health, width='stretch', hide_index=True, height=320)
 
     breakdown = (pack or {}).get('asset_class_breakdown') or []
     if breakdown:
         ui.section('Pooled PnL per trade, by strategy and asset class')
-        st.plotly_chart(charts.asset_class_pnl_bar(breakdown[:30]), config={'displayModeBar': False})
+        st.plotly_chart(charts.asset_class_pnl_bar(breakdown[:30], theme=theme), config=CHART_CONFIG)
         if len(breakdown) > 30:
             ui.note('Showing the first 30 of {} rows.'.format(len(breakdown)))
 
@@ -536,8 +543,13 @@ def _active_mode() -> Optional[str]:
     return st.session_state.get('active_mode')
 
 
+def _active_theme() -> str:
+    """Same reasoning as `_active_mode`: fragments must stay zero-argument."""
+    return st.session_state.get('active_theme') or 'Dark'
+
+
 def tab_overview() -> None:
-    render_overview(_active_mode())
+    render_overview(_active_mode(), _active_theme())
 
 
 def tab_live_trades() -> None:
@@ -545,11 +557,11 @@ def tab_live_trades() -> None:
 
 
 def tab_strategies() -> None:
-    render_strategies(_active_mode())
+    render_strategies(_active_mode(), _active_theme())
 
 
 def tab_graveyard() -> None:
-    render_graveyard()
+    render_graveyard(_active_theme())
 
 
 def tab_agent_activity() -> None:
@@ -557,10 +569,11 @@ def tab_agent_activity() -> None:
 
 
 def main() -> None:
-    ui.inject_css()
     controls = sidebar()
-    mode, auto = controls['mode'], controls['auto']
+    mode, auto, theme = controls['mode'], controls['auto'], controls['theme']
+    ui.inject_css(theme)
     st.session_state['active_mode'] = mode
+    st.session_state['active_theme'] = theme
     live_every = config.REFRESH_LIVE if auto else None
     slow_every = config.REFRESH_SLOW if auto else None
 
@@ -568,7 +581,7 @@ def main() -> None:
     st.markdown(
         '<div style="color:{};font-size:0.74rem;margin-top:-0.4rem">'
         'read-only view · {} · auto-refresh {}</div>'.format(
-            config.INK_MUTED,
+            config.THEMES.get(theme, config.THEME_DARK)['INK_MUTED'],
             'mode: {}'.format(mode) if mode else 'all modes',
             'on' if auto else 'off'),
         unsafe_allow_html=True,

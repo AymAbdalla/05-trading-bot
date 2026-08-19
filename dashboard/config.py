@@ -120,6 +120,27 @@ CATEGORICAL = [
 #: readable end is the light end, so sequential bars step DOWN this list.
 SEQUENTIAL_BLUE = ['#cde2fb', '#9ec5f4', '#6da7ec', '#3987e5', '#256abf', '#184f95', '#0d366b']
 
+# --------------------------------------------------------------------------
+# Theme toggle. Two chrome palettes (surface/ink/gridline), same accent
+# colors (PROFIT/LOSS/CATEGORICAL/etc.) in both - only the page chrome flips.
+# `THEME_DARK` mirrors the module constants above rather than replacing them,
+# so anything importing `config.SURFACE_PAGE` etc. directly is unaffected by
+# the toggle; `components.inject_css` and `charts._base_layout` take an
+# explicit `theme` argument instead of reading global state.
+# --------------------------------------------------------------------------
+
+THEME_DARK = dict(
+    SURFACE_PAGE=SURFACE_PAGE, SURFACE_CARD=SURFACE_CARD, SURFACE_CHART=SURFACE_CHART,
+    INK_PRIMARY=INK_PRIMARY, INK_SECONDARY=INK_SECONDARY, INK_MUTED=INK_MUTED,
+    GRIDLINE=GRIDLINE, AXIS_LINE=AXIS_LINE, BORDER=BORDER, PLOTLY_TEMPLATE='plotly_dark',
+)
+THEME_LIGHT = dict(
+    SURFACE_PAGE='#f6f6f4', SURFACE_CARD='#ffffff', SURFACE_CHART='#ffffff',
+    INK_PRIMARY='#15150f', INK_SECONDARY='#3d3c36', INK_MUTED='#6f6e66',
+    GRIDLINE='#e2e1db', AXIS_LINE='#c8c7c0', BORDER='rgba(0,0,0,0.12)', PLOTLY_TEMPLATE='plotly_white',
+)
+THEMES = {'Dark': THEME_DARK, 'Light': THEME_LIGHT}
+
 #: Monospace stack. Numbers in a trading terminal align or they lie.
 FONT_MONO = 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace'
 

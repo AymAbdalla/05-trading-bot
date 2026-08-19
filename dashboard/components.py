@@ -128,7 +128,7 @@ CSS = """
     font-size: 0.74rem;
     color: var(--ink-secondary);
     padding: 0.16rem 0;
-    border-bottom: 1px solid rgba(255,255,255,0.045);
+    border-bottom: 1px solid var(--border);
     white-space: pre-wrap;
     word-break: break-word;
   }}
@@ -143,27 +143,39 @@ CSS = """
   }}
   .stDataFrame {{ font-size: 0.78rem; }}
 
-  /* Phone: stat cards get smaller, charts keep their height. */
+  /* Phone: stat cards get smaller, charts keep their height, wide tables
+     scroll inside their own box instead of forcing the page to scroll. */
   @media (max-width: 640px) {{
-    .block-container {{ padding-left: 0.6rem; padding-right: 0.6rem; }}
+    .block-container {{ padding-top: 1.1rem; padding-left: 0.6rem; padding-right: 0.6rem; }}
+    .card {{ padding: 0.45rem 0.55rem; }}
     .card .value {{ font-size: 1.02rem; }}
     .card .label {{ font-size: 0.6rem; }}
     h1 {{ font-size: 1.1rem !important; }}
+    .stDataFrame, div[data-testid="stDataFrame"] {{ overflow-x: auto; }}
+    div[data-testid="stElementContainer"] table {{ font-size: 0.7rem; }}
   }}
 </style>
 """
 
 
-def inject_css() -> None:
+def inject_css(theme: str = 'Dark') -> None:
+    t = config.THEMES.get(theme, config.THEME_DARK)
     st.markdown(
         CSS.format(
-            page=config.SURFACE_PAGE, card=config.SURFACE_CARD, chart=config.SURFACE_CHART,
-            ink=config.INK_PRIMARY, ink2=config.INK_SECONDARY, muted=config.INK_MUTED,
-            border=config.BORDER, profit=config.PROFIT, loss=config.LOSS,
+            page=t['SURFACE_PAGE'], card=t['SURFACE_CARD'], chart=t['SURFACE_CHART'],
+            ink=t['INK_PRIMARY'], ink2=t['INK_SECONDARY'], muted=t['INK_MUTED'],
+            border=t['BORDER'], profit=config.PROFIT, loss=config.LOSS,
             warn=config.OPEN, mono=config.FONT_MONO, slot1=config.CATEGORICAL[0],
         ),
         unsafe_allow_html=True,
     )
+
+
+def theme_toggle() -> str:
+    """Sidebar Light/Dark control. `key='theme'` makes the widget own its
+    session-state slot, so the choice survives tab switches and fragment
+    reruns without any extra state plumbing here."""
+    return st.segmented_control('Theme', ['Dark', 'Light'], default='Dark', key='theme')
 
 
 # --------------------------------------------------------------------------
