@@ -2985,6 +2985,8 @@ Reverting is one line per file: delete the `supported_market_types` override.
 **Where:** `strategies/polymarket/box_builder.py`,
 `strategies/polymarket/grid_hedge.py`. No registry file touched.
 
+Note, 2026-08-19 (cody-open-items): the reason is stronger than the entry states. The maker numbers are fill-model artifacts: a resting bid fills only after the best ask has fallen through the limit, and books at the limit (paper_adapter.py _through_and_touch / _fill_resting_buy), so PM_box_builder and PM_grid_hedge losses measure the fill rule, not the market. The pause was right for that reason. Source: docs/PLAN-2026-08-19.md section 0.
+
 ---
 
 ### D-324. Fix 032's latent `_open` leak preemptively, before its tape warms (RATIFIED by execution under Raven's ruling, 2026-08-19)
@@ -3281,6 +3283,8 @@ before relying on it.*
 **Decision.** The banner gains `launched-by: ${AGENT_ID:-UNDECLARED}` and the launcher's parent PID. This converts restart forensics into a lookup. The 00:56:17 restart is CLOSED as NOT ATTRIBUTABLE (missing measurement), and the restart record correction already landed in `737a461`/`dee8b0c`.
 
 **Where:** `run_polymarket_shadow.sh` (this session), this entry.
+
+Note, 2026-08-19 (cody-open-items): the 03:28:34 EDT restart IS attributable, by the mechanism this entry created. The banner printed `launched-by: UNDECLARED` but also `launcher-pid: 71360   parent-pid: 32931`. PID 32931 is the Hermes gateway (`hermes_cli.main gateway run --replace`, PPID 1, alive since 23:39 the previous evening and continuously alive across the restart). The loop wrapper 71360 is a DIRECT child of the gateway, not of the tmux wrapper 37068 under which Cody sessions run (this session's `claude -p` and the env-B daemon 71442 both carry PPID 37068). An orphaned child would have reparented to launchd, not to 32931, so the lineage is not a PID-reuse artifact. The launcher was therefore Raven, and the reason was stated in advance, in writing: `docs/handoffs/from-raven/2026-08-19-D336-floor-ruling.md` line 28, "Do NOT restart loops. Report 'ready for restart' - Raven restarts after review (both loops need the next restart to pick up 036's tape columns anyway)", repeated at `2026-08-19-proposal-036-complete.md` line 53. UNDECLARED means the gateway does not export AGENT_ID; it does not mean unattributable. The `parent-pid` field this entry added is what closed the question, exactly as the entry predicted it would ("converts restart forensics into a lookup"). Residue: the gateway should export AGENT_ID so the banner names the launcher directly rather than requiring a live-`ps` lookup that only works while the parent is still running.
 
 ### D-333. Spawn wait-guard tightened: PID-gone is not enough (Raven ruling, 2026-08-19)
 
