@@ -79,6 +79,14 @@ and the wording of the conventions that have been contested.
     DB. Grepping stdout for a space skip reason returns 0 by construction.
     Query the DB before calling anything zero.
 
+31. **A commit message is a claim, not a fact.** Verify the diff contains what
+    the message asserts before you trust it or repeat it. Two consecutive
+    commits on 2026-08-18 asserted work their diffs did not contain: `aafc768`
+    ("D-319 research file untracking") touched only `DECISIONS.md` and four
+    test files and untracked nothing, and `79ba55d` ("26 tests") shipped
+    proposal 034's strategy with zero test files. Both claims were repeated
+    downstream before anyone ran `git show --stat`. Run it.
+
 ---
 
 ## Numbering note for 27, 28 and 29 (open, needs a Raven ruling)

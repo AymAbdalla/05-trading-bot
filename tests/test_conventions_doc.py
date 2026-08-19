@@ -143,6 +143,19 @@ class TestContestedConventions:
         assert 'getsource' not in conventions[28]
 
 
+class TestCommitMessageConvention:
+    """31, added 2026-08-18 on a Raven ruling after two false commit messages."""
+
+    def test_31_is_the_commit_message_rule(self, conventions):
+        body = conventions[31]
+        assert 'A commit message is a claim, not a fact' in body
+        # the actionable half: what you actually run
+        assert 'git show --stat' in body
+        # the two incidents that earned it, so a rewrite cannot soften it
+        assert 'aafc768' in body
+        assert '79ba55d' in body
+
+
 class TestClaudeDirIsGitignored:
     """Raven ruling, 2026-08-18: `.claude/` is an internal agent directory."""
 
