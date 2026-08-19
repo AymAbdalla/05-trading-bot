@@ -213,7 +213,7 @@ polymarket:
   # distance - none of the crypto gate's stop-based checks transfer.
   risk:
     notional_cap_usdc: 10.0                 # max premium at risk on ONE trade
-    max_total_exposure_usdc: 100.0          # max premium at risk across ALL open positions (10x one trade)
+    max_total_exposure_usdc: 60.0           # max premium at risk across ALL open positions (D-343 R1: delegated to engine.risk.constraints, was 100 and never bound)
     max_concurrent_positions: 10            # max open Polymarket positions at once (D-321: raised 5->10, shadow only)
     max_positions_per_market_side: 1        # stops a strategy averaging into the same side of the same market
     max_positions_per_market: 2             # 2 so a deliberate Up+Down hedge stays expressible; 1 would ban hedging

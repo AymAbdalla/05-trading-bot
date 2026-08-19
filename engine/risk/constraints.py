@@ -50,7 +50,15 @@ failure mode is silent."
 **At wiring time exactly one of the two must be authoritative.** The
 established pattern is delegation, not a second gate: the Polymarket gate
 already defers its equity tail backstops to `engine.risk.RiskGate` rather than
-reimplementing them. Follow that. Nothing here is wired into any live path.
+reimplementing them. Follow that.
+
+**RESOLVED, D-343 R1 (Raven).** `engine/polymarket/risk_gate.py`'s
+`DEFAULT_NOTIONAL_CAP_USDC` and `DEFAULT_MAX_TOTAL_EXPOSURE_USDC` are now
+sourced from `DEFAULT_LIMITS` below rather than independently declared - see
+that module's updated comments. This module is wired into
+`engine.polymarket.shadow_loop`'s entry path (both the taker path and the
+maker rest path, D-343 Task 1); the running process does not see it until its
+next restart (convention 13).
 
 ## Defaults are measured, not guessed
 

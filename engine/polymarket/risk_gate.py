@@ -88,6 +88,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
+from engine.risk import constraints as risk_constraints
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -101,15 +103,23 @@ LOSING_REDEMPTION = 0.00
 # THRESHOLDS. Each one: what it is, why this number, and what would change it.
 # ---------------------------------------------------------------------------
 
-# Per-trade premium at risk. Matches the paper adapter's own notional_cap_usdc
-# default so the two do not disagree. EXPIRY: raise only after the
-# resolution-PnL harness scores a strategy above 30bps net (D-268 kill line).
-DEFAULT_NOTIONAL_CAP_USDC = 10.0
+# Per-trade premium at risk. DELEGATED to engine.risk.constraints (D-343 R1):
+# this module used to declare its own $10 default that happened to match the
+# deterministic risk module's; two independent declarations of one number is
+# the failure engine/halt.py exists to end ("three copies of a kill switch is
+# three chances for one of them to point somewhere else"), so there is now
+# exactly one place this number is defined and this gate reads it from there.
+# See constraints.py's "Relationship to the Polymarket gate".
+DEFAULT_NOTIONAL_CAP_USDC = risk_constraints.DEFAULT_LIMITS.per_trade_notional_usd
 
-# Total premium at risk across every open Polymarket position. 10x the per-trade
-# cap, i.e. ten full-size losers is the worst a stalled book can do. This is
-# what makes it safe to leave open positions out of the daily loss breaker.
-DEFAULT_MAX_TOTAL_EXPOSURE_USDC = 100.0
+# Total premium at risk across every open Polymarket position. DELEGATED to
+# engine.risk.constraints (D-343 R1). This used to be a locally-declared $100
+# (10x the per-trade cap), which never bound on this book - measured peak
+# concurrent exposure was $76.97 - and was decorative by the risk module's own
+# kill-condition definition. The delegated number is $60, which DOES bind (top
+# ~1% of the book). This is what makes it safe to leave open positions out of
+# the daily loss breaker.
+DEFAULT_MAX_TOTAL_EXPOSURE_USDC = risk_constraints.DEFAULT_LIMITS.aggregate_notional_usd
 
 # Concurrent open positions. Matches the paper adapter's default of 10.
 DEFAULT_MAX_CONCURRENT_POSITIONS = 10  # D-321: raised 5->10, shadow only

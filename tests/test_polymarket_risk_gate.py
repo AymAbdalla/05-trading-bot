@@ -1479,6 +1479,49 @@ class TestConfigWiring:
         assert from_yaml.portfolio_daily_loss_limit_usdc == 0.0
         assert from_defaults.daily_loss_limit_usdc == DEFAULT_DAILY_LOSS_LIMIT_USDC
 
+
+# -- delegation (D-343 R1) ----------------------------------------------------
+
+def test_pm_gate_no_longer_defines_its_own_notional_caps():
+    """D-343 R1: the PM gate's per-trade and aggregate caps used to be two
+    independent declarations of numbers `engine.risk.constraints` also
+    declares - the exact duplication `engine/halt.py` warns against ("three
+    copies of a kill switch is three chances for one of them to point
+    somewhere else"). Both are now SOURCED from that module, not redeclared.
+    """
+    from engine.risk import constraints as risk_constraints
+
+    assert rg.DEFAULT_NOTIONAL_CAP_USDC == pytest.approx(
+        risk_constraints.DEFAULT_LIMITS.per_trade_notional_usd)
+    assert rg.DEFAULT_MAX_TOTAL_EXPOSURE_USDC == pytest.approx(
+        risk_constraints.DEFAULT_LIMITS.aggregate_notional_usd)
+    # The aggregate number in particular must have moved off the old $100 -
+    # equality with the OLD constant alone would not prove delegation
+    # happened, since $10 for the per-trade cap was already a coincidence.
+    assert rg.DEFAULT_MAX_TOTAL_EXPOSURE_USDC != 100.0
+
+    # Structural: the module must SOURCE the numbers from risk_constraints
+    # rather than redeclare a literal that merely happens to match today.
+    import inspect
+    source = inspect.getsource(rg)
+    assert ('risk_constraints.DEFAULT_LIMITS.per_trade_notional_usd'
+           in source)
+    assert ('risk_constraints.DEFAULT_LIMITS.aggregate_notional_usd'
+           in source)
+
+
+def test_config_yaml_max_total_exposure_matches_the_delegated_default():
+    """The drift lock in `test_config_yaml_matches_the_module_defaults` only
+    catches config.yaml drifting from the MODULE default - it says nothing
+    about whether that default is itself still the decorative $100. This
+    pins the number D-343 R1 actually ratified.
+    """
+    from engine.risk import constraints as risk_constraints
+    with open(os.path.join(REPO_ROOT, 'config.yaml')) as fh:
+        cfg = yaml.safe_load(fh)
+    assert (cfg['polymarket']['risk']['max_total_exposure_usdc']
+           == risk_constraints.DEFAULT_LIMITS.aggregate_notional_usd)
+
     def test_config_yaml_classification_tables_match_the_module(self):
         """YAML gives lists where the module gives tuples, so compare the
         behaviour rather than the container type."""

@@ -313,6 +313,7 @@ otherwise would not be a wiring test.
 """
 import argparse
 import concurrent.futures
+import dataclasses
 import functools
 import json
 import logging
@@ -329,6 +330,8 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from engine.db import get_db_path
 from engine.halt import is_halted
+from engine.risk import constraints as risk_constraints
+from engine.risk import events as risk_events
 from engine.polymarket.assets import (SHADOW_ASSETS, asset_for_slug, get_asset)
 from engine.polymarket.client import PolymarketClient
 from engine.polymarket.strike import (ERROR_UNAVAILABLE_FLAG,
@@ -387,6 +390,19 @@ DEFAULT_STARTING_EQUITY_USDC = 1000.0
 DEFAULT_POLL_SEC = 5.0
 DEFAULT_EQUITY_SNAPSHOT_SEC = 300.0     # every 5 minutes
 DEFAULT_RESOLVE_SEC = 60.0
+
+#: D-343 R2 (Raven, under Aym's full-authority directive). The REAL-money
+#: drawdown default lives in `engine.risk.constraints.DEFAULT_LIMITS`
+#: (max_drawdown_frac=0.25) and stays there UNEDITED - this override exists
+#: only while the book is the shadow measurement 026/037/038 depend on.
+#: Measured on this book's own `equity_snapshots`: max drawdown from running
+#: peak is 35.99%, and a 25% halt would have fired 3 times (8 times at 10%);
+#: only >=40% never fires on the current tape. Remove this override (fall
+#: back to `risk_constraints.DEFAULT_LIMITS` directly) the day a strategy
+#: demonstrates calibrated edge and the book moves toward live - that is a
+#: decision for Raven and Aym, not a default to flip silently.
+SHADOW_RISK_LIMITS = dataclasses.replace(
+    risk_constraints.DEFAULT_LIMITS, max_drawdown_frac=0.40)
 
 #: How often the settlement resolution ledger sweeps its pending markets
 #: (Forge proposal 038). Matched to the resolve cadence rather than the poll
@@ -2433,6 +2449,57 @@ class PolymarketShadowLoop:
                            getattr(position, 'avg_price', None), exc)
             return None
 
+    def _risk_open_exposures(self) -> Tuple[risk_constraints.Exposure, ...]:
+        """The open book, as the model-free risk evaluator sees it (D-343).
+
+        `max_loss_usdc` is the exact premium at risk on a binary - the same
+        number `exposures_from_adapter` in risk_gate.py uses for the PM gate's
+        own exposure snapshot, so the two consult one definition of "how much
+        is this position worth if it loses" even though they aggregate it
+        differently. Resting (unfilled) maker quotes are deliberately excluded,
+        matching `exposures_from_adapter`: nothing is at risk until a quote
+        actually fills.
+        """
+        return tuple(
+            risk_constraints.Exposure.from_slug(
+                pos.market_slug, pos.window_ts, pos.max_loss_usdc)
+            for pos in self.adapter.open_positions())
+
+    def _risk_equity_state(self) -> risk_constraints.EquityState:
+        """Current equity plus the running peak read off `equity_snapshots`.
+
+        Peak is read from history AND compared against the live current value:
+        a live tick that exceeds every recorded snapshot IS the new peak, not
+        a drawdown from a stale one. No history at all reads as "no drawdown
+        has ever been observed", which is genuinely 0.0 - convention 11 is
+        about treating an UNREADABLE state as empty, and an account that has
+        never been snapshotted before has a real, measured peak of exactly its
+        current equity, not an unmeasurable one.
+        """
+        current = self.adapter.get_equity()
+        row = self.store.conn.execute(
+            'SELECT MAX(equity) AS peak FROM equity_snapshots WHERE mode = ?',
+            (MODE,)).fetchone()
+        historical_peak = (row['peak'] if row and row['peak'] is not None
+                           else current)
+        return risk_constraints.EquityState(
+            current_usd=current, peak_usd=max(current, historical_peak))
+
+    def _check_risk_constraints(self, leg_slug: Optional[str],
+                                window_ts: Optional[int],
+                                notional_usd: float) -> 'risk_constraints.Decision':
+        """The model-free entry constraints (D-343 Task 1): per-trade,
+        per-event, aggregate and portfolio drawdown - independent of the risk
+        gate above and of any forecast. Every denial writes a `risk_events`
+        row and a drawdown breach engages `engine.halt`, both handled inside
+        `evaluate_and_record`; this method only builds the inputs.
+        """
+        candidate = risk_constraints.Exposure.from_slug(
+            leg_slug, window_ts, notional_usd)
+        return risk_events.evaluate_and_record(
+            self.store.conn, self._risk_open_exposures(), candidate,
+            self._risk_equity_state(), limits=SHADOW_RISK_LIMITS)
+
     def _attempt_entry(self, strategy, decision, ctx: MarketContext,
                        feats: dict, confidence: float,
                        counts: Optional[Counter] = None) -> str:
@@ -2523,6 +2590,19 @@ class PolymarketShadowLoop:
             if not verdict.approved:
                 first_block = first_block or ('risk_gate:' + verdict.reason)
                 self.health['risk_gate_blocks'] += 1
+                continue
+
+            # 2b. The model-free entry constraints (D-343). Checked on the
+            # gate's OWN sized notional, after the gate above but strictly
+            # before the adapter fills - the per-trade and aggregate caps are
+            # no longer independently defined here (D-343 R1 delegated them),
+            # and the per-event cap has no equivalent in the gate at all.
+            risk_decision = self._check_risk_constraints(
+                leg_slug, ctx.window_ts, verdict.notional_usdc)
+            if not risk_decision.allowed:
+                first_block = first_block or (
+                    'risk_constraint:' + risk_decision.reason)
+                self.health['risk_constraint_blocks'] += 1
                 continue
 
             # 3. The adapter. It owns the book walk, the fill, and its own log
@@ -2750,6 +2830,18 @@ class PolymarketShadowLoop:
             if not verdict.approved:
                 first_block = first_block or ('risk_gate:' + verdict.reason)
                 self.health['maker_risk_gate_blocks'] += 1
+                continue
+
+            # 4b. The model-free entry constraints (D-343), gated at REST time
+            # for the same reason comment 4 above gates the risk gate there:
+            # a resting bid is money that can be spent without asking us
+            # again, so this is the only veto point that exists.
+            risk_decision = self._check_risk_constraints(
+                leg_slug, ctx.window_ts, verdict.notional_usdc)
+            if not risk_decision.allowed:
+                first_block = first_block or (
+                    'risk_constraint:' + risk_decision.reason)
+                self.health['maker_risk_constraint_blocks'] += 1
                 continue
 
             # 5. The adapter. It owns the post-only check, the queue

@@ -665,6 +665,52 @@ def test_risk_gate_rejection_reason_is_verbatim(tmp_path, entry_time):
     assert rows(loop, 'SELECT * FROM positions') == []
 
 
+def test_risk_constraint_per_event_cap_blocks_before_the_adapter_fills(
+        tmp_path, entry_time):
+    """D-343: the model-free per-event cap is wired into the entry path and
+    binds strictly before the adapter fills. This is the constraint the PM
+    gate itself has no equivalent of - correlated SAME-EPOCH exposure across
+    btc/eth/sol, not a per-market or per-correlation-group budget - so only
+    this new check can catch it.
+    """
+    from engine.polymarket.markets import current_window_ts
+    from engine.polymarket.paper_adapter import PaperPosition
+
+    client = FakeClient(gamma_ok(), books_ok)
+    loop = build_loop(tmp_path, client, candles=streak_candles(entry_time))
+
+    window_ts = current_window_ts(entry_time)
+    # Pre-load $30.00 already committed to THIS epoch, split across the other
+    # two crypto_updown assets, so streak_snapper's own btc candidate in the
+    # same window - however small - pushes the event over its $30 cap.
+    for i, slug in enumerate(('eth-updown-5m-{}'.format(window_ts),
+                              'sol-updown-5m-{}'.format(window_ts))):
+        pos = PaperPosition(
+            position_id='seed-{}'.format(i), strategy='seed',
+            market_slug=slug, token_id='seed-tok-{}'.format(i),
+            outcome_side='Up', shares=30.0, avg_price=0.50,
+            cost_usdc=15.0, fee_usdc=0.0, opened_ts=0, window_ts=window_ts)
+        loop.adapter.positions[pos.position_id] = pos
+
+    loop.run_cycle(now=entry_time)
+
+    assert loop.counts['entry'] == 0, dict(loop.counts)
+    blocked = [k for k in loop.counts if k.startswith('risk_constraint:')]
+    assert blocked, dict(loop.counts)
+    assert loop.health['risk_constraint_blocks'] >= 1
+
+    events = rows(loop,
+                 "SELECT * FROM risk_events WHERE type = 'risk_constraint'")
+    assert events, 'no risk_events row was written for the denial'
+    details = json.loads(events[0]['details_json'])
+    assert details['constraint'] == 'per_event_notional'
+    assert details['asset_family'] == 'crypto_updown'
+
+    # And nothing was actually opened for the blocked strategy.
+    assert [p for p in loop.adapter.open_positions()
+            if p.strategy == 'PM_streak_snapper'] == []
+
+
 def test_maker_quote_never_becomes_an_entry(tmp_path, entry_time):
     """box_builder rests bids. A resting fill cannot be simulated as a taker
     lift without manufacturing the very fills its edge depends on.

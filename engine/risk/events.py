@@ -117,10 +117,12 @@ def evaluate_and_record(conn, open_positions, candidate, equity,
     The one function an entry path should call. Returns the `Decision`
     unchanged, so the caller still sees which constraint bound and why.
 
-    NOT WIRED into any live path as of D-342 R2: activation is the restart
-    AFTER the ONE at ~03:45 EDT 2026-08-20, and before it is wired the
-    duplication with the Polymarket gate documented in `constraints.py` must be
-    resolved to a single authoritative cap.
+    WIRED into `engine.polymarket.shadow_loop`'s entry path as of D-343
+    (Task 1); the PM gate's duplicate caps were delegated in the same change
+    (D-343 R1, see `constraints.py`). The code is in the tree but a running
+    process only picks it up at its next restart (convention 13) - which is
+    NOT the ~03:45 EDT 2026-08-20 restart (that one is already fully loaded;
+    see the wake-up file), it is the restart after it.
     """
     decision = C.check(open_positions, candidate, equity, limits)
     if decision.allowed:
