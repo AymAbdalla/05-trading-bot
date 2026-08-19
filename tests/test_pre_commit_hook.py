@@ -452,6 +452,135 @@ def test_a_deleted_path_is_not_classified_at_all(sandbox):
 
 
 # ---------------------------------------------------------------------------
+# D-337: a coordinated write that changed nothing does not take ownership
+#
+# The attack these pin is not hypothetical. On 2026-08-19 at 03:16 a session
+# recorded `write` rows over four files it had not authored, carrying the hash
+# those files ALREADY had, became their ledger owner, and swept them into
+# 26555f2 -- a commit whose message names none of them. It used no bypass flag,
+# no --no-verify and no declared sweep. Step 3 consults the ledger, the ledger
+# accepts appends from anyone, so the party being checked authored its own
+# alibi.
+#
+# `test_a_hash_neutral_write_does_not_transfer_ownership` is the load-bearing
+# one: it FAILS on the pre-D-337 hook, which is the only reason to believe it
+# tests anything.
+# ---------------------------------------------------------------------------
+
+def test_a_hash_neutral_write_does_not_transfer_ownership(sandbox):
+    """The 26555f2 attack, in six lines. Restamping is not authoring."""
+    digest = sandbox.owned_by('a.txt', 'cody-author', 'authored content\n')
+    sandbox.record('a.txt', 'cody-sweeper', digest, action='write')
+    result = sandbox.run(CONFLICT_CHECK_AGENT_ID='cody-sweeper')
+    assert result.returncode == REFUSED
+    assert 'FOREIGN-OWNED=1' in result.stdout
+    assert 'cody-author' in result.stdout.split('FOREIGN-OWNED (1):')[1]
+
+
+def test_the_real_author_still_owns_the_path_after_a_restamp(sandbox):
+    """The other half: the sweep fails AND the author is not locked out."""
+    digest = sandbox.owned_by('a.txt', 'cody-author', 'authored content\n')
+    sandbox.record('a.txt', 'cody-sweeper', digest, action='write')
+    result = sandbox.run(CONFLICT_CHECK_AGENT_ID='cody-author')
+    assert result.returncode == ALLOWED
+    assert 'own-work=1' in result.stdout
+
+
+def test_a_hash_changing_write_does_transfer_ownership(sandbox):
+    """A legitimate handoff still works. The rule is about NO-OP writes only."""
+    sandbox.write('a.txt', 'first draft\n')
+    sandbox.record('a.txt', 'cody-author', hash_bytes(b'first draft\n'))
+    digest = sandbox.write_and_stage('a.txt', 'second draft\n')
+    sandbox.record('a.txt', 'cody-successor', digest)
+    assert sandbox.run(CONFLICT_CHECK_AGENT_ID='cody-successor').returncode \
+        == ALLOWED
+    assert sandbox.run(CONFLICT_CHECK_AGENT_ID='cody-author').returncode \
+        == REFUSED
+
+
+def test_a_restamp_after_a_real_handoff_does_not_undo_it(sandbox):
+    """Walk-back stops at the last real edit, not at the first row."""
+    sandbox.write('a.txt', 'first draft\n')
+    sandbox.record('a.txt', 'cody-author', hash_bytes(b'first draft\n'),
+                   ts=1000)
+    digest = sandbox.write_and_stage('a.txt', 'second draft\n')
+    sandbox.record('a.txt', 'cody-successor', digest, ts=2000)
+    sandbox.record('a.txt', 'cody-sweeper', digest, action='write', ts=3000)
+    assert sandbox.run(CONFLICT_CHECK_AGENT_ID='cody-successor').returncode \
+        == ALLOWED
+    assert sandbox.run(CONFLICT_CHECK_AGENT_ID='cody-sweeper').returncode \
+        == REFUSED
+
+
+def test_rows_that_are_all_hash_identical_leave_the_earliest_writer_owning(
+        sandbox):
+    """Nothing ever changed the file, so the one who put it there owns it."""
+    digest = sandbox.owned_by('a.txt', 'cody-author', 'content\n')
+    for who in ('cody-second', 'cody-third', 'cody-fourth'):
+        sandbox.record('a.txt', who, digest, action='write')
+    assert sandbox.run(CONFLICT_CHECK_AGENT_ID='cody-author').returncode \
+        == ALLOWED
+    assert sandbox.run(CONFLICT_CHECK_AGENT_ID='cody-fourth').returncode \
+        == REFUSED
+
+
+def test_the_walk_back_is_reported_and_not_silent(sandbox):
+    """Convention 20: a walk-back nobody can see is a missing number."""
+    digest = sandbox.owned_by('a.txt', 'cody-author', 'content\n')
+    sandbox.record('a.txt', 'cody-sweeper', digest, action='write')
+    sandbox.record('a.txt', 'cody-sweeper', digest, action='write')
+    result = sandbox.run(CONFLICT_CHECK_AGENT_ID='cody-sweeper')
+    assert result.returncode == REFUSED
+    assert 'hash-neutral rows' in result.stdout
+    assert '2 row(s) walked past' in result.stdout
+
+
+def test_a_restamp_does_not_move_the_step_2_hash_verdict(sandbox):
+    """D-337 is step 3 only. The expected content is still the NEWEST row."""
+    sandbox.write_and_stage('a.txt', 'staged content\n')
+    sandbox.record('a.txt', 'cody-author', hash_bytes(b'ledger content\n'))
+    sandbox.record('a.txt', 'cody-sweeper', hash_bytes(b'ledger content\n'),
+                   action='write')
+    result = sandbox.run(CONFLICT_CHECK_AGENT_ID='cody-author')
+    assert result.returncode == REFUSED
+    assert 'MISMATCH=1' in result.stdout
+    assert hash_bytes(b'ledger content\n') in result.stdout
+
+
+def test_a_hash_neutral_sweep_is_still_landable_when_declared(sandbox):
+    """The rule redirects a sweeper to the sanctioned path, it does not trap.
+
+    Convention 33: a gate with no honest way through gets bypassed instead.
+    """
+    digest = sandbox.owned_by('a.txt', 'cody-author', 'content\n')
+    sandbox.record('a.txt', 'cody-sweeper', digest, action='write')
+    result = sandbox.run(CONFLICT_CHECK_AGENT_ID='cody-sweeper',
+                         CONFLICT_CHECK_ALLOW_SWEEP='1')
+    assert result.returncode == ALLOWED
+    assert 'SWEEP DECLARED' in result.stdout
+    assert 'a.txt' in result.stdout
+
+
+def test_rows_recording_no_hash_are_ownership_neutral_too(sandbox):
+    """A write that recorded no content changed nothing it can be judged on."""
+    sandbox.owned_by('a.txt', 'cody-author', 'content\n')
+    sandbox.record('a.txt', 'cody-sweeper', None, action='write')
+    sandbox.record('a.txt', 'cody-sweeper', None, action='write')
+    result = sandbox.run(CONFLICT_CHECK_AGENT_ID='cody-sweeper')
+    assert result.returncode == REFUSED
+    assert 'cody-author' in result.stdout.split('FOREIGN-OWNED (1):')[1]
+
+
+def test_the_refusal_names_the_pathspec_commit_as_the_first_option(sandbox):
+    """Convention 34 is the sanctioned way out of a shared index."""
+    sandbox.owned_by('theirs.txt', 'cody-author', 'their work\n')
+    result = sandbox.run(CONFLICT_CHECK_AGENT_ID='cody-sweeper')
+    assert result.returncode == REFUSED
+    assert 'git commit -m "..." -- <your path>' in result.stdout
+    assert 'hash-neutral write is ownership-' in result.stdout
+
+
+# ---------------------------------------------------------------------------
 # GIT_AUTHOR_NAME: the prefix-free declaration channel
 # ---------------------------------------------------------------------------
 

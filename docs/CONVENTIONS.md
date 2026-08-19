@@ -117,6 +117,26 @@ and the wording of the conventions that have been contested.
     sanctioned path AS ONE OF THE AGENTS IT GOVERNS. If they cannot reach it,
     provide one they can, or expect `--no-verify`.
 
+34. **Commit your own paths out of a shared index with a pathspec:
+    `git commit -- <paths>`.** Never `git add -A` (convention 16). This working
+    directory AND its git index are shared (convention 21), so by the time you
+    commit, another session's files may already be staged and a bare
+    `git commit` takes them. A pathspec commit commits exactly the paths you
+    name and leaves another session's staged entries untouched -- which
+    `git restore --staged` does not, because unstaging their work is itself a
+    change to their index. Verified 2026-08-19 with both hooks installed, on a
+    throwaway repo.
+
+        git add -- <your path>          # explicit path, never -A
+        git commit -m "subject" -m "body" -m "Agent-Id: cody-<topic>" \
+            -- <your paths>
+
+    Before staging, read the FIRST column of `git status --porcelain`: `M `
+    means already staged by somebody. Three sweeps in three nights (`b1d44bb`,
+    `4d03681`, `26555f2`) landed another session's files in a commit whose
+    message named none of them; the third went through the hook built to stop
+    the first two (D-337).
+
 ---
 
 ## Numbering note for 27, 28 and 29 (open, needs a Raven ruling)

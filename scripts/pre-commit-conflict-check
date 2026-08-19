@@ -24,7 +24,8 @@
 #      a hook that blocked on that would be trained around within a day.
 #   2. Verifies every staged file's hash against what the coordination table
 #      says the last coordinated write produced. THIS refuses.
-#   3. Verifies that the staged files are YOURS. THIS refuses too.
+#   3. Verifies that the staged files are YOURS, where "yours" means the last
+#      HASH-CHANGING coordinated write is yours (D-337). THIS refuses too.
 #   4. Verifies the commit message carries `Agent-Id: <resolved identity>` when
 #      an identity resolved at all (D-335). THIS refuses. No identity, no
 #      requirement -- a human interactive commit is untouched.
@@ -36,6 +37,13 @@
 #   and was RIGHT to: the staged hash did match the ledger. The ledger knew the
 #   content was coordinated. It did not check that the coordinating agent and
 #   the committing agent were the same one. That gap is this step.
+#
+#   It happened a THIRD time on 2026-08-19 (26555f2), through this very hook.
+#   Step 3 asks the ledger who owns a path, and the ledger takes appends from
+#   anyone: the sweeping session recorded `write` rows carrying the hash the
+#   files already had, became their owner, and the question answered itself.
+#   D-337 is the answer -- see the ownership note above resolve_owner. A write
+#   that changed nothing no longer takes ownership of anything.
 #
 #   So a commit has to be able to say WHO it is. The commit author cannot carry
 #   that: every commit in this repo is authored `Aym Abdalla` from repo git
@@ -419,8 +427,69 @@ def coordination_keys(git_path):
 # The coordination table
 # --------------------------------------------------------------------------
 
+#: Step 3 ownership resolution (D-337). A coordinated write whose new_hash
+#: equals the previous coordinated write's new_hash for the same path CHANGED
+#: NOTHING. It is recorded as provenance -- somebody did run the module -- but
+#: it does NOT transfer ownership.
+#:
+#: WHY. At 03:16 on 2026-08-19 a session recorded `write` rows over four files
+#: it had not authored, carrying the hash those files ALREADY had, became their
+#: ledger owner, and swept them into commit 26555f2 whose message names none of
+#: them. Step 3 asks the ledger who owns a path; the ledger is append-only and
+#: anybody may append to it; so the party being checked could author the very
+#: evidence that clears it. No bypass flag was needed or used. That is the hole.
+#:
+#: The fix is READ-SIDE ONLY. The ledger stays append-only and every row it ever
+#: had is still there -- what changed is which row step 3 believes. Step 2 is
+#: deliberately untouched: the expected content is still the NEWEST row's
+#: new_hash, and hash-identical rows agree on that by construction, so not one
+#: hash verdict moves.
+#:
+#: This raises the cost of the sweep from "append a row" to "append a row that
+#: changes the file", which is an edit somebody has to write and justify. Like
+#: the rest of step 3 it is a COST, not a security boundary.
+
+
+def resolve_owner(rows):
+    """(owner_row, neutral_skipped) for ONE path's ascending write rows.
+
+    Walks backwards from the newest row, skipping every row that recorded the
+    same new_hash as its predecessor. Ownership lands on the most recent
+    HASH-CHANGING write. When every row for a path is hash-identical nothing
+    ever changed the file after the first write, so ownership stays with the
+    EARLIEST writer -- the one who actually put that content there.
+
+    A row that recorded NO new_hash at all is ownership-neutral too, and this
+    goes one step beyond D-337(1) as Raven wrote it. The ruling says to skip a
+    row whose new_hash EQUALS its predecessor's; a NULL hash equals nothing, so
+    the literal rule would let a null-hash restamp take ownership -- and it is
+    strictly cheaper than the sweep D-337 exists to stop, because a null hash
+    ALSO drops the path out of step 2's verified bucket into
+    untracked-by-coordination. A row carrying no content cannot be evidence of
+    authoring content. Flagged for Raven to ratify or strike; pinned by
+    test_rows_recording_no_hash_are_ownership_neutral_too.
+
+    Nothing legitimate is lost either way: this can only ever hand ownership
+    BACKWARDS to an earlier writer, never to a later one, so it cannot be used
+    to claim a path.
+    """
+    index = len(rows) - 1
+    skipped = 0
+    while index > 0 and (rows[index][0] is None
+                         or rows[index][0] == rows[index - 1][0]):
+        index -= 1
+        skipped += 1
+    return rows[index], skipped
+
+
 def last_coordinated_writes(keys):
-    """key -> (new_hash, action, ts, agent_id) for the newest checkin/write.
+    """key -> (new_hash, action, ts, agent_id, owner_action, neutral_skipped).
+
+    The first two fields describe the NEWEST checkin/write, which is what step
+    2 verifies staged content against. `ts`, `agent_id` and `owner_action`
+    describe the OWNING write, which is the newest HASH-CHANGING one (see
+    resolve_owner and the D-337 note above). They are the same row whenever the
+    newest write actually changed something, which is the ordinary case.
 
     Returns (rows, error). `error` non-None means the table COULD NOT BE READ,
     which is emphatically not the same fact as "no rows exist" (convention 11).
@@ -433,7 +502,7 @@ def last_coordinated_writes(keys):
     except sqlite3.Error as exc:
         return None, 'cannot open %s (%s)' % (DB_PATH, exc)
 
-    latest = {}
+    history = {}
     try:
         exists = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' "
@@ -453,8 +522,13 @@ def last_coordinated_writes(keys):
                    % (marks, ','.join('?' * len(chunk))))
             for row in conn.execute(
                     sql, tuple(COORDINATED_WRITE_ACTIONS) + tuple(chunk)):
-                # ORDER BY ascending, so the last write for a key wins.
-                latest[row[0]] = (row[1], row[2], row[3], row[4])
+                # ORDER BY ascending, so this appends in write order. The
+                # WHOLE history is kept rather than just the newest row:
+                # ownership is decided by walking it (D-337), and a query that
+                # remembered only the last row could not tell a real edit from
+                # a hash-identical restamp by a passer-by.
+                history.setdefault(row[0], []).append(
+                    (row[1], row[2], row[3], row[4]))
     except sqlite3.Error as exc:
         return None, 'query failed on %s (%s)' % (DB_PATH, exc)
     finally:
@@ -462,6 +536,13 @@ def last_coordinated_writes(keys):
             conn.close()
         except sqlite3.Error:
             pass
+
+    latest = {}
+    for key, rows in history.items():
+        newest_hash, newest_action = rows[-1][0], rows[-1][1]
+        owner_row, skipped = resolve_owner(rows)
+        latest[key] = (newest_hash, newest_action, owner_row[2], owner_row[3],
+                       owner_row[1], skipped)
     return latest, None
 
 
@@ -508,11 +589,13 @@ def report_active_checkouts():
 
 class Finding(object):
     __slots__ = ('path', 'category', 'expected', 'staged', 'worktree',
-                 'source', 'note', 'owner', 'owner_ts', 'owner_known')
+                 'source', 'note', 'owner', 'owner_ts', 'owner_known',
+                 'neutral_skipped')
 
     def __init__(self, path, category, expected=None, staged=None,
                  worktree=None, source='staged blob', note='',
-                 owner=None, owner_ts=None, owner_known=False):
+                 owner=None, owner_ts=None, owner_known=False,
+                 neutral_skipped=0):
         self.path = path
         self.category = category
         self.expected = expected
@@ -526,6 +609,26 @@ class Finding(object):
         #: False means the table could not be consulted for this path, which is
         #: not the same fact as "this path has no owner" (convention 11).
         self.owner_known = owner_known
+        #: How many hash-neutral rows D-337 walked past to reach that owner.
+        #: Non-zero means somebody restamped this path without changing it, so
+        #: the newest ledger row and the OWNER are different rows. Printed, not
+        #: swallowed: a silent walk-back would be a missing number.
+        self.neutral_skipped = neutral_skipped
+
+
+def provenance_note(action, owner_action, owner, skipped):
+    """One sentence naming the owning write, and any walk-back that found it.
+
+    When `skipped` is zero this reads exactly as it did before D-337, because
+    nothing was skipped and the newest row IS the owner. When it is not zero,
+    saying "last coordinated write by <owner>" would be false -- the last write
+    was by somebody else and changed nothing -- so the note says both.
+    """
+    if not skipped:
+        return 'last coordinated %s by %s' % (action, owner)
+    return ('last coordinated %s recorded no change; owner is the last '
+            'hash-changing %s, by %s (%d hash-neutral row(s) skipped, D-337)'
+            % (action, owner_action, owner, skipped))
 
 
 def classify(paths, blobs, unmerged, latest, table_error):
@@ -538,17 +641,20 @@ def classify(paths, blobs, unmerged, latest, table_error):
         # still has to account for it.
         owner, owner_ts, owner_known = None, None, False
         expected, action = None, None
+        owner_action, skipped = None, 0
         if table_error is None:
             owner_known = True
             for key in coordination_keys(path):
                 hit = latest.get(key)
                 if hit is not None:
-                    expected, action, owner_ts, owner = hit
+                    (expected, action, owner_ts, owner,
+                     owner_action, skipped) = hit
                     break
 
         def make(category, **kw):
             return Finding(path, category, owner=owner, owner_ts=owner_ts,
-                           owner_known=owner_known, **kw)
+                           owner_known=owner_known, neutral_skipped=skipped,
+                           **kw)
 
         if path in unmerged:
             findings.append(make(
@@ -590,11 +696,12 @@ def classify(paths, blobs, unmerged, latest, table_error):
         if expected is None:
             note = ('never written through engine.concurrency'
                     if action is None else
-                    'last %s row by %s recorded no new_hash' % (action, owner))
+                    'last %s row recorded no new_hash; ledger owner is %s'
+                    % (action, owner))
             findings.append(make(UNTRACKED, staged=staged,
                                  worktree=worktree, note=note + wt_note))
         elif expected == staged:
-            note = 'last coordinated %s by %s' % (action, owner)
+            note = provenance_note(action, owner_action, owner, skipped)
             if worktree is not None and worktree != staged:
                 note += ('; NOTE worktree differs from the staged blob '
                          '(%s) -- the staged content is what was verified'
@@ -603,8 +710,9 @@ def classify(paths, blobs, unmerged, latest, table_error):
                                  staged=staged, worktree=worktree,
                                  note=note + wt_note))
         else:
-            note = ('last coordinated %s by %s at ts=%s'
-                    % (action, owner, owner_ts))
+            note = ('%s at ts=%s'
+                    % (provenance_note(action, owner_action, owner, skipped),
+                       owner_ts))
             if worktree is not None and worktree == expected:
                 note += ('; the WORKTREE still matches -- it is the STAGED '
                          'content that was never coordinated')
@@ -718,6 +826,11 @@ def report_provenance(findings, total):
                        DECLARED_ID if DECLARED_ID else 'NOT DECLARED'))
                 say('          %-24s : %s'
                     % ('owner wrote it at ts', f.owner_ts))
+                if f.neutral_skipped:
+                    say('          %-24s : %d row(s) walked past to reach '
+                        'that owner (D-337); a later write recorded this '
+                        'path unchanged and did not take it.'
+                        % ('hash-neutral rows', f.neutral_skipped))
             elif cat == OWN:
                 say('        %s  (ledger owner %s == declared)'
                     % (f.path, f.owner))
@@ -759,22 +872,31 @@ def say_sweep_refusal(count):
     if DECLARED_ID is None:
         say('This session declared no identity, so the hook cannot tell '
             'whether that work is yours. Convention 16: never `git add -A`. '
-            'Twice in two nights a sweep like this carried another session\'s '
-            'files into a commit whose message never mentioned them.')
+            'Three times in three nights a sweep like this carried another '
+            'session\'s files into a commit whose message never mentioned '
+            'them (b1d44bb, 4d03681, 26555f2).')
     else:
         say('This session declared itself "%s", which is not the agent that '
-            'wrote those files. Convention 16: never `git add -A`. Twice in '
-            'two nights a sweep like this carried another session\'s files '
-            'into a commit whose message never mentioned them.' % DECLARED_ID)
+            'wrote those files. Convention 16: never `git add -A`. Three times '
+            'in three nights a sweep like this carried another session\'s '
+            'files into a commit whose message never mentioned them (b1d44bb, '
+            '4d03681, 26555f2).' % DECLARED_ID)
     say('')
     say('What to do, in order of preference:')
-    say('  1. Unstage what is not yours and commit only your own paths:')
-    say('       git restore --staged <path>     # per path listed above')
+    say('  1. Commit only your own paths, with a pathspec (convention 34).')
+    say('     It stages exactly those paths and leaves another session\'s '
+        'staged entries untouched, which `git restore --staged` does not:')
+    say('       git commit -m "..." -- <your path> [<your path> ...]')
+    say('     Or unstage what is not yours, per path listed above:')
+    say('       git restore --staged <path>')
     say('  2. If it IS your work, declare the identity that wrote it:')
     say('       CONFLICT_CHECK_AGENT_ID=<the ledger owner> git commit ...')
     say('     or, if you cannot set an environment prefix (spawned sessions '
         'often cannot), declare it as the git author instead:')
     say('       git commit --author="<the ledger owner> <cody@agents.invalid>"')
+    say('     Note: recording a coordinated write over a file you did not '
+        'change does NOT make it yours. A hash-neutral write is ownership-'
+        'neutral (D-337); it is how 26555f2 happened.')
     say('  3. If you are deliberately landing a dead session\'s work (a '
         'reconcile sweep), declare the sweep. It is allowed, and every swept '
         'path gets listed:')
