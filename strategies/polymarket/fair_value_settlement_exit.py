@@ -108,6 +108,24 @@ cross-cycle open-position state before (it used to sell within ~60-120s,
 `evaluate()` never needed to know what was still open), and now that it
 holds to a 5-minute resolution, it does.
 
+**Recorded from the position stream, not the ENTER decision (2026-08-19 fix).**
+`evaluate()` only PROPOSES an entry; the shadow loop's adapter
+(`max_concurrent_positions`) and `PolymarketRiskGate`
+(`max_concurrent_positions`, `max_positions_per_market_side`) both run
+downstream of it and can still refuse the trade. The first cut of this file
+called `_note_open` inside `evaluate()`, at ENTER-decision time, with no
+rollback on a downstream refusal - so a burst of refused ENTERs alone could
+fill `self._open` and trip `strategy_concurrency_cap_reached` against
+positions that were never opened (self-starvation, confirmed live: 25
+self-inflicted `strategy_concurrency_cap_reached` skips against 0 opened
+positions in the first 45 minutes after the 2026-08-18 22:50 shadow-loop
+restart). `_note_open` is now called from `manage_exit`, the first time this
+instance sees a given position in `self.adapter.open_positions()` - i.e.
+only once the adapter has actually filled it. `evaluate()` still PRUNES
+`self._open` on every call (unchanged - pruning is time-based, not
+fill-based, and does not need to see the position stream), it just no
+longer ADDS to it.
+
 **Keyed on the (slug, attempt) PAIR, not the slug alone.** The parent's own
 `max_trades_per_window` allows up to 3 entry ATTEMPTS inside one 5-minute
 window, all against the same market slug - a slug-only key would let a
@@ -323,6 +341,25 @@ class FairValueSettlementExit(FairValueArb):
         while len(self._open_order) > OPEN_TRACKING_MAX:
             self._open_order.pop(0)
 
+    @staticmethod
+    def _open_key_for(position) -> tuple:
+        """The same `(market_slug, attempt_number)` identity `evaluate()`
+        keys `self._open` on, read back off a FILLED `PaperPosition` instead
+        of the ENTER `Decision` - see the module docstring's concurrency
+        section for why this moved to the position stream. `attempt_number`
+        is stamped into `Decision.features` on every ENTER path
+        (`FairValueArb.evaluate()`, inherited unchanged here) and
+        `PaperAdapter.simulate_taker_buy` carries that dict through unchanged
+        into `PaperPosition.features`, so it is present on every real fill.
+        `position_id` (unique per fill) is the fallback for the case that
+        should not happen (convention 11: never assume) where it is not.
+        """
+        features = getattr(position, 'features', None) or {}
+        attempt = features.get('attempt_number')
+        if attempt is None:
+            return (position.market_slug, getattr(position, 'position_id', None))
+        return (position.market_slug, attempt)
+
     # -- entry ------------------------------------------------------------
 
     def evaluate(self, ctx: MarketContext) -> Decision:
@@ -377,11 +414,13 @@ class FairValueSettlementExit(FairValueArb):
             return skip('strategy_concurrency_cap_reached',
                         open_count=len(self._open))
 
-        if ctx.window_ts is not None and decision.market_slug:
-            self._note_open((decision.market_slug,
-                             feats.get('attempt_number')),
-                            float(ctx.window_ts) + WINDOW_SECONDS)
-
+        # No `_note_open` here. This is a PROPOSED entry - the adapter's own
+        # `max_concurrent_positions` and `PolymarketRiskGate` both still run
+        # downstream and can refuse it. Recording open state at this point,
+        # before either gate runs, is the bug this file was fixed for
+        # (2026-08-19) - see the module docstring's concurrency section.
+        # `self._open` is only ADDED TO from `manage_exit`, once the position
+        # has actually filled.
         return decision
 
     # -- exit B: salvage floor ---------------------------------------------
@@ -400,6 +439,20 @@ class FairValueSettlementExit(FairValueArb):
         entry = float(getattr(position, 'avg_price', 0.0) or 0.0)
         shares = float(getattr(position, 'shares', 0.0) or 0.0)
         best_bid = None if book is None else book.best_bid
+
+        # The position stream is the source of truth for "this instance's
+        # concurrency cap has one more slot filled" - see `_open_key_for`'s
+        # docstring and the module docstring's concurrency section. Runs
+        # before every other branch below (including the unreadable/no-book
+        # early returns) because a position that filled still occupies a
+        # slot regardless of what its exit decision turns out to be this
+        # cycle. Idempotent: a position already in `self._open` is a no-op
+        # dict overwrite with the same `resolve_at`.
+        window_ts = getattr(position, 'window_ts', None)
+        if window_ts not in (None, ''):
+            key = self._open_key_for(position)
+            if key not in self._open:
+                self._note_open(key, float(window_ts) + WINDOW_SECONDS)
 
         feats = {
             'entry_price': round(entry, 4),

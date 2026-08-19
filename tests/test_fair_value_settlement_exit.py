@@ -107,12 +107,12 @@ def _ctx(window_ts=WINDOW_TS, slug=SLUG, spot=100_060.0,
 
 def _position(entry=0.60, shares=16.0, opened_ts=WINDOW_TS + 100,
              window_ts=WINDOW_TS, side='Up', token_id=UP_TOK,
-             strategy=STRATEGY_NAME):
+             strategy=STRATEGY_NAME, position_id='pos-1', features=None):
     return PaperPosition(
-        position_id='pos-1', strategy=strategy, market_slug=SLUG,
+        position_id=position_id, strategy=strategy, market_slug=SLUG,
         token_id=token_id, outcome_side=side, shares=shares,
         avg_price=entry, cost_usdc=entry * shares, fee_usdc=0.0,
-        opened_ts=opened_ts, window_ts=window_ts)
+        opened_ts=opened_ts, window_ts=window_ts, features=features or {})
 
 
 # ============ 1. Task 0's finding, pinned ====================================
@@ -321,8 +321,62 @@ class TestSalvageFloorExit:
 
 
 # ============ 5. concurrency self-cap =========================================
+#
+# `self._open` is populated from the POSITION STREAM (`manage_exit`'s first
+# sight of a filled `PaperPosition`), not from `evaluate()`'s ENTER decision -
+# see the module docstring's 2026-08-19 fix note. Every test below that wants
+# a slot occupied must therefore call `manage_exit` with a synthetic filled
+# position carrying the matching `attempt_number`, exactly as the real
+# adapter/`manage_exits` path would once a fill actually happens.
 
 class TestConcurrencyCap:
+
+    def test_downstream_rejection_no_longer_leaks_the_cap(self):
+        """The bug this file was fixed for (2026-08-19): before the fix,
+        `evaluate()` noted every ENTER as open at decision time, so three
+        ENTER decisions in a row - none of which ever became a real position
+        (`manage_exit` is never called here) - used to cap the third one
+        under `strategy_concurrency_cap_reached` against zero real
+        positions. Live evidence: 25 self-inflicted
+        `strategy_concurrency_cap_reached` skips against 0 opened positions
+        in the 45 minutes after the 2026-08-18 22:50 shadow-loop restart."""
+        s = FairValueSettlementExit()
+        ctx = _ctx()
+        d1 = s.evaluate(ctx)
+        d2 = s.evaluate(ctx)
+        d3 = s.evaluate(ctx)
+        assert d1.action == 'ENTER', (d1.reason, d1.features)
+        assert d2.action == 'ENTER', (d2.reason, d2.features)
+        assert d3.action == 'ENTER', (d3.reason, d3.features)
+        assert len(s._open) == 0
+
+    def test_manage_exit_notes_the_open_on_first_sight_of_a_filled_position(self):
+        s = FairValueSettlementExit()
+        ctx = _ctx()
+        d1 = s.evaluate(ctx)
+        assert d1.action == 'ENTER', (d1.reason, d1.features)
+        pos = _position(window_ts=WINDOW_TS,
+                        features={'attempt_number': d1.features['attempt_number']})
+        book = _book(UP_TOK, bids=((0.55, 200.0),))
+        assert len(s._open) == 0
+        s.manage_exit(pos, book, now=WINDOW_TS + 60.0)
+        assert len(s._open) == 1
+        assert (SLUG, d1.features['attempt_number']) in s._open
+        # Idempotent: seeing the SAME still-open position again on a later
+        # cycle does not double-count it.
+        s.manage_exit(pos, book, now=WINDOW_TS + 90.0)
+        assert len(s._open) == 1
+
+    def test_open_key_falls_back_to_position_id_when_attempt_number_missing(self):
+        # Should not happen on a real fill (the parent always stamps
+        # `attempt_number` on every ENTER, convention 11) - covered as a
+        # defensive fallback, not the expected path.
+        s = FairValueSettlementExit()
+        pos = _position(position_id='pos-fallback', window_ts=WINDOW_TS,
+                        features={})
+        book = _book(UP_TOK, bids=((0.55, 200.0),))
+        s.manage_exit(pos, book, now=WINDOW_TS + 10.0)
+        assert (SLUG, 'pos-fallback') in s._open
 
     def test_max_two_concurrent_then_third_is_capped(self):
         # Realistic overlap for a hold-to-resolution single-window strategy:
@@ -333,12 +387,22 @@ class TestConcurrencyCap:
         assert MAX_CONCURRENT_POSITIONS == 2
         s = FairValueSettlementExit()
         ctx = _ctx()
+        book = _book(UP_TOK, bids=((0.55, 200.0),))
+
         d1 = s.evaluate(ctx)
-        d2 = s.evaluate(ctx)
-        d3 = s.evaluate(ctx)
         assert d1.action == 'ENTER', (d1.reason, d1.features)
+        pos1 = _position(position_id='pos-1', window_ts=WINDOW_TS,
+                         features={'attempt_number': d1.features['attempt_number']})
+        s.manage_exit(pos1, book, now=WINDOW_TS + 10.0)
+
+        d2 = s.evaluate(ctx)
         assert d2.action == 'ENTER', (d2.reason, d2.features)
         assert d1.features['attempt_number'] != d2.features['attempt_number']
+        pos2 = _position(position_id='pos-2', window_ts=WINDOW_TS,
+                         features={'attempt_number': d2.features['attempt_number']})
+        s.manage_exit(pos2, book, now=WINDOW_TS + 10.0)
+
+        d3 = s.evaluate(ctx)
         assert d3.action == 'SKIP'
         assert d3.reason == 'strategy_concurrency_cap_reached'
         assert d3.features['open_positions_this_instance'] == 2
@@ -346,19 +410,30 @@ class TestConcurrencyCap:
     def test_open_positions_prune_once_their_window_has_resolved(self):
         s = FairValueSettlementExit()
         ctx = _ctx()
+        book = _book(UP_TOK, bids=((0.55, 200.0),))
+
         d1 = s.evaluate(ctx)
         d2 = s.evaluate(ctx)
         assert d1.action == 'ENTER' and d2.action == 'ENTER'
+        pos1 = _position(position_id='pos-1', window_ts=WINDOW_TS,
+                         features={'attempt_number': d1.features['attempt_number']})
+        pos2 = _position(position_id='pos-2', window_ts=WINDOW_TS,
+                         features={'attempt_number': d2.features['attempt_number']})
+        s.manage_exit(pos1, book, now=WINDOW_TS + 10.0)
+        s.manage_exit(pos2, book, now=WINDOW_TS + 10.0)
         assert len(s._open) == 2
 
         # Advance to the NEXT window, past the first window's resolve time
-        # (window_ts + 300s). Both attempts opened in the first window
-        # resolve together, since they share its window_ts.
+        # (window_ts + 300s). Both positions opened in the first window
+        # resolve together, since they share its window_ts. `evaluate()`'s
+        # ENTER here does not re-add to `_open` itself (only `manage_exit`
+        # does, on a real fill), so the count reflects pruning alone.
         next_ctx = _ctx(window_ts=WINDOW_TS + 300, slug=SLUG,
                         seconds_into_window=1.0)
         d3 = s.evaluate(next_ctx)
         assert d3.action == 'ENTER', (d3.reason, d3.features)
-        assert len(s._open) == 1
+        assert len(s._open) == 0
+        assert d3.features['open_positions_this_instance'] == 0
 
 
 # ============ 6. registry ======================================================
