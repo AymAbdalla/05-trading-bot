@@ -289,3 +289,55 @@ CREATE TABLE IF NOT EXISTS market_tape (
 CREATE INDEX IF NOT EXISTS idx_market_tape_market_ts ON market_tape(market_id, ts);
 CREATE INDEX IF NOT EXISTS idx_market_tape_condition_ts
     ON market_tape(condition_id, ts);
+
+-- Settlement resolution ledger: what every market the loop FETCHED actually
+-- settled at, whether or not a position was ever held in it. Forge proposal
+-- 038 (pm_settlement_resolution_ledger), a REPAIR. Also declared as SCHEMA_SQL
+-- inside engine/polymarket/resolution_ledger.py, which is what lets the table
+-- bootstrap against a database that predates it - same two-copy arrangement as
+-- `market_tape`, `liquidations` and `hyperliquid_positions` above, and
+-- tests/test_schema_matches_feed_modules.py asserts the two copies agree.
+--
+-- Written by the LOOP at window close for every market it FETCHED, not for
+-- every market it traded, and that distinction is the entire repair.
+-- Conditioning the record on holding a position reproduces the bias the record
+-- exists to remove: a winning side is sold early by `profit_target` and leaves
+-- no settlement row, a losing side rots to 0.00 and records one, so recovery
+-- from `positions` preferentially captures losses (325 of 864 market-sides
+-- recoverable at 2026-08-19, and 28.5% of the singly-recovered ones settled
+-- 1.00 against a ~50% unbiased benchmark).
+--
+-- NO DEFAULT on any column and NO NOT NULL on `resolved_px`, deliberately.
+-- `fill_was_maker` was added as `INTEGER NOT NULL DEFAULT 0` and 2,253
+-- pre-existing rows backfilled to 0 became indistinguishable from
+-- observations. A NULL here means NOT RECORDED and must never be read as 0.00;
+-- an unresolved market is an ABSENT row, counted with a reason by the ledger's
+-- rule-7 report rather than written at zero.
+--
+-- `source` is one of exactly three values and they are NEVER pooled in a
+-- report (convention 32's discipline: an observation and a reading have
+-- different error modes). `venue` = read from the CLOB's `tokens[].winner`
+-- field, the only value the live writer produces. `inferred_terminal_price` =
+-- taken from a terminal BOOK price, defined and accepted but written by
+-- nothing today. `sibling_inference_backfill` = recovered from a sibling
+-- position held to settlement, used for nothing else, and never counted toward
+-- the coverage number in 038's kill condition, which is measured on markets
+-- fetched AFTER the ledger landed.
+--
+-- `window_ts` and `resolved_ts` are both UNIX SECONDS, matching
+-- `markets.current_window_ts()` and each other. They are NOT milliseconds:
+-- `signals.ts` and `positions.opened_ts` in this same file ARE, so do not join
+-- across them without converting.
+CREATE TABLE IF NOT EXISTS market_resolutions (
+    market_slug  TEXT,
+    outcome_side TEXT,
+    resolved_px  REAL,
+    resolved_ts  REAL,
+    window_ts    INTEGER,
+    source       TEXT,
+    UNIQUE (market_slug, outcome_side)
+);
+CREATE INDEX IF NOT EXISTS idx_market_resolutions_window
+    ON market_resolutions(window_ts);
+CREATE INDEX IF NOT EXISTS idx_market_resolutions_source
+    ON market_resolutions(source);

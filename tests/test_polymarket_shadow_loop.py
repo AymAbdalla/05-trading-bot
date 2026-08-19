@@ -1392,3 +1392,95 @@ def test_positions_migration_adds_pair_linkage_columns_to_an_old_db(tmp_path):
     # Idempotent: constructing a second store against the now-migrated db
     # must not raise "duplicate column".
     ShadowStore(db_path)
+
+
+# ---------------------------------------------------------------------------
+# Settlement resolution ledger wiring (Forge proposal 038)
+# ---------------------------------------------------------------------------
+#
+# The ledger itself is tested in tests/test_resolution_ledger.py. What is
+# tested HERE is the one thing that file cannot see: that the loop actually
+# calls `observe` from the FETCH path. A ledger wired to the entry path instead
+# would pass every unit test in that file and still reproduce the exact
+# selection bias the repair exists to remove.
+
+
+def test_the_ledger_observes_a_market_the_loop_merely_fetched(tmp_path,
+                                                              entry_time):
+    """Fetched, evaluated, NOT traded - and still on the ledger's books."""
+    client = FakeClient(gamma_ok(), books_ok)
+    loop = build_loop(tmp_path, client, candles=streak_candles(entry_time))
+
+    loop.run_cycle(now=entry_time)
+
+    stats = loop.ledger_stats()
+    assert stats['enabled'] is True
+    # One market fetched for one asset, and it is pending resolution. Nothing
+    # about this count depends on whether a position was opened in it.
+    assert stats['health']['observed'] == 1
+    assert stats['pending'] == 1
+
+
+def test_a_market_whose_books_failed_is_still_observed(tmp_path, entry_time):
+    """The `not books` early return must not skip the ledger.
+
+    A market with unreadable books was still FETCHED, and dropping it here
+    would rebuild the selection the ledger exists to remove - illiquid markets
+    are exactly the ones that go unrecorded, and they are exactly the ones the
+    coverage number needs.
+    """
+    client = FakeClient(gamma_ok(), lambda path, params: None)
+    loop = build_loop(tmp_path, client, candles=streak_candles(entry_time))
+
+    _ctx, status, _detail = loop.build_context(
+        int(entry_time) // WINDOW * WINDOW, entry_time, 'btc')
+
+    assert status != 'ok'
+    assert loop.ledger_stats()['health']['observed'] == 1
+
+
+def test_re_fetching_the_same_market_each_cycle_observes_once(tmp_path,
+                                                              entry_time):
+    client = FakeClient(gamma_ok(), books_ok)
+    loop = build_loop(tmp_path, client, candles=streak_candles(entry_time))
+
+    for _ in range(5):
+        loop.run_cycle(now=entry_time)
+
+    stats = loop.ledger_stats()
+    assert stats['health']['observed'] == 1
+    assert stats['health']['observe_already_pending'] == 4
+
+
+def test_the_ledger_can_be_switched_off_without_touching_the_loop(tmp_path,
+                                                                  entry_time):
+    client = FakeClient(gamma_ok(), books_ok)
+    loop = build_loop(tmp_path, client, candles=streak_candles(entry_time),
+                      enable_resolution_ledger=False)
+
+    loop.run_cycle(now=entry_time)
+
+    assert loop.ledger is None
+    assert loop.ledger_stats() == dict(enabled=False)
+    assert loop.sweep_resolutions() == dict()
+    assert loop.check_identity()
+
+
+def test_the_sweep_never_writes_before_a_window_closes(tmp_path, entry_time):
+    client = FakeClient(gamma_ok(), books_ok)
+    loop = build_loop(tmp_path, client, candles=streak_candles(entry_time))
+
+    loop.run_cycle(now=entry_time)
+    summary = loop.sweep_resolutions(now=entry_time)
+
+    assert summary['due'] == 0
+    assert rows(loop, 'SELECT * FROM market_resolutions') == []
+
+
+def test_the_ledger_table_exists_on_a_fresh_loop_database(tmp_path,
+                                                          entry_time):
+    """`ensure_schema` replays db/schema.sql, which now declares it."""
+    client = FakeClient(gamma_ok(), books_ok)
+    loop = build_loop(tmp_path, client, candles=streak_candles(entry_time))
+
+    assert rows(loop, 'SELECT * FROM market_resolutions') == []

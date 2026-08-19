@@ -346,7 +346,9 @@ from engine.polymarket.strike import (ERROR_UNAVAILABLE_FLAG,
 from engine.polymarket.context import (fetch_btc_spot_checked,
                                        fetch_spot_checked,
                                        price_windows_checked)
-from engine.polymarket.markets import (current_window_ts,
+from engine.polymarket.markets import (UPDOWN_5M_DURATION,
+                                       UPDOWN_15M_DURATION,
+                                       current_window_ts,
                                        get_btc_updown_5m_checked,
                                        get_market_by_slug_checked,
                                        get_updown_5m_checked,
@@ -355,6 +357,7 @@ from engine.polymarket.markets import (current_window_ts,
                                        search_sports_markets_checked,
                                        updown_15m_slug)
 from engine.polymarket.orderbook import orderbook_from_api
+from engine.polymarket.resolution_ledger import ResolutionLedger
 from engine.polymarket.paper_adapter import (MAKER_FILL_MODEL, ORDER_EXPIRED,
                                              PolymarketPaperAdapter)
 from engine.polymarket.risk_gate import PolymarketRiskGate
@@ -384,6 +387,14 @@ DEFAULT_STARTING_EQUITY_USDC = 1000.0
 DEFAULT_POLL_SEC = 5.0
 DEFAULT_EQUITY_SNAPSHOT_SEC = 300.0     # every 5 minutes
 DEFAULT_RESOLVE_SEC = 60.0
+
+#: How often the settlement resolution ledger sweeps its pending markets
+#: (Forge proposal 038). Matched to the resolve cadence rather than the poll
+#: cadence: a 5-minute window cannot close more than once a minute, and the
+#: ledger's own cache holds an unresolved market for 120s anyway, so sweeping
+#: every poll would spend cycles to re-read the same cache entry. The sweep
+#: runs AFTER every trading phase and never raises.
+DEFAULT_RESOLUTION_SWEEP_SEC = 60.0
 DEFAULT_STATS_FLUSH_SEC = 60.0
 DEFAULT_CANDLE_REFRESH_SEC = 60.0
 
@@ -1232,6 +1243,8 @@ class PolymarketShadowLoop:
                  log_dir: Optional[str] = None,
                  equity_snapshot_sec: float = DEFAULT_EQUITY_SNAPSHOT_SEC,
                  resolve_sec: float = DEFAULT_RESOLVE_SEC,
+                 resolution_sweep_sec: float = DEFAULT_RESOLUTION_SWEEP_SEC,
+                 enable_resolution_ledger: bool = True,
                  stats_flush_sec: float = DEFAULT_STATS_FLUSH_SEC,
                  candle_refresh_sec: float = DEFAULT_CANDLE_REFRESH_SEC,
                  include_15m: bool = True,
@@ -1281,6 +1294,24 @@ class PolymarketShadowLoop:
         self.store = store if store is not None else ShadowStore(db_path)
         self.gate = (risk_gate if risk_gate is not None
                      else PolymarketRiskGate(config))
+        # -- Forge proposal 038, the settlement resolution ledger. Records what
+        # every market the loop FETCHED settled at, whether or not a position
+        # was ever held in it. It is WRITE-ONLY from the loop's point of view:
+        # nothing here is read back into a decision, and no strategy is wired
+        # to it, because a resolution record exists at window CLOSE - after
+        # every entry and exit decision for that window - so a strategy reading
+        # it would be look-ahead. Its consumers are `backtest/` and
+        # `agents/forge_shadow_eval.py`.
+        #
+        # It shares the store's connection rather than opening a second one:
+        # sqlite3 connections are single-thread by default and every ledger
+        # write happens on the main loop thread, in `sweep_resolutions`, after
+        # the trading phases.
+        self.enable_resolution_ledger = bool(enable_resolution_ledger)
+        self.resolution_sweep_sec = float(resolution_sweep_sec)
+        self.ledger = (
+            ResolutionLedger(conn=self.store.conn, client=self.client)
+            if self.enable_resolution_ledger else None)
         # -- assets. Every asset polled runs the full strategy set against its
         # own market, and the per-asset state that makes that safe lives in an
         # AssetRuntime (see that class for why sharing it is wrong).
@@ -1599,6 +1630,7 @@ class PolymarketShadowLoop:
         self._halt_state = False
         self._consecutive_api_errors = 0
         self._last_resolve = 0.0
+        self._last_resolution_sweep = 0.0
         self._last_equity_snapshot = 0.0
         self._last_stats_flush = 0.0
         self._started_at: Optional[float] = None
@@ -1964,6 +1996,15 @@ class PolymarketShadowLoop:
             return None, SKIP_NO_MARKET, detail
 
         detail['market_slug'] = market.slug
+        # Forge proposal 038 rule 2: the ledger observes every market the loop
+        # FETCHED, and this is the fetch. It is deliberately HERE and not at
+        # the entry path, and not after the `not books` return below either -
+        # a market whose books were unreadable was still fetched, and dropping
+        # it would rebuild the exact selection the ledger exists to remove.
+        # Cheap and idempotent per slug: no network, no database, and the same
+        # market re-fetched every 5 seconds for five minutes registers once.
+        if self.ledger is not None:
+            self.ledger.observe(market, window_ts, UPDOWN_5M_DURATION)
 
         # -- Stage 2, PARALLEL: everything that depends only on stage 1 or on
         # nothing at all. Both 5m books, the spot read and the 15m market
@@ -2096,6 +2137,19 @@ class PolymarketShadowLoop:
             detail['market_15m_status'] = s15
             if m15 is not None:
                 market_15m = m15
+                # The 15m market is a SEPARATE market with its own slug, its
+                # own condition id and its own settlement, and `positions.pair`
+                # carries 15m slugs (25 of 730 distinct pairs at 2026-08-19).
+                # Observing only the 5m market would leave every 15m position
+                # unresolvable and the coverage number short by construction.
+                # Its window is the containing 15m one, floored the same way
+                # `updown_15m_slug` floors it - passing the 5m `window_ts`
+                # would put a close time up to 10 minutes early on the record.
+                if self.ledger is not None:
+                    self.ledger.observe(
+                        m15,
+                        (window_ts // UPDOWN_15M_DURATION) * UPDOWN_15M_DURATION,
+                        UPDOWN_15M_DURATION)
                 # -- Stage 3, PARALLEL: the 15m books. These could not join
                 # stage 2 because the token ids they are keyed by come out of
                 # the 15m market response stage 2 was still waiting on.
@@ -3895,6 +3949,44 @@ class PolymarketShadowLoop:
                         position.resolution, position.pnl_usdc or 0.0)
         return settled
 
+    def sweep_resolutions(self, now: Optional[float] = None) -> dict:
+        """Write what every FETCHED market settled at. Forge proposal 038.
+
+        Runs during a HALT, exactly like `resolve()` and for the same reason: a
+        halt blocks entries, it does not un-decide a window that already
+        settled, and a ledger with a hole in it wherever the operator halted
+        would be a ledger selected on the operator.
+
+        Never raises - `ResolutionLedger.sweep` is total and counts its own
+        failures - but the call is guarded anyway, because this is a RECORDER
+        and a recorder that can stop the trading loop is worse than no recorder
+        at all.
+        """
+        if self.ledger is None:
+            return {}
+        try:
+            return self.ledger.sweep(now)
+        except Exception as exc:                            # noqa: BLE001
+            self.health['resolution_sweep_exceptions'] += 1
+            logger.warning('PM SHADOW resolution sweep raised: %s: %s',
+                           type(exc).__name__, exc)
+            return {}
+
+    def ledger_stats(self) -> dict:
+        """The ledger's own coverage report, or a disabled marker.
+
+        Outside the cycle identity, like `weather` and `timings`: a market
+        resolution is not a (cycle, asset, strategy) triple. `unresolved` here
+        is proposal 038 rule 7 - markets fetched but NOT resolved, per window,
+        with a reason, counted, because a silent gap in that table is the exact
+        failure the table exists to stop.
+        """
+        if self.ledger is None:
+            return {'enabled': False}
+        stats = self.ledger.stats()
+        stats['enabled'] = True
+        return stats
+
     def snapshot_equity(self, ts_ms: Optional[int] = None) -> dict:
         """Write one equity row.
 
@@ -4001,6 +4093,12 @@ class PolymarketShadowLoop:
             # step that is slow and a step that merely ran a lot produce the
             # same total and need opposite fixes.
             'timings': self.timing_report(),
+            # Outside the identity too, and for the same reason as `weather`
+            # below: a market resolution is not a (cycle, asset, strategy)
+            # triple. Forge proposal 038. `unresolved_by_window` inside is
+            # rule 7 - the markets we FETCHED and could not resolve, with a
+            # reason, counted, so a gap in that table is never silent.
+            'resolution_ledger': self.ledger_stats(),
             # Outside the identity, like `exit_counts` and `timings`, and for a
             # reason stated in the constructor: a weather market is not a
             # (cycle, asset, strategy) triple. It carries its own identity flag.
@@ -4193,6 +4291,13 @@ class PolymarketShadowLoop:
                 if now - self._last_resolve >= self.resolve_sec:
                     self.resolve()
                     self._last_resolve = now
+                # AFTER `resolve()` and after every trading phase: the ledger
+                # is a recorder, it holds no position and frees no slot, so
+                # nothing in a cycle should ever wait on it (proposal 038).
+                if (now - self._last_resolution_sweep
+                        >= self.resolution_sweep_sec):
+                    self.sweep_resolutions(now)
+                    self._last_resolution_sweep = now
                 if now - self._last_equity_snapshot >= self.equity_snapshot_sec:
                     self.snapshot_equity()
                     self._last_equity_snapshot = now
@@ -4209,8 +4314,13 @@ class PolymarketShadowLoop:
         return stats
 
     def shutdown(self) -> dict:
-        """Final resolve, final equity snapshot, final stats."""
+        """Final resolve, final ledger sweep, final equity snapshot, stats."""
         self.resolve()
+        # One last sweep, so a window that closed during the final cycle is
+        # recorded rather than lost to the restart. Anything still pending is
+        # simply not written - it is an ABSENT row, counted by the ledger's
+        # rule-7 report, never a row at 0.00.
+        self.sweep_resolutions()
         try:
             self.snapshot_equity()
         except sqlite3.Error as exc:

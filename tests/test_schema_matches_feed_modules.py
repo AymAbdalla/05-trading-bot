@@ -35,6 +35,8 @@ from engine.feeds.hyperliquid_client import \
     SCHEMA_SQL as HYPERLIQUID_SCHEMA_SQL  # noqa: E402
 from engine.feeds.liquidation_recorder import \
     SCHEMA_SQL as LIQUIDATION_SCHEMA_SQL  # noqa: E402
+from engine.polymarket.resolution_ledger import \
+    SCHEMA_SQL as MARKET_RESOLUTIONS_SCHEMA_SQL  # noqa: E402
 from strategies.polymarket.dip_arb import \
     SCHEMA_SQL as MARKET_TAPE_SCHEMA_SQL  # noqa: E402
 
@@ -60,6 +62,7 @@ FEED_TABLES = (
     ('hyperliquid_positions', HYPERLIQUID_SCHEMA_SQL),
     ('file_coordination', COORDINATION_SCHEMA_SQL),
     ('market_tape', MARKET_TAPE_SCHEMA_SQL),
+    ('market_resolutions', MARKET_RESOLUTIONS_SCHEMA_SQL),
 )
 
 
