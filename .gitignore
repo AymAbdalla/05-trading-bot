@@ -75,3 +75,7 @@ backtest/data/weather_calibration_cache/
 research/graveyard/harness_validation.json
 research/hyperliquid/leaderboard_wallets.json
 research/polymarket_paper/polymarket_paper_log.csv
+db/trading-survivors.db
+db/trading-survivors.db-wal
+db/trading-survivors.db-shm
+research/polymarket_paper_survivors/

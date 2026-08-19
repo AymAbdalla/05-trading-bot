@@ -4187,7 +4187,43 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument('--no-15m', action='store_true',
                    help='skip the 15m market read used by corridor_collector')
     p.add_argument('--verbose', action='store_true')
+    p.add_argument('--strategies', default=None,
+                   help='comma-separated strategy_id whitelist restricting '
+                        'the ROUTED sets (crypto, weather, spaces) to those '
+                        'names; default = all. The registry itself '
+                        '(build_strategies() and its pinned indices) is '
+                        'untouched.')
     return p
+
+
+def filter_strategies_by_name(loop: 'PolymarketShadowLoop',
+                              names_csv: str) -> None:
+    """Restrict every routed strategy set on `loop` to `names_csv`.
+
+    Applied AFTER construction, to the routed sets (`runtimes[*].strategies`,
+    `weather_strategies`, `spaces[*].strategies`) rather than by rebuilding the
+    loop from a pre-filtered pool: rebuilding would lose real per-strategy
+    wiring that only happens inside the loop's own registry call (e.g.
+    DipArb's `dip_arb_tape_db_path`, proposal 031). `evaluations_per_cycle` is
+    a property summed over the same lists, so it and the accounting identity
+    follow the filter automatically.
+
+    This is for controlled A/B shadow runs (survivors-only environment on a
+    separate DB) where one process needs a strict subset of the full book.
+    The registry (`build_strategies()`, its pinned indices, `_registry_names`)
+    is never touched.
+    """
+    whitelist = {name.strip() for name in names_csv.split(',') if name.strip()}
+    for rt in loop.runtimes.values():
+        rt.strategies[:] = [s for s in rt.strategies
+                            if getattr(s, 'strategy_name', None) in whitelist]
+    loop.weather_strategies[:] = [
+        s for s in loop.weather_strategies
+        if getattr(s, 'strategy_name', None) in whitelist]
+    for space in loop.spaces:
+        space.strategies[:] = [
+            s for s in space.strategies
+            if getattr(s, 'strategy_name', None) in whitelist]
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -4263,6 +4299,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         candle_source_factory=candle_source_factory,
         include_15m=not args.no_15m)
     loop.install_signal_handlers()
+
+    if args.strategies:
+        filter_strategies_by_name(loop, args.strategies)
+        logger.info('strategies=%d (filtered from %d)',
+                    len(loop.strategies), len(loop._registry_names))
 
     print('=' * 72, flush=True)
     print('POLYMARKET SHADOW LOOP - PAPER MODE ONLY', flush=True)
