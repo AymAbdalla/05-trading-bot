@@ -363,6 +363,7 @@ from strategies.polymarket.smart_money_callers import \
     SmartMoneyCallers
 from strategies.polymarket.smart_money_copy import SmartMoneyCopy
 from strategies.polymarket.spread_harvest_maker import SpreadHarvestMaker
+from strategies.polymarket.status_quo_collector import StatusQuoCollector
 from strategies.polymarket.streak_snapper import StreakSnapper
 from strategies.polymarket.temporal_arbitrage import TemporalArbitrage
 from strategies.polymarket.weather_arb import WeatherArb
@@ -428,6 +429,10 @@ def build_strategies(dip_arb_tape_db_path=None):
         # caller-record cache state like `SmartMoneyCopy` and `WeatherArb`, so
         # it needs the same fresh-instance isolation as everything above it.
         SmartMoneyCallers(),
+        # APPENDED, at index 21 (proposal 028). Carries per-instance rung
+        # state (`_entered_rungs`) like `GridHedge`'s per-window rung state,
+        # so it needs the same fresh-instance isolation as everything above it.
+        StatusQuoCollector(),
     ]
 
 
@@ -441,7 +446,7 @@ __all__ = [
     'FairValueArb', 'FairValueArbWide', 'FairValueArbPatient',
     'FairValueArbHFT', 'FairValueArbInverse', 'ExitDecision',
     'LiqCascadeChaser', 'SmallLiqContinuation', 'NearLiqTrigger',
-    'SmartMoneyCopy', 'WeatherArb', 'GridHedge', 'DipArb',
+    'SmartMoneyCopy', 'WeatherArb', 'GridHedge', 'DipArb', 'StatusQuoCollector',
     'MakerRebateCorridorQuoteLadder', 'SmartMoneyCallers',
     'build_strategies',
 ]

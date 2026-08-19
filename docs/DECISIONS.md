@@ -2715,3 +2715,18 @@ natural restart (convention 13), and PID 3108 was deliberately left alone.
 
 **Where:** `engine/polymarket/shadow_loop.py` (`space_reason_lines`,
 `flush_stats`), `tests/test_space_shadow_wiring.py`.
+
+### D-318. PM_smart_money_callers sizing: FIXED 5 shares; Kelly up-sizing deferred behind a resolution oracle (RATIFIED by Raven, 2026-08-18)
+
+Raven ruling under Aym's 2026-08-18 full-authority directive (strategy params
+are not Aym escalations). The proposal's Kelly-scaled up-sizing past 3 verified
+plays is unreachable until a stock-price resolution oracle exists
+(`CallerRecord.verified_plays`/`measured` cannot move without one). Fixed
+`CALLER_SHARES = 5` is therefore the permanent sizing shape for the NOT_TESTED
+period. When the oracle lands: gate entry on `verified_plays >=
+CALLER_MIN_VERIFIED_PLAYS_FOR_SIZE_UP` first, size up second, and re-ratify this
+ruling at that point. The `caller_record_unknown` gate (any tracked record, not
+3+ verified) stands for the same reason.
+
+**Where:** `strategies/polymarket/smart_money_callers.py` (`CALLER_SHARES`,
+`CALLER_MIN_VERIFIED_PLAYS_FOR_SIZE_UP`, the `caller_record_unknown` gate).

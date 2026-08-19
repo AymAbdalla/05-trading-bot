@@ -709,6 +709,41 @@ SKIP_CLASSIFICATION: Dict[str, Tuple[str, str]] = {
                     'midpoint). HISTORICAL: rows before 2026-08-18 pool the '
                     'missing-midpoint and exact-tie causes under this one '
                     'name; see no_book_midpoint / book_implied_exact_tie'),
+
+    # --- status quo collector (proposal 028) --------------------------------
+    # The classifier (status_quo_classifier.py) is rule-based and deterministic
+    # over real inputs (question text, resolution_date when present). Both
+    # classifier outcomes below are the SAME shape as `not_a_temperature_market`
+    # and `resolution_station_unknown`: the strategy has no instrument for a
+    # market of this shape, so it never evaluated a real STATUS_QUO entry
+    # condition on it. GENUINE here would report "looked and declined" about a
+    # market this strategy was never built to trade.
+    'classifier_change_event_shape': (
+        DATA_BLOCKER, 'a STATUS_QUO-shaped question - the classifier read this '
+                      'one as CHANGE_EVENT, a product this strategy has no '
+                      'instrument for'),
+    'classifier_unknown_shape': (
+        DATA_BLOCKER, "a confidently classifiable shape - the classifier's "
+                      'honest default when no rule matches with confidence; '
+                      'same fact as resolution_station_unknown, one layer up'),
+    # Same wrong-product logic: the strategy only prices binary continuity
+    # contracts, and a non-binary market was never a candidate for its entry
+    # condition.
+    'not_binary': (DATA_BLOCKER, 'a binary contract'),
+    'no_resolution_date': (DATA_BLOCKER, "the market's own end_date field "
+                                         '(rule (c): a date found only in the '
+                                         'question text does not satisfy '
+                                         'entry)'),
+    'no_market_slug': (DATA_BLOCKER, 'a market identity to track rung state '
+                                     'against'),
+    # The book and best_ask were both present and real; the price just did not
+    # land in [min_no_price, max_no_price]. Same shape as mid_outside_quote_band.
+    'price_outside_entry_band': (GENUINE, ''),
+    # Both ladder reasons are computed from a real, present best_ask against
+    # real, tracked rung state - same shape as already_entered_this_window and
+    # pair_complete: a condition on live state, evaluated and found false.
+    'ladder_rung_not_yet_reached': (GENUINE, ''),
+    'ladder_fully_filled': (GENUINE, ''),
 }
 
 #: Reasons NO STRATEGY CAN EMIT ANY MORE, kept because rows logged before the

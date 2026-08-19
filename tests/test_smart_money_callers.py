@@ -309,11 +309,15 @@ class TestSkipReasons:
 # ============ 6. registry ============
 
 def test_registered_as_the_appended_last_strategy():
+    # Was true when this file was written (proposal 027's own build).
+    # Proposal 028 appended `PM_status_quo_collector` immediately after,
+    # so "last" no longer holds - pin the INDEX instead, which is the
+    # load-bearing fact (log lines are read by position, CLAUDE.md).
     from strategies.polymarket import build_strategies
     strategies = build_strategies()
     names = [s.strategy_name for s in strategies]
-    assert names[-1] == 'PM_smart_money_callers'
-    assert isinstance(strategies[-1], SmartMoneyCallers)
+    idx = names.index('PM_smart_money_callers')
+    assert isinstance(strategies[idx], SmartMoneyCallers)
     assert names.count('PM_smart_money_callers') == 1
 
 
