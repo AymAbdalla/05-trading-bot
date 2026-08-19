@@ -5,21 +5,47 @@
 # writes a tiny shim that execs THIS file. The logic lives here, under version
 # control, so it is reviewable and diffable. .git/hooks is not.
 #
+# The shim's only job is `exec "$ROOT/scripts/pre-commit-conflict-check"`, so a
+# behaviour change in this file is live with NO reinstall (verified by reading
+# the installed shim, not assumed). The "v1" marker in install_conflict_hook.sh
+# identifies the SHIM, not this policy, and is deliberately NOT bumped for a
+# logic change: bumping it would make the already-installed shim fail that
+# script's `is_ours` test and get backed up as a stranger's hook.
+#
 # WHAT IT DOES
 #   1. Reports active checkouts from engine.concurrency.who_is_editing().
 #      WARNS ONLY. An agent may legitimately have finished without checkin, and
 #      a hook that blocked on that would be trained around within a day.
 #   2. Verifies every staged file's hash against what the coordination table
-#      says the last coordinated write produced. THIS is the part that refuses.
+#      says the last coordinated write produced. THIS refuses.
+#   3. Verifies that the staged files are YOURS. THIS refuses too.
+#
+# WHY STEP 3 EXISTS (convention 16 enforcement)
+#   Twice in two nights an agent ran `git add -A`, swept another session's
+#   ledger-written files into its own commit, and wrote a commit message that
+#   mentioned none of them (b1d44bb, then 4d03681). Step 2 passed both times
+#   and was RIGHT to: the staged hash did match the ledger. The ledger knew the
+#   content was coordinated. It did not check that the coordinating agent and
+#   the committing agent were the same one. That gap is this step.
+#
+#   So a commit has to be able to say WHO it is. The commit author cannot carry
+#   that: every commit in this repo is authored `Aym Abdalla` from repo git
+#   config, agent and human alike. Identity is therefore DECLARED through the
+#   environment, and an undeclared session staging another agent's file is
+#   refused rather than assumed innocent. The declaration is unverifiable by
+#   construction and is printed as such -- it raises the cost of this mistake
+#   from zero to one deliberate keystroke, which is the whole goal. It is not
+#   a security boundary and must never be described as one.
 #
 # WHAT IT DOES NOT DO
 #   It never writes to the tree, never stages, never unstages, never touches a
 #   running process. It opens db/trading.db for SELECT only.
 #
-# CONVENTION 11 / 20: every staged file lands in exactly ONE category
-# (verified / untracked-by-coordination / MISMATCH / unreadable), the categories
-# are counted and printed, and the accounting identity is asserted. A silent
-# `continue` in the classification loop would be a missing number.
+# CONVENTION 11 / 20: every staged file lands in exactly ONE category, in BOTH
+# classifications (step 2: verified / untracked-by-coordination / MISMATCH /
+# unreadable; step 3: own-work / FOREIGN-OWNED / no-agent-owner /
+# owner-unknown), both are counted and printed, and BOTH accounting identities
+# are asserted. A silent `continue` in either loop would be a missing number.
 #
 # CONVENTION 14: python runs as `env -u PYTHONPATH python3`. Hermes leaks its
 # 3.11 venv onto PYTHONPATH and imports then fail in ways that look like a
@@ -29,15 +55,36 @@
 #     scripts/pre-commit-conflict-check
 #     SKIP_CONFLICT_CHECK=1 scripts/pre-commit-conflict-check
 #     CONFLICT_CHECK_DB=/tmp/x.db scripts/pre-commit-conflict-check
+#     CONFLICT_CHECK_AGENT_ID=cody-foo scripts/pre-commit-conflict-check
+#     CONFLICT_CHECK_ALLOW_SWEEP=1 scripts/pre-commit-conflict-check
 #
 # ENVIRONMENT
-#   SKIP_CONFLICT_CHECK=1   bypass entirely, loudly
-#   CONFLICT_CHECK_DB       override the coordination database path (testing)
-#   CONFLICT_CHECK_MAX_AGE  active-checkout window in seconds (default 3600)
+#   SKIP_CONFLICT_CHECK=1       bypass entirely, loudly
+#   CONFLICT_CHECK_DB           override the coordination database path
+#   CONFLICT_CHECK_MAX_AGE      active-checkout window in seconds (default 3600)
+#   CONFLICT_CHECK_AGENT_ID     declare the committing agent. Falls back to
+#                               AGENT_ID then TRADING_BOT_AGENT_ID -- the SAME
+#                               variables engine.concurrency reads for
+#                               DEFAULT_AGENT_ID, so a session that already
+#                               exports one is already declared. It never falls
+#                               back to that module's literal 'cody' default:
+#                               an undeclared session is undeclared, and saying
+#                               otherwise would be a lie.
+#   GIT_AUTHOR_NAME             accepted as a declaration ONLY when it names an
+#                               agent, because git sets it on every commit. Set
+#                               it without an environment prefix using
+#                               `git commit --author="cody-foo <cody@x>"`, which
+#                               also records the identity in git history.
+#   CONFLICT_CHECK_ALLOW_SWEEP  1/true/yes/on -- downgrade a cross-owner refusal
+#                               to a loud, itemised warning. This is how a
+#                               reconcile-style session legitimately lands a
+#                               dead session's work. It is never silent, and a
+#                               value that is set but unrecognised is reported.
 #
 # EXIT CODES
-#   0  allowed (verified, or could-not-verify, or bypassed)
-#   1  REFUSED: at least one staged file changed outside the coordination module
+#   0  allowed (verified, or could-not-verify, or bypassed, or declared sweep)
+#   1  REFUSED: a staged file changed outside the coordination module, and/or a
+#      staged file belongs to another agent and the sweep was not declared
 set -euo pipefail
 
 if [ "${SKIP_CONFLICT_CHECK:-0}" = "1" ]; then
@@ -63,7 +110,7 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 exec env -u PYTHONPATH python3 - "$@" <<'PYCODE'
-"""Staged-file hash verification against engine.concurrency's audit table."""
+"""Staged-file hash AND provenance verification against engine.concurrency."""
 
 from __future__ import annotations
 
@@ -99,6 +146,50 @@ MISMATCH = 'MISMATCH'
 UNREADABLE = 'unreadable'
 CATEGORIES = (VERIFIED, UNTRACKED, MISMATCH, UNREADABLE)
 
+#: Step 3's buckets. Same accounting discipline as CATEGORIES above.
+OWN = 'own-work'
+FOREIGN = 'FOREIGN-OWNED'
+NOT_AGENT = 'no-agent-owner'
+OWNER_UNKNOWN = 'owner-unknown'
+OWNER_CATEGORIES = (OWN, FOREIGN, NOT_AGENT, OWNER_UNKNOWN)
+
+#: Where the committing session declares itself, in resolution order. The last
+#: two are engine.concurrency's own DEFAULT_AGENT_ID inputs, on purpose: one
+#: identity, one place to set it, no second parallel mechanism to keep in sync.
+AGENT_ID_ENV_VARS = ('CONFLICT_CHECK_AGENT_ID', 'AGENT_ID',
+                     'TRADING_BOT_AGENT_ID')
+
+#: Last-resort identity source, and the only one that needs no `VAR=x` prefix
+#: on the commit itself -- `git commit --author="cody-foo <...>"` is enough, and
+#: git exports this to the hook. That matters because a spawned agent session
+#: cannot always set an environment prefix on a single command, and a mechanism
+#: its own agents cannot reach is not a mechanism.
+#:
+#: It is honoured ONLY when the value is agent-shaped. git sets this variable on
+#: EVERY commit, falling back to user.name, so accepting it unconditionally
+#: would turn every one of Aym's commits into a "declaration" of `Aym Abdalla`
+#: and quietly retire the NOT DECLARED state this step depends on.
+#:
+#: Bonus over the env vars: --author lands the identity in git history, so the
+#: provenance outlives the hook run that checked it.
+GIT_AUTHOR_ENV = 'GIT_AUTHOR_NAME'
+
+#: An agent_id is a KNOWN NON-HUMAN owner when it equals one of these or starts
+#: with one followed by a separator. All 43 distinct agent_ids in
+#: db/trading.db today match 'cody' or 'raven'; the others are here so a future
+#: agent family is covered by default rather than silently exempt.
+#:
+#: Deliberately a WHITELIST of agent shapes rather than a blacklist of human
+#: ones. The rule is "refuse on a KNOWN non-human owner", so anything this hook
+#: does not recognise -- a human id, a hand-written id, no ledger row at all --
+#: falls to NOT_AGENT and nothing changes for it. That is what keeps Aym's own
+#: commits working exactly as they did before step 3 existed.
+AGENT_ID_PREFIXES = ('cody', 'raven', 'forge', 'hermes', 'claude', 'agent')
+AGENT_ID_SEPARATORS = ('-', '_', '.', ':', '/')
+
+SWEEP_ESCAPE_ENV = 'CONFLICT_CHECK_ALLOW_SWEEP'
+SWEEP_ESCAPE_TRUE = ('1', 'true', 'yes', 'on')
+
 ROOT = os.environ.get('HOOK_REPO_ROOT') or os.getcwd()
 DB_PATH = os.environ.get('CONFLICT_CHECK_DB') or os.path.join(
     ROOT, 'db', 'trading.db')
@@ -123,6 +214,72 @@ def rule(char='-'):
 
 def short(digest):
     return digest[:12] if digest else 'none'
+
+
+# --------------------------------------------------------------------------
+# Declared identity
+# --------------------------------------------------------------------------
+
+def declared_identity():
+    """(identity, source_env_var). Both None when nothing was declared.
+
+    No fallback to a login name, and none to engine.concurrency's literal
+    'cody' default. The entire point of step 3 is telling "this is mine" apart
+    from "nobody said", so a default would erase the distinction it exists to
+    draw.
+    """
+    for var in AGENT_ID_ENV_VARS:
+        raw = os.environ.get(var)
+        if raw is None:
+            continue
+        value = raw.strip()
+        if value:
+            return value, var
+    # git always exports this, so it is accepted only when it names an agent.
+    # See GIT_AUTHOR_ENV for why that condition is load-bearing.
+    author = (os.environ.get(GIT_AUTHOR_ENV) or '').strip()
+    if author and is_agent_owner(author):
+        return author, GIT_AUTHOR_ENV
+    return None, None
+
+
+def sweep_escape_state():
+    """(armed, raw). armed=False with a non-empty raw means SET BUT UNREAD.
+
+    A typo'd escape that behaved silently like "not set" would produce a
+    refusal the committer believed they had already answered, so it is
+    reported rather than swallowed (convention 20's spirit: no silent branch).
+    """
+    raw = os.environ.get(SWEEP_ESCAPE_ENV)
+    if raw is None:
+        return False, None
+    return raw.strip().lower() in SWEEP_ESCAPE_TRUE, raw
+
+
+def is_agent_owner(agent_id):
+    """True when agent_id is a KNOWN non-human agent identity."""
+    if not agent_id:
+        return False
+    value = str(agent_id).strip().lower()
+    if not value:
+        return False
+    for prefix in AGENT_ID_PREFIXES:
+        if value == prefix:
+            return True
+        nxt = value[len(prefix):len(prefix) + 1]
+        if value.startswith(prefix) and nxt in AGENT_ID_SEPARATORS:
+            return True
+    return False
+
+
+def same_identity(a, b):
+    if a is None or b is None:
+        return False
+    return str(a).strip().lower() == str(b).strip().lower()
+
+
+DECLARED_ID, DECLARED_SRC = declared_identity()
+SWEEP_ARMED, SWEEP_RAW = sweep_escape_state()
 
 
 # --------------------------------------------------------------------------
@@ -303,7 +460,7 @@ def last_coordinated_writes(keys):
 
 def report_active_checkouts():
     """Returns True if the report ran, False if it could not."""
-    say('[1/2] active checkouts (advisory, never blocking)')
+    say('[1/3] active checkouts (advisory, never blocking)')
     if not CONCURRENCY_OK:
         say('      COULD NOT RUN: engine.concurrency did not import (%s)'
             % CONCURRENCY_ERR)
@@ -340,10 +497,11 @@ def report_active_checkouts():
 
 class Finding(object):
     __slots__ = ('path', 'category', 'expected', 'staged', 'worktree',
-                 'source', 'note')
+                 'source', 'note', 'owner', 'owner_ts', 'owner_known')
 
     def __init__(self, path, category, expected=None, staged=None,
-                 worktree=None, source='staged blob', note=''):
+                 worktree=None, source='staged blob', note='',
+                 owner=None, owner_ts=None, owner_known=False):
         self.path = path
         self.category = category
         self.expected = expected
@@ -351,29 +509,53 @@ class Finding(object):
         self.worktree = worktree
         self.source = source
         self.note = note
+        #: agent_id on the most recent coordinated write, or None.
+        self.owner = owner
+        self.owner_ts = owner_ts
+        #: False means the table could not be consulted for this path, which is
+        #: not the same fact as "this path has no owner" (convention 11).
+        self.owner_known = owner_known
 
 
 def classify(paths, blobs, unmerged, latest, table_error):
     """Exactly one Finding per staged path. No path may fall through."""
     findings = []
     for path in paths:
+        # Resolve ownership FIRST, before any early exit, so every Finding
+        # carries an owner verdict no matter which step-2 branch it lands in.
+        # An unmerged or unreadable path still has a ledger owner, and step 3
+        # still has to account for it.
+        owner, owner_ts, owner_known = None, None, False
+        expected, action = None, None
+        if table_error is None:
+            owner_known = True
+            for key in coordination_keys(path):
+                hit = latest.get(key)
+                if hit is not None:
+                    expected, action, owner_ts, owner = hit
+                    break
+
+        def make(category, **kw):
+            return Finding(path, category, owner=owner, owner_ts=owner_ts,
+                           owner_known=owner_known, **kw)
+
         if path in unmerged:
-            findings.append(Finding(
-                path, UNREADABLE, note='unmerged in the index (stage != 0); '
-                                       'resolve the merge first'))
+            findings.append(make(
+                UNREADABLE, note='unmerged in the index (stage != 0); '
+                                 'resolve the merge first'))
             continue
 
         sha1 = blobs.get(path)
         if sha1 is None:
-            findings.append(Finding(
-                path, UNREADABLE,
+            findings.append(make(
+                UNREADABLE,
                 note='staged but absent from `git ls-files -s` at stage 0'))
             continue
 
         staged, err = staged_blob_hash(sha1)
         if staged is None:
-            findings.append(Finding(
-                path, UNREADABLE,
+            findings.append(make(
+                UNREADABLE,
                 note='could not read staged blob %s (%s)' % (sha1[:12], err)))
             continue
 
@@ -389,41 +571,35 @@ def classify(paths, blobs, unmerged, latest, table_error):
             # The table could not be read. Calling these files
             # "untracked-by-coordination" would let COULD NOT VERIFY read as
             # VERIFIED. It is unreadable, and it says so.
-            findings.append(Finding(
-                path, UNREADABLE, staged=staged, worktree=worktree,
+            findings.append(make(
+                UNREADABLE, staged=staged, worktree=worktree,
                 note='coordination table unreadable' + wt_note))
             continue
-
-        expected, action, ts, agent = None, None, None, None
-        for key in coordination_keys(path):
-            hit = latest.get(key)
-            if hit is not None:
-                expected, action, ts, agent = hit
-                break
 
         if expected is None:
             note = ('never written through engine.concurrency'
                     if action is None else
-                    'last %s row by %s recorded no new_hash' % (action, agent))
-            findings.append(Finding(path, UNTRACKED, staged=staged,
-                                    worktree=worktree, note=note + wt_note))
+                    'last %s row by %s recorded no new_hash' % (action, owner))
+            findings.append(make(UNTRACKED, staged=staged,
+                                 worktree=worktree, note=note + wt_note))
         elif expected == staged:
-            note = 'last coordinated %s by %s' % (action, agent)
+            note = 'last coordinated %s by %s' % (action, owner)
             if worktree is not None and worktree != staged:
                 note += ('; NOTE worktree differs from the staged blob '
                          '(%s) -- the staged content is what was verified'
                          % short(worktree))
-            findings.append(Finding(path, VERIFIED, expected=expected,
-                                    staged=staged, worktree=worktree,
-                                    note=note + wt_note))
+            findings.append(make(VERIFIED, expected=expected,
+                                 staged=staged, worktree=worktree,
+                                 note=note + wt_note))
         else:
-            note = 'last coordinated %s by %s at ts=%s' % (action, agent, ts)
+            note = ('last coordinated %s by %s at ts=%s'
+                    % (action, owner, owner_ts))
             if worktree is not None and worktree == expected:
                 note += ('; the WORKTREE still matches -- it is the STAGED '
                          'content that was never coordinated')
-            findings.append(Finding(path, MISMATCH, expected=expected,
-                                    staged=staged, worktree=worktree,
-                                    note=note + wt_note))
+            findings.append(make(MISMATCH, expected=expected,
+                                 staged=staged, worktree=worktree,
+                                 note=note + wt_note))
     return findings
 
 
@@ -475,21 +651,165 @@ def report(findings, total):
 
 
 # --------------------------------------------------------------------------
+# Step 3: provenance. Is this file YOURS? THIS can refuse.
+# --------------------------------------------------------------------------
+
+def ownership(finding):
+    """Exactly one OWNER_CATEGORIES bucket per Finding."""
+    if not finding.owner_known:
+        return OWNER_UNKNOWN
+    if not is_agent_owner(finding.owner):
+        # No ledger row at all, or an owner this hook does not recognise as an
+        # agent. A human commit over human-owned or unowned paths behaves
+        # exactly as it did before step 3 existed.
+        return NOT_AGENT
+    if same_identity(finding.owner, DECLARED_ID):
+        return OWN
+    return FOREIGN
+
+
+def report_provenance(findings, total):
+    """Print the ownership classification. Returns its counts."""
+    say('[3/3] staged-file provenance (this step can REFUSE)')
+
+    if DECLARED_ID is None:
+        say('      committing identity: NOT DECLARED')
+        say('        declare one by setting %s.'
+            % ' or '.join(AGENT_ID_ENV_VARS))
+    else:
+        say('      committing identity: %s   (declared via %s; UNVERIFIED -- '
+            'the hook cannot check that a declaration is true)'
+            % (DECLARED_ID, DECLARED_SRC))
+
+    if SWEEP_RAW is not None and not SWEEP_ARMED:
+        say('      WARNING: %s is set to %r, which is NOT one of %s. The sweep '
+            'escape is NOT armed.'
+            % (SWEEP_ESCAPE_ENV, SWEEP_RAW, '/'.join(SWEEP_ESCAPE_TRUE)))
+    elif SWEEP_ARMED:
+        say('      sweep escape: ARMED (%s=%s). Cross-owner paths will be '
+            'allowed and listed, not refused.' % (SWEEP_ESCAPE_ENV, SWEEP_RAW))
+
+    buckets = dict((c, []) for c in OWNER_CATEGORIES)
+    for f in findings:
+        buckets[ownership(f)].append(f)
+
+    for cat in (FOREIGN, OWNER_UNKNOWN, OWN, NOT_AGENT):
+        rows = buckets[cat]
+        if not rows:
+            continue
+        say('      %s (%d):' % (cat, len(rows)))
+        for f in rows[:MAX_LISTED]:
+            if cat == FOREIGN:
+                say('        %s' % f.path)
+                say('          %-24s : %s' % ('ledger owner', f.owner))
+                say('          %-24s : %s'
+                    % ('committing identity',
+                       DECLARED_ID if DECLARED_ID else 'NOT DECLARED'))
+                say('          %-24s : %s'
+                    % ('owner wrote it at ts', f.owner_ts))
+            elif cat == OWN:
+                say('        %s  (ledger owner %s == declared)'
+                    % (f.path, f.owner))
+            elif cat == OWNER_UNKNOWN:
+                say('        %s  (the coordination table could not be '
+                    'consulted)' % f.path)
+            else:
+                say('        %s  (ledger owner %s)'
+                    % (f.path, f.owner if f.owner else 'none'))
+        if len(rows) > MAX_LISTED:
+            say('        ... and %d more' % (len(rows) - MAX_LISTED))
+
+    counts = dict((c, len(buckets[c])) for c in OWNER_CATEGORIES)
+    total_counted = sum(counts.values())
+    say()
+    say('      summary: total=%d  %s=%d  %s=%d  %s=%d  %s=%d'
+        % (total, OWN, counts[OWN], FOREIGN, counts[FOREIGN],
+           NOT_AGENT, counts[NOT_AGENT], OWNER_UNKNOWN,
+           counts[OWNER_UNKNOWN]))
+
+    # Convention 20 again. Two classifications, two identities, both checked.
+    if total_counted != total:
+        say()
+        say('conflict-check: INTERNAL ERROR -- provenance accounting identity '
+            'violated: %d staged files but %d classified. Refusing rather than '
+            'reporting a number that does not add up.'
+            % (total, total_counted))
+        say('conflict-check: ' + BYPASS_NOTE)
+        sys.exit(1)
+    assert total_counted == total
+    return counts
+
+
+def say_sweep_refusal(count):
+    rule('!')
+    say('conflict-check: REFUSED. %d staged file(s) were last written through '
+        'engine.concurrency by a DIFFERENT agent.' % count)
+    say('')
+    if DECLARED_ID is None:
+        say('This session declared no identity, so the hook cannot tell '
+            'whether that work is yours. Convention 16: never `git add -A`. '
+            'Twice in two nights a sweep like this carried another session\'s '
+            'files into a commit whose message never mentioned them.')
+    else:
+        say('This session declared itself "%s", which is not the agent that '
+            'wrote those files. Convention 16: never `git add -A`. Twice in '
+            'two nights a sweep like this carried another session\'s files '
+            'into a commit whose message never mentioned them.' % DECLARED_ID)
+    say('')
+    say('What to do, in order of preference:')
+    say('  1. Unstage what is not yours and commit only your own paths:')
+    say('       git restore --staged <path>     # per path listed above')
+    say('  2. If it IS your work, declare the identity that wrote it:')
+    say('       CONFLICT_CHECK_AGENT_ID=<the ledger owner> git commit ...')
+    say('     or, if you cannot set an environment prefix (spawned sessions '
+        'often cannot), declare it as the git author instead:')
+    say('       git commit --author="<the ledger owner> <cody@agents.invalid>"')
+    say('  3. If you are deliberately landing a dead session\'s work (a '
+        'reconcile sweep), declare the sweep. It is allowed, and every swept '
+        'path gets listed:')
+    say('       %s=1 git commit ...' % SWEEP_ESCAPE_ENV)
+    say('')
+    say('Do NOT reach for SKIP_CONFLICT_CHECK or --no-verify here. Option 3 '
+        'lands the same commit and leaves a record of what was swept.')
+    say('')
+    say('conflict-check: ' + BYPASS_NOTE)
+    rule('!')
+
+
+def say_sweep_warning(findings):
+    rows = [f for f in findings if ownership(f) == FOREIGN]
+    rule('!')
+    say('conflict-check: SWEEP DECLARED (%s=%s). Allowing %d cross-owner '
+        'file(s). This is a declared exception, not a clean commit:'
+        % (SWEEP_ESCAPE_ENV, SWEEP_RAW, len(rows)))
+    for f in rows[:MAX_LISTED]:
+        say('    %-58s  owner=%s' % (f.path, f.owner))
+    if len(rows) > MAX_LISTED:
+        say('    ... and %d more' % (len(rows) - MAX_LISTED))
+    say('')
+    say('Convention 31: make the commit message say it is landing other '
+        'sessions\' work, and name it. A sweep whose message mentions none of '
+        'these paths is exactly how b1d44bb and 4d03681 happened.')
+    rule('!')
+
+
+# --------------------------------------------------------------------------
 # main
 # --------------------------------------------------------------------------
 
 def main():
     say()
     rule('=')
-    say('conflict-check  (engine.concurrency, convention 21)')
+    say('conflict-check  (engine.concurrency, conventions 16 / 21)')
     say('repo: %s' % ROOT)
     say('db:   %s' % DB_PATH)
+    say('as:   %s' % (DECLARED_ID if DECLARED_ID else 'UNDECLARED identity'))
     rule('=')
 
     degraded = not report_active_checkouts()
     say()
 
-    say('[2/2] staged-file hash verification (this step can REFUSE)')
+    say('[2/3] staged-file hash verification (this step can REFUSE)')
     ok, paths = staged_paths()
     if not ok:
         say('      COULD NOT RUN: `git diff --cached` failed.')
@@ -525,13 +845,22 @@ def main():
     counts = report(findings, len(paths))
 
     say()
+    owner_counts = report_provenance(findings, len(paths))
+
+    say()
     if LOG_FAILURES:
         degraded = True
         say('conflict-check: WARNING -- the coordination log is degraded %s. '
             'Rows may be MISSING, so "%s" may be overstated.'
             % (dict(LOG_FAILURES), UNTRACKED))
 
-    if counts[MISMATCH]:
+    # Both refusals are decided before either is printed, so a commit that
+    # trips both is told about both rather than fixing one and rediscovering
+    # the other on the next attempt.
+    refuse_hash = counts[MISMATCH] > 0
+    refuse_sweep = owner_counts[FOREIGN] > 0 and not SWEEP_ARMED
+
+    if refuse_hash:
         rule('!')
         say('conflict-check: REFUSED. %d staged file(s) changed after the last '
             'write that went through engine.concurrency.' % counts[MISMATCH])
@@ -547,6 +876,15 @@ def main():
         say('')
         say('conflict-check: ' + BYPASS_NOTE)
         rule('!')
+
+    if refuse_sweep:
+        if refuse_hash:
+            say()
+        say_sweep_refusal(owner_counts[FOREIGN])
+    elif owner_counts[FOREIGN]:
+        say_sweep_warning(findings)
+
+    if refuse_hash or refuse_sweep:
         return 1
 
     if table_error is not None:
@@ -562,8 +900,10 @@ def main():
             'and were NOT verified. Allowing the commit, but "could not '
             'verify" is not "verified".' % counts[UNREADABLE])
 
-    say('conflict-check: OK. %d verified, %d untracked-by-coordination%s.'
-        % (counts[VERIFIED], counts[UNTRACKED],
+    say('conflict-check: OK. %d verified, %d untracked-by-coordination, '
+        '%d own-work, %d not-agent-owned%s.'
+        % (counts[VERIFIED], counts[UNTRACKED], owner_counts[OWN],
+           owner_counts[NOT_AGENT],
            ' (report degraded)' if degraded else ''))
     rule()
     return 0
