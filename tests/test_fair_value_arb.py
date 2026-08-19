@@ -1195,7 +1195,8 @@ class TestWiring:
                          'PM_fair_value_arb_hft',
                          'PM_fair_value_arb_inverse',
                          'PM_dip_arb',
-                         'PM_longshot_fade_hold_to_resolution']
+                         'PM_longshot_fade_hold_to_resolution',
+                         'PM_weather_bracket_width_matched']
         # The flag is a promise about the interface. Check the interface.
         for s in managers:
             assert callable(getattr(s, 'manage_exit', None)), s.strategy_name

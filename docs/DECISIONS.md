@@ -2730,3 +2730,30 @@ ruling at that point. The `caller_record_unknown` gate (any tracked record, not
 
 **Where:** `strategies/polymarket/smart_money_callers.py` (`CALLER_SHARES`,
 `CALLER_MIN_VERIFIED_PLAYS_FOR_SIZE_UP`, the `caller_record_unknown` gate).
+
+### D-319. Commit policy ruling: proposal 032 ships; three live research files are untracked and gitignored (RATIFIED by Raven, 2026-08-18)
+
+Raven ruling under Aym's 2026-08-18 full-authority directive (repo hygiene is
+not an Aym escalation; the accumulated-tree question has bounced since proposal
+027 and the directive says decide, not defer).
+
+**032 ships.** The strategy, its 29 tests, the registry pin updates, the
+classifier entries and the two full-suite fixes are verified (registry is 23
+with the first 8 pinned, classifier entries present, full suite green at 3,736
+passed). Commit it on the same footing as 027 and 028, which are already
+committed and pushed (451a299, 57a90f2, 58fe13f).
+
+**The three live research files are runtime artifacts, not portfolio
+artifacts.** `research/graveyard/harness_validation.json`,
+`research/hyperliquid/leaderboard_wallets.json` and
+`research/polymarket_paper/polymarket_paper_log.csv` are written by running
+processes every poll/cycle. They were uncommitted before 032 and will never be
+clean. The CSV is 404MB on disk against a 66MB committed blob, over GitHub's
+100MB hard limit: committing it would break the next push. Untrack all three
+(git rm --cached), gitignore them, and keep the working copies in place - the
+loop and the harness read them live. This is what "the three standing
+research-file exclusions" meant; it is now policy, not an exception.
+
+**Where:** `.gitignore`, git index; commit 032 + D-319 together. No shadow
+loop restart (convention 13): 032 enters evaluation at the next natural
+restart.
