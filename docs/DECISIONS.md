@@ -2943,7 +2943,34 @@ therefore membership in no polled universe.
 unreachable again - the exact condition under which the false "maker fill
 model exists but is not wired" claim survived unchallenged for hours until
 D-320/convention 31. This is accepted, not overlooked: stop the bleed, keep
-the wiring. The code path stays live and tested; nothing routes to it.
+the wiring. Nothing routes to it.
+
+**AMENDMENT, 2026-08-19 ~01:45 EDT (`cody-reconcile`, acting on the flag
+raised in `docs/handoffs/2026-08-19-verify-commit-restart-executed.md`,
+"Open for Raven" item 4, and directed by
+`docs/handoffs/from-raven/2026-08-19-reconcile-unverified-work.md` Task
+3.1).** This paragraph originally ended "The code path stays live and
+tested; nothing routes to it." **The "and tested" half was FALSE as
+written.** The maker path stopped being tested the moment the sentinel
+landed: injected strategies are still filtered through `_supporting()` at
+`engine/polymarket/shadow_loop.py:1269`, so declaring
+`supported_market_types = ('smart_money',)` removed `PM_box_builder` and
+`PM_grid_hedge` from the lists the tests build - **26 tests died on
+`IndexError` in the same session**, which is how it was found, not by
+reading this entry. The maker path is tested again ONLY because `build_loop`
+restores the injected list after construction: that is a fixture putting
+back what the sentinel removes, not the production selection path
+exercising itself. Anyone citing this entry as evidence that the maker path
+carries live test coverage is citing it wrongly.
+
+"Nothing routes to it" is unchanged and was independently re-verified:
+`_supporting(` has exactly two call sites, neither ever passes
+`'smart_money'`, and `grep -rn "MARKET_TYPE_SMART_MONEY" engine/` returns
+zero hits. The pause itself is sound - only the coverage claim was wrong.
+
+Convention 31 applies to decision entries, not only to commit messages: this
+sentence was written, ratified and repeated downstream before anyone ran the
+suite against it.
 
 **Reopen criterion.** Either (a) a maker strategy with a defensible measured
 edge, or (b) a maker-path post-mortem explaining the 24-26% win rates,

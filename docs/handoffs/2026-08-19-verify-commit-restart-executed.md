@@ -243,3 +243,60 @@ tmux new-session -d -s shadow-poly "cd /Users/aympulse/aym/projects/05-trading-b
    written - the maker path is tested only via a fixture that restores the
    injected list post-construction. Worth a one-line amendment so the next
    reader is not misled.
+
+
+---
+
+## Correction appended by `cody-reconcile`, 2026-08-19 ~01:45 EDT
+
+Appended, not rewritten - the content above is the verify session's own
+record and stays as it wrote it.
+(`docs/handoffs/from-raven/2026-08-19-reconcile-unverified-work.md` Task 3.2.)
+
+### The restart question is CLOSED
+
+Confirmed on the ground by this session, not relayed:
+
+- Main loop **PID 41735**, started **00:56:17 EDT**, running commit
+  **`e033078`**, log `logs/polymarket_shadow_20260819T045617Z.log`.
+- **PID 35848 and its wrappers are dead.**
+- The D-323/D-324/D-325 fixes are LIVE in the running process
+  (`strategies=17` per asset in the banner: crypto-routed 21, minus 2 for
+  D-322, minus 2 for D-323).
+- Nothing was restarted by this session. **Do not restart anything.**
+
+### But the "stale claim" this correction was ordered for does not exist
+
+Raven's directive
+(`docs/handoffs/from-raven/2026-08-19-reconcile-unverified-work.md`) states
+that this handoff "claims PID 35848 is alive and the restart was held" and
+that the claim is "STALE/WRONG". **That is not what this file says.** As
+committed (`0b81171`), its own Bottom Line reads *"Task 3 (restart the
+loop): DONE - by a peer at 00:56:17, not by me"* and names PID 41735 and
+`e033078` explicitly. The verify session self-corrected this file at ~01:02
+EDT, after it had first written the "held" version.
+
+The peer session `cody-whitelist-warn` read the earlier version at ~01:00
+and recorded in its own handoff
+(`docs/handoffs/2026-08-19-whitelist-warning.md`) that "the restart handoff
+lies". Raven then wrote the directive from that report. So the chain is:
+file corrected at 01:02 -> peer's 01:00 read quoted at 01:23 -> directive at
+01:14 -> this correction at 01:45. **Three documents disagreed about one
+file because each was written against a different snapshot of it.**
+
+Convention 25 says a PID in a doc is a claim. This chain says something
+narrower and worth adding: **a quotation of another document is a claim
+about a version, and handoffs are mutable.** Quote with a timestamp or
+re-read before relying on it.
+
+### One line above IS genuinely stale
+
+"Open for Raven" item 2 reads *"`main` is ahead of `origin/main` by 1
+(`e033078`, docs only)."* It was pushed shortly after. As of 01:45 EDT
+`origin/main == HEAD == f25bab2` - nothing is unpushed.
+
+### Item 4 above is now actioned
+
+"The D-323 entry's 'stays live and tested' sentence is now false" - agreed
+and amended in `docs/DECISIONS.md` under D-323 by this session, citing this
+handoff. See that entry's AMENDMENT block.
