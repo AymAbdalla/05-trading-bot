@@ -790,6 +790,80 @@ SKIP_CLASSIFICATION: Dict[str, Tuple[str, str]] = {
     # `effective_ask_for` walked the real book up to `MAX_FAVORITE_ASK` and
     # could not fill the full size - same shape as `unfillable_at_cap`.
     'unfillable_at_favorite_ask_cap': (GENUINE, ''),
+
+    # --- weather bracket width matched (proposal 033) -----------------------
+    # `threshold.lo_f`/`hi_f` are real, parsed off the real question text,
+    # and found with one edge unbounded - a tail, not an interior bucket
+    # (`is_ladder_rung` is True for a tail too, so this checks both edges
+    # directly rather than that flag). Same shape as
+    # `not_a_temperature_market`: the wrong product for this basket, not a
+    # missing input.
+    'threshold_not_a_bounded_bucket': (GENUINE, ''),
+    # `market_metric(question)` is real, parsed off real text, and found to
+    # not be `'daily_high'` (point-in-time, or a daily LOW market). A real
+    # classification, evaluated and found false.
+    'market_metric_not_daily_high': (GENUINE, ''),
+    # `daily_extreme_estimate`'s closed set of non-ok statuses (see
+    # weather_arb.py) did not match any of the branches this file enumerates
+    # for it - a status was added to that set without a matching branch here.
+    # Convention 11: a cannot-run, never expected to fire while the two files
+    # stay in sync; `estimate_status` on the row carries the actual value.
+    'daily_extreme_estimate_status_unmapped': (
+        DATA_BLOCKER, "a status daily_extreme_estimate can return that "
+                      'this file has a named branch for'),
+    # `hours_to_window_close` is a real value off a real forecast, evaluated
+    # against the real [24, 48] band this basket's pooled sigma was fitted
+    # on - same shape as `t_rem_outside_entry_window`.
+    'outside_24_48h_lead_band': (GENUINE, ''),
+    # `research/weather_sigma_calibration.json` missing, unreadable, or
+    # missing the `pooled.daily_high.by_lead["1"].rmse_f` key - a genuinely
+    # missing input, same shape as `daily_extreme_sigma_unfitted_for_station`.
+    'bracket_sigma_unavailable': (
+        DATA_BLOCKER, 'a pooled sigma at the fitted 24-48h lead bucket in '
+                      'research/weather_sigma_calibration.json'),
+    # No orderbook (or no ask side) for this rung's Yes token - same shape as
+    # `no_orderbook`/`no_asks`.
+    'bracket_leg_missing_book': (DATA_BLOCKER, "this rung's Yes orderbook"),
+    # `MarketContext` hands this strategy one rung per `evaluate()` call,
+    # never a ladder (see the strategy's own module docstring, wiring gap
+    # #1); a station-day whose cache does not yet contain 3 rungs that are
+    # contiguous, wide enough and centred close enough to `mu` has not had
+    # enough of its ladder OBSERVED yet, which this cannot tell apart from
+    # "no such set exists on this board" until it has. Missing input, not a
+    # false condition.
+    'no_contiguous_bracket_available': (
+        DATA_BLOCKER, "enough of this station-day's ladder, accumulated "
+                      'across evaluate() calls, to test for a valid bracket'),
+    # A cached leg's snapshot is real and its age is real, evaluated against
+    # `LADDER_CACHE_FRESHNESS_SEC` and found too old - the ladder-exposure
+    # gap again (this file did not observe that rung recently enough), a
+    # missing (fresh) input rather than a false condition on current state.
+    'bracket_leg_data_stale': (
+        DATA_BLOCKER, "a recent-enough cached snapshot of this bracket's "
+                      'other legs'),
+    # `cost` is the real sum of 3 real best asks, evaluated against the real
+    # 0.85 cap and found above it. Same shape as `bracket_cost_above_cap`'s
+    # sibling gates elsewhere in this file (`unsizable_at_notional_cap`
+    # shape): a real number checked against a real threshold.
+    'bracket_cost_above_cap': (GENUINE, ''),
+    # Real `p_bracket` minus real `cost`, evaluated against the real 0.04
+    # floor and found short. Same shape as `edge_below_min`.
+    'bracket_edge_below_min': (GENUINE, ''),
+    # `shares = floor(MAX_BRACKET_NOTIONAL_USDC / cost)` from a real cost,
+    # found below the minimum - same shape as `unsizable_at_notional_cap`.
+    'bracket_unsizable_at_notional_cap': (GENUINE, ''),
+    # Real `ask_depth_at_ask` on one or more real legs, evaluated against the
+    # real required share count and found short - same shape as
+    # `insufficient_depth_for_pair`.
+    'bracket_insufficient_ask_depth': (GENUINE, ''),
+    # This instance's own dedupe state (`_last_entry_now`), a condition on
+    # live state - same shape as `already_entered_this_window`.
+    'bracket_already_entered_this_cycle': (GENUINE, ''),
+    # This instance's own `_entered_station_days` set, a condition on live
+    # state - same shape as `strategy_concurrency_cap_reached`. See the
+    # strategy's own module docstring for why this substitutes for real
+    # open-position visibility, which this strategy does not have.
+    'bracket_already_attempted_this_station_day': (GENUINE, ''),
 }
 
 #: Reasons NO STRATEGY CAN EMIT ANY MORE, kept because rows logged before the

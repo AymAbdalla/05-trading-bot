@@ -353,6 +353,31 @@ today. The other two are refusals, and each refuses for its own reason.
                               Its own module docstring is the authority, including
                               the honest limit on its "max 2 concurrent" self-cap
                               (enforced per asset instance, not system-wide).
+
+## Proposal 033, appended at index 23
+
+  PM_weather_bracket_width_matched   Buys a contiguous 3-rung Polymarket daily
+                              HIGH temperature bracket (5.4F traded width) as
+                              one basket, so the instrument matches the width
+                              of the pooled 24-48h forecast-error RMSE
+                              (2.7354F, `research/weather_sigma_calibration
+                              .json`) rather than trading a single 1.8F rung
+                              `PM_weather_arb` cannot resolve
+                              (`rung_narrower_than_model_resolution`). Reuses
+                              `WeatherArb.daily_extreme_estimate` read-only for
+                              mu; sigma is the flat POOLED lead-1 RMSE, not a
+                              per-station fit. `manages_exits = True` for a
+                              0.55x-cost combined-bid stop, but see its own
+                              module docstring: `run_weather_cycle` never
+                              calls `manage_exits()` for ANY strategy today
+                              (a pre-existing gap `PM_fair_value_arb` and
+                              `PM_dip_arb`'s weather-side exits already share),
+                              and `_attempt_entry` has no automatic
+                              partial-fill unwind for any multi-leg strategy,
+                              so this strategy's own module docstring is the
+                              authority on which parts of proposal 033's rules
+                              are live versus written-to-interface-but-dead
+                              pending a shared shadow_loop.py change.
 """
 from strategies.polymarket.base import (BINARY_STOP, BINARY_TARGET, PAPER_MODE,
                                         Decision, Leg, MarketContext,
@@ -388,6 +413,8 @@ from strategies.polymarket.status_quo_collector import StatusQuoCollector
 from strategies.polymarket.streak_snapper import StreakSnapper
 from strategies.polymarket.temporal_arbitrage import TemporalArbitrage
 from strategies.polymarket.weather_arb import WeatherArb
+from strategies.polymarket.weather_bracket_width_matched import \
+    WeatherBracketWidthMatched
 
 
 def build_strategies(dip_arb_tape_db_path=None):
@@ -460,6 +487,12 @@ def build_strategies(dip_arb_tape_db_path=None):
         # everything above it. See its module docstring: the tape is
         # in-memory only and a restart resets it to empty.
         LongshotFadeHoldToResolution(),
+        # APPENDED, at index 23 (proposal 033). Carries a per-instance
+        # station-day ladder cache (`_ladder_cache`) and entered-station-day
+        # set, so it needs the same fresh-instance isolation as everything
+        # above it. See its module docstring for the ladder-accumulation
+        # design and the two shadow_loop.py wiring gaps it surfaced.
+        WeatherBracketWidthMatched(),
     ]
 
 
@@ -475,6 +508,6 @@ __all__ = [
     'LiqCascadeChaser', 'SmallLiqContinuation', 'NearLiqTrigger',
     'SmartMoneyCopy', 'WeatherArb', 'GridHedge', 'DipArb', 'StatusQuoCollector',
     'MakerRebateCorridorQuoteLadder', 'SmartMoneyCallers',
-    'LongshotFadeHoldToResolution',
+    'LongshotFadeHoldToResolution', 'WeatherBracketWidthMatched',
     'build_strategies',
 ]
