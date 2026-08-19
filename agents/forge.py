@@ -200,13 +200,17 @@ VALID_ASSET_CLASSES = (
 #                  a combined edge has not been thought through as one strategy.
 # repair           fixes a strategy that does not currently run.
 # experiment       a deliberate probe run to FIND OUT whether an edge exists.
+# governance       a ruling on how a result is to be READ or recorded. It
+#                  changes no strategy and claims no edge, so it asserts
+#                  nothing that could carry a bps figure.
 #
-# repair and experiment must record expected_edge_bps as null. Not to restrict
-# them: the opposite. It lets them exist without inventing a bps figure, which
-# is what the old schema forced. Convention 11: unknown is not zero, and a
-# fabricated number gets cited.
-KINDS = ('edge_hypothesis', 'combination', 'repair', 'experiment')
-NULL_EDGE_KINDS = ('repair', 'experiment')
+# repair, experiment and governance must record expected_edge_bps as null.
+# Not to restrict them: the opposite. It lets them exist without inventing a
+# bps figure, which is what the old schema forced. Convention 11: unknown is
+# not zero, and a fabricated number gets cited.
+KINDS = ('edge_hypothesis', 'combination', 'repair', 'experiment',
+         'governance')
+NULL_EDGE_KINDS = ('repair', 'experiment', 'governance')
 
 # Convention 20. These still fire and still block.
 REFUSAL_CATEGORIES = (
