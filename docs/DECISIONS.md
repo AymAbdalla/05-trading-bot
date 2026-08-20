@@ -4106,3 +4106,12 @@ R2. Hard ceiling: never exceed 90% of available capital per trade (D-366's max_p
 R3. Sizing model: size = f(confidence, win_rate) mapped into 1-90% of available capital. The exact mapping (linear, tiered, kelly-like) is a design decision for the implementation brief; the default should be conservative (low confidence = small size, high confidence = larger size).
 R4. The 90% cap remains the ceiling; sizing scales within it.
 R5. Requires a restart of the three realms to activate.
+
+### D-383. Shadow drawdown measurement limit: 1.0 -> 0.25 (AYM RULING, 2026-08-20)
+
+Aym (after explanation): "great, love that explanation, A, do it".
+
+R1. SHADOW_RISK_LIMITS.max_drawdown_frac changed 1.0 -> 0.25 (real-money parity).
+R2. This is MEASUREMENT ONLY. D-359's auto-halt disable stands: the drawdown constraint can now FIRE and record breach events (unblocking 049's drawdown-attribution instrument), but it does NOT halt trading. The book still runs to $0 and re-funds per D-358.
+R3. Rationale: at 1.0 the instrument could never fire before the book hit zero. At 0.25 it fires regularly on real drawdowns, producing the model-vs-execution attribution data.
+R4. Requires a restart to activate.
