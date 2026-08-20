@@ -4219,3 +4219,9 @@ inflated bankroll stay in the books; they cannot be retroactively resized.
 `fafd5a0`. No session live; lock free; three shadow loops LIVE (53927 / 53950 /
 53973). D-385 requires no restart and no code change: it ratifies what D-383
 already shipped.
+
+### D-386. Throttle confirmed + Raven-handoff review mandated (AYM + RAVEN, 2026-08-20)
+
+R1. Aym confirms: keep the 300s breach-record throttle (MEASURE_ONLY_RECORD_INTERVAL_SEC=300). No change.
+R2. Aym: "make a note to review you and your handoff to and from Cody" — the Raven<->Cody interface is under review. Raven has produced duplicates, ghost sessions, and dispatch errors; Cody's code/reviews are strong. Aym wants Cody's professional recommendations on the middle-man structure, plus Raven's own.
+R3. Scope of the review: spawn protocol (single-owner, lock file), handoff format, the double-notification path, the webhook lane vs Telegram lane, Raven's role as delegator-not-builder, and whether a more direct Aym<->Cody path is needed.
