@@ -4115,3 +4115,48 @@ R1. SHADOW_RISK_LIMITS.max_drawdown_frac changed 1.0 -> 0.25 (real-money parity)
 R2. This is MEASUREMENT ONLY. D-359's auto-halt disable stands: the drawdown constraint can now FIRE and record breach events (unblocking 049's drawdown-attribution instrument), but it does NOT halt trading. The book still runs to $0 and re-funds per D-358.
 R3. Rationale: at 1.0 the instrument could never fire before the book hit zero. At 0.25 it fires regularly on real drawdowns, producing the model-vs-execution attribution data.
 R4. Requires a restart to activate.
+
+### D-384. D-382 implementation rulings: size-TO ratified, over_notional_cap re-pointed (RAVEN ruling, 2026-08-20)
+
+**Problem being ruled on.** Cody's D-382 execution handoff
+(`docs/handoffs/2026-08-20-D382-sizing-executed.md`) surfaced two judgement
+calls and one docs question. All three are technical, shadow-only, no live risk,
+no new money: within Raven's lane under Aym's full-autonomy directive
+(2026-08-18: strategy params, floors, naming, retention are mine; only wallet
+addresses, spend limits, go-live, and novel blockers escalate).
+
+R1. **Size-TO ratified.** Under `confidence` mode the confidence budget
+REPLACES `notional_cap_usdc` as the order size. This overrides a strategy that
+deliberately requested FEWER shares than the budget (the paired-leg case). Cody
+judged this the literal reading of D-382 R1/R3 ("the $10 flat order size is
+REPLACED by confidence-based sizing"; "size = f(confidence, win_rate) mapped
+into 1-90%"). Ratified: the adapter owns the size now; the strategy's own ask
+is a floor under `flat` mode only. In shadow it bypasses no live risk cap -
+D-363 R3 already set every other budget to the 100,000 sentinel, so
+`notional_cap_usdc` was the only binding one, and it is exactly the number D-382
+replaces. The paired-leg distortion is a measurement question, not a safety one:
+watch `sizing_counts` for systematic override of a paired leg, revisit per
+strategy if a specific leg shows distortion, do not floor globally. D-366's
+`max_position_pct` stays the last-applied ceiling.
+
+R2. **`over_notional_cap` re-pointed to the confidence budget, ratified.** The
+post-clip guard stays exactly where D-382-judgment Ruling 2 put it, but the
+number it enforces moved with the order size. Holding it at $10 would refuse
+every sized-up order and re-impose the flat cap by the back door - the exact
+outcome D-382 R1 abolished. Under `flat` mode it is still `notional_cap_usdc`,
+unchanged. The defect-and-fix Cody documented (pass-through orders measured
+against a budget they were never sized to, re-creating `insufficient_capital`
+under another name) is the right call: the guard must always measure against
+the budget that actually governed the order. Ratified as built, pinned by
+`TestConfidenceSizingAddsNoRefusal::test_a_bled_book_fills_instead_of_refusing`.
+
+R3. **DECISIONS-INDEX D-383 line: KEPT.** Cody added a D-383 index line outside
+his brief and offered to revert it. It is accurate (records the ruling exists,
+flags NOT YET IMPLEMENTED, correct line link) and the index is the human read
+surface - a missing line would have let tick8 read the source's 1.0 as current.
+No revert. Header count 161 -> 163 stands.
+
+**Recording-session note.** Recorded by Raven, 2026-08-20 ~15:45 EDT, at HEAD
+`4c08761` (handoff commit for D-382). No session live; lock free; three shadow
+loops LIVE (47328 / 47330 / 47291). D-384 requires no restart: it is a
+ratification of what D-382 already shipped.
