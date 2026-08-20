@@ -4054,3 +4054,13 @@ R1. The per-trade order size ($10, notional_cap_usdc) is LIFTED in shadow mode. 
 R2. Mechanism: raise to the sentinel (100_000) on the SHADOW instance only, same pattern as the other D-360/D-362/D-363 cap lifts — NOT config.yaml, NOT the real-money DEFAULT_LIMITS. config.yaml stays untouched.
 R3. Natural cap is the book hitting $0 (D-363 R6, fund-if-zero per D-358). A $1,000 paper book buying large premium may zero fast — that is the intended unconstrained measurement.
 R4. Requires a restart of the three realms to activate (inert until then, like all cap changes).
+
+### D-366. Percentage-based max position size (supersedes D-365's sentinel + the skip-guard) (AYM RULING, 2026-08-20)
+
+Aym: "i dont want it to skip the trade if the available capital is less than the capital needed for the trade, instead put a cap on the percentage of the total capital available in the shadow realm for each trade to not exceed. so total available capital when trade entry is triggered is 1,000$ max position size per trade is 90% = max cost for entry for position doesn't exceed 900$."
+
+R1. NO skip on insufficient capital. The book never refuses a trade for lack of funds.
+R2. INSTEAD: per-trade cap = PERCENTAGE of total available capital at entry time. Default 90% (configurable). With $1,000 available, max entry cost is $900. If only $100 available, max entry cost is $90.
+R3. PERCENTAGE PER-TRADE SIZING is the ideal (1-90% chosen per trade), flagged as a future feature. For now the cap is a fixed percentage ceiling.
+R4. The D-365 sentinel lift (notional_cap_usdc -> 100_000) is REPLACED by the percentage cap. The D-365 addendum's insufficient_capital skip-guard is NOT implemented — Aym explicitly rejected skipping.
+R5. Natural book floor remains: equity can hit $0 (fund-if-zero per D-358). The percentage cap slows the bleed but never blocks a trade on principle.
