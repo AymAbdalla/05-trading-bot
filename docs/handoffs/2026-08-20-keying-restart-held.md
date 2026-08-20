@@ -273,3 +273,52 @@ mistakes worth catching: a leaked DEFAULT and an accidental option B.
   a reader ever REQUIRES it; they now have it (R2), but the reader was made
   tolerant anyway, so neither depends on the other.
 
+## ADDENDUM, written 04:25 EDT: the book re-halted 15 minutes after a resume
+
+Everything above was written while the 03:21 halt was still engaged. It
+changed twice DURING this session and the final state is not the one the
+body of this handoff describes. The corrected timeline, all of it measured
+from `logs/polymarket_shadow_20260819T200630Z.log` and the `HALT` file:
+
+| time (EDT) | event |
+|---|---|
+| 03:21:42 | **auto-halt**, drawdown 0.4011 > 0.4000, id `b7bd22a8` |
+| 03:45:30 | this session spawned by cron |
+| 04:06:12 | **RESUMED by an external actor** - not me |
+| 04:21:16 | **auto-halt AGAIN**, drawdown 0.4019 > 0.4000, id `ee842e60` |
+
+**The book re-tripped its own limit within 15 minutes of being resumed.**
+Equity over that window: 647.50 -> 635.30 -> 618.02. I did not clear the
+halt, did not ask for it to be cleared, and was not told it had been; I
+found it by noticing `git status` had gone clean underneath me
+(convention 21 - this directory is shared by actors `ps` cannot see). No
+`claude -p` sibling was alive at any point, so the resume came from outside
+a Cody session.
+
+**This is now the most important thing in this handoff, above the keying
+work.** A single 40 percent breach is a bad session. A breach, a resume, and
+a second breach 15 minutes later is the book telling you it cannot hold the
+line it was given - and that line is ALREADY the widened one (0.40 against a
+default of 0.25 and a historical worst of 35.99 percent). Resuming again
+without changing something will, on this evidence, produce a third halt.
+
+**The restart stays HELD, and the case is now stronger, not weaker.** Two of
+my three original reasons had briefly lapsed while the halt was cleared
+(the tree went clean, and entries were flowing so V5/V6 became runnable).
+Reason 1 never lapsed, and the re-halt restores the other two. Beyond that:
+an external actor is actively operating this system right now, and
+restarting both loops out from under an incident response I am not party to
+is exactly the collision convention 21 exists to warn about.
+
+**All four Task 0 gates otherwise pass, so the restart is staged and needs
+only a word.** Window warm (57,526 complement rows, 24.880 h, minimum still
+the 2026-08-19 03:28 restart), no `claude -p` sibling, two identical HEAD
+reads at `3952e28`, and the only dirty path is `HALT` itself.
+
+**What I would want decided before any restart:** whether the drawdown limit
+is the right instrument at all. It blocks ENTRIES only and cannot flatten a
+binary in paper mode, so it does not stop the loss it is halting on - the
+open book keeps running to resolution either way. That is documented
+behaviour, not a bug, but it means the halt is not doing what a drawdown
+stop is normally for, and re-arming it repeatedly is not a fix.
+

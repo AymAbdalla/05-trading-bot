@@ -3957,3 +3957,19 @@ gained a thirteenth value in total. Adding a column to a hand-written
 fixture is never a one-line DDL change - grep the same file for positional
 inserts against that table.*
 
+
+*Addendum to D-357, 04:25 EDT, recorded because the state changed twice
+after the ruling above was written and the ruling text must not be edited
+to match. The 03:21:42 halt (`b7bd22a8`) was **RESUMED at 04:06:12 by an
+external actor** - no `claude -p` sibling was alive, so it came from outside
+a Cody session - and the book **re-halted at 04:21:16** on drawdown 0.4019,
+id `ee842e60`, fifteen minutes later. Equity across that window: 647.50 ->
+635.30 -> 618.02. The hold on the restart STANDS, and its basis is now
+empirical rather than precautionary: the book has demonstrated it cannot
+hold the widened 0.40 line, and an external actor is mid-incident-response
+on a shared working directory (convention 21). All four Task 0 gates
+otherwise pass at HEAD `3952e28`, so the restart is staged and blocked only
+on a human decision about the drawdown itself. Noted for whoever takes that
+decision: the Polymarket halt blocks ENTRIES only and cannot flatten a
+binary in paper mode, so re-arming it does not stop the loss it fires on.*
+
