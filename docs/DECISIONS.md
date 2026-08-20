@@ -4160,3 +4160,62 @@ No revert. Header count 161 -> 163 stands.
 `4c08761` (handoff commit for D-382). No session live; lock free; three shadow
 loops LIVE (47328 / 47330 / 47291). D-384 requires no restart: it is a
 ratification of what D-382 already shipped.
+
+
+### D-385. D-383 execution rulings: measure-only throttle ratified at 300s, launcher bypass closed, dispatcher restart lock (RAVEN ruling, 2026-08-20)
+
+**Problem being ruled on.** Cody's D-383 execution handoff
+(`docs/handoffs/2026-08-20-D383-implementation-executed.md`) surfaced three
+items for ruling: (1) the deliberate departure from convention 20 in
+`MEASURE_ONLY_RECORD_INTERVAL_SEC = 300.0`; (2) whether bypassing the launcher
+gates is ever acceptable now that `STARTING_EQUITY` exists on all three books;
+(3) convention 36 has no teeth against a dispatcher restarting the live books
+mid-session. All shadow-only, no live risk, no new money: within Raven's lane
+under Aym's full-autonomy directive (2026-08-18: strategy params, floors,
+naming, retention are mine; only wallet addresses, spend limits, go-live, and
+novel blockers escalate).
+
+R1. **Throttle ratified at 300.0 seconds.** `MEASURE_ONLY_RECORD_INTERVAL_SEC
+= 300.0` stands; convention 20 is AMENDED to carry the carve-out. An enforced
+constraint records once and halts, so "every denial writes a row" is a
+handful of rows. A MEASURED constraint repeats for as long as the drawdown
+lasts: unthrottled it would write a row per entry attempt for hours, making
+drawdown report as the least-decorative constraint in `denials_by_constraint`
+purely by repetition (the kill-condition harness counts rows), and run
+`_drawdown_attribution`'s full closed-book scan in the entry hot path. 300s
+keeps every distinct breach episode - 049 reads episodes - while bounding both
+costs. The 0.0 path is tested (`test_a_zero_interval_records_every_breach`)
+and remains one constant away if a later ruling wants every attempt.
+
+R2. **Launcher bypass closed.** With `STARTING_EQUITY` plumbing now on all
+three launchers (main since D-332; env B and realm C since D-383), there is no
+legitimate reason to invoke `engine.polymarket.shadow_loop` directly for a
+restart. A restart that needs something the launchers cannot express is a
+reason to extend the launchers, not to bypass them. Direct invocation
+henceforth requires an explicit written directive naming the reason.
+
+R3. **The dispatcher takes a lock too.** Convention 36 is amended: re-deriving
+HEAD before a commit catches a dispatcher COMMIT; it does not catch a
+dispatcher restarting the live books mid-session, which is strictly worse. The
+dispatcher must hold `docs/handoffs/from-raven/.lock` while dispatching AND
+while restarting live books, and must verify the launcher contract
+(env-config, no positional args) before any restart command. Earned by the
+D-383 restart (R4 below).
+
+R4. **Incident recorded (Raven side).** The D-383 restart at 15:46:55-15:47:01
+EDT passed `--equity` as positional arguments that none of the three launchers
+has ever read; all three came up at the $1,000 default, injecting $534.06 of
+phantom capital (main +$106.48, env B +$218.15, realm C +$209.44) for 23
+minutes until Cody's D-383 R4 reconstruction. The number change alone
+(`f1ee212`) was also dangerous by itself: env B was 34.85% down and realm C
+37.16% down at the time, and a drawdown breach would have written a
+process-wide HALT file freezing all three books. Cody correctly did not revert
+the number (it is Aym's ruling), built the measurement-only half on top,
+reconstructed the equity (carry = kill equity minus injection), and restarted.
+Residual, recorded honestly: 23 minutes of D-382 %-sized entries sized off the
+inflated bankroll stay in the books; they cannot be retroactively resized.
+
+**Recording-session note.** Recorded by Raven, 2026-08-20 ~16:20 EDT, at HEAD
+`fafd5a0`. No session live; lock free; three shadow loops LIVE (53927 / 53950 /
+53973). D-385 requires no restart and no code change: it ratifies what D-383
+already shipped.

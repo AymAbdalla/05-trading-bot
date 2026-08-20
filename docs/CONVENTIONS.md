@@ -46,6 +46,12 @@ and the wording of the conventions that have been contested.
 19. **`json.loads` is NOT strict.** Write with `allow_nan=False`.
 20. **A silent `continue` is a missing number.** Every skip counted AND
     categorised; two drop causes never share one counter.
+
+    AMENDED (D-385): the risk-module corollary "every denial writes a row"
+    carries one carve-out - a MEASURED constraint (D-383 shadow drawdown)
+    records per breach episode, throttled by
+    `MEASURE_ONLY_RECORD_INTERVAL_SEC` (300s), not per attempt. Enforced
+    constraints still write every row.
 21. **This working directory is SHARED.** Check `ps aux` and `git status` first.
 22. **A claim in a docstring is not a wiring test.**
 23. **A fix at one site is not a fix.**
@@ -172,6 +178,15 @@ and the wording of the conventions that have been contested.
     live.** Raven must read `docs/handoffs/from-raven/.lock` before committing
     here, and must not commit at all while the pid on line 1 is alive. Added
     2026-08-20.
+
+    AMENDED (D-385, 2026-08-20): the lock discipline covers RESTARTS, not just
+    commits. Re-deriving HEAD before a commit catches a dispatcher COMMIT; it
+    does not catch a dispatcher restarting the live books mid-session, which is
+    strictly worse. The dispatcher must hold the lock while dispatching AND
+    while restarting any live book, and must verify the launcher contract
+    (environment-config only; no positional arguments - Gate 0 now refuses
+    them) before writing any restart command. Earned by the D-383 restart,
+    which silently re-funded all three books to $1,000 for 23 minutes.
 
     This is the one collision the Cody-side freeze gate cannot see. Every check
     a session runs before committing looks for SESSIONS: `ps` filtered for
