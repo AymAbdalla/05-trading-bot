@@ -106,3 +106,67 @@ without measuring markouts, which is the strategy we currently are.
   PREDICTION_MARKET; the graveyard is crypto spot and perp and has no rows in
   this class. The engaged prior failure is proposal 024's own unmeasured
   premise, cited above by position count rather than by graveyard id.
+
+
+## Amendment 2026-08-19 (forge cycle tick 5): the clock has STARTED, and the
+## observed sample has flipped sign
+
+Rule 9 and the third failure mode both rest on an operational claim that is now
+FALSE. They read: the ladder runs only in the main shadow loop, that loop
+stopped at 2026-08-19 16:17 UTC, and "until the main loop runs again this
+experiment accumulates nothing", at "zero rows per hour".
+
+The loop was restarted by Raven and its first equity snapshot after the restart
+is 1000.00 at 2026-08-19T20:06:30Z. Read read-only in `db/trading.db` at
+2026-08-19T23:57:33Z: `PM_maker_rebate_quote_ladder` now holds **45** closed
+positions carrying an observed `fill_was_maker = 1`, against the **27** this
+proposal was written on, plus 4 still open. So the observed maker sample grew
+by 18 fills, the experiment's clock is running, and rule 9's "accumulates
+nothing" is superseded. At 45 of the 200 the kill condition requires, the
+experiment is 22.5% of the way to a gradeable sample rather than 13.5%.
+
+**The sign flipped, and this is the point of the amendment.** The 27 observed
+fills this proposal was filed on carried +2.60 USD and +0.0193 per share. The
+45 observed fills carry **-2.40 USD over 225 shares, or -0.0107 per share**, so
+the 18 new fills took -5.00 USD between them and reversed the sign of the whole
+observed era. That is exactly what the proposal's own banner said would happen
+to a coin flip: the one-sided binomial on the original 27 was p = 0.4988, the
++0.0193 was declared noise in the filing, and it has now behaved like noise.
+Nobody should read the new negative as a result either. It is the same sample
+being resampled.
+
+**Do NOT read -0.0107 per share against the kill condition's -0.0100 and
+-0.0315 thresholds.** Those thresholds are denominated in **60-second post-fill
+markout**, which nothing in the system records yet - that is the entire build
+this proposal asks for. Realised P&L per share and markout are different
+quantities: the first includes the settlement outcome of a 5-minute binary and
+the second is a book measurement over a fixed horizon inside the window. The
+numerical coincidence that -0.0107 sits a hair outside the INCONCLUSIVE band's
+upper edge is a coincidence and must not be reported as the experiment
+returning a verdict. The experiment has not run.
+
+### Signal 2, filed as a risk factor and not a kill
+
+Cycle 4's external scan reports Polymarket recruiting an internal
+market-making team, including approaching sports bettors, to provide liquidity
+on its own books. If that desk quotes in the 0.4-to-0.8 band where this ladder
+rests, three things this proposal assumes get worse at once and they are not
+independent: the rebate pool is split more ways, so the unknown rebate this
+proposal already refuses to model gets smaller; the queue position a passive
+resting bid can achieve degrades against a counterparty with venue-side
+latency; and the adverse-selection risk the markout exists to measure rises,
+because the fills that survive a better-informed competing maker are
+disproportionately the ones that competitor declined.
+
+This changes NO threshold in the kill condition and it must not. The -0.0315
+ceiling is derived from the taker fee the venue collects, which is the hard
+upper bound on any rebate the venue can fund, and an internal MM desk taking a
+share of that pool can only move the real rebate DOWN and therefore can only
+make the ceiling test more conservative, never less. That is the property the
+ceiling was chosen for. What Signal 2 does change is the priority of running
+the experiment: the measurement gets harder to interpret the longer the venue's
+own desk is in the book, because a markout measured after the desk arrives
+cannot be compared with one measured before it. The clean pre-desk baseline is
+available now and will not be available indefinitely. Source is a web3.career
+job listing surfaced 2026-08-19 and reported by coin360; it is a hiring
+signal, not an announced product, and it is recorded here at that strength.

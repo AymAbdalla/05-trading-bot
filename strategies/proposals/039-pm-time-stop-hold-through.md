@@ -160,3 +160,63 @@ Three consequences, none of which change the design:
 
 Restarting the loop is not this proposal's lane and this amendment does not
 request it. It records that the experiment's clock has not started.
+
+
+## Amendment 2026-08-19 (forge cycle tick 5): both blockers are CLEARED
+
+The tick-4 amendment above records two blockers. Both have since cleared, and
+the amendment's own three consequences need re-reading in that light rather
+than deletion, so it is left intact above and corrected here.
+
+**Blocker 1, the 038 ledger, is LANDED AND LIVE.** Rule 1 makes
+`market_resolutions` a hard precondition. Read read-only in `db/trading.db` at
+2026-08-19T23:57:33Z the table EXISTS and holds **350 rows over 175 distinct
+market slugs**, `source` = `venue`. The table did not exist in the live
+database when this proposal was written or when the tick-4 amendment was
+appended; CLAUDE.md still carried "the table does NOT exist in the live
+db/trading.db yet" into this cycle. Rule 1 is satisfied.
+
+**Blocker 2, the observation source, is BACK.** The tick-4 amendment states
+that the loop writing `db/trading.db` stopped at 2026-08-19T16:17:57Z and that
+matched observations were "growing at zero per hour". Raven restarted it; first
+post-restart equity snapshot 1000.00 at 2026-08-19T20:06:30Z.
+`PM_fair_value_arb` - the strategy this experiment forks - booked **189 closes
+for -61.03 USD between the 19:30Z cutoff and 23:57Z**, so it is accruing again.
+System-wide `sell:time_stop` now stands at **52 positions over 920 shares**,
+against the 45 the tick-4 amendment counted.
+
+**Consequence 1 of the tick-4 amendment is therefore now satisfied on both
+legs, and the 14-day NOT_TESTED clock can start.** That amendment was explicit
+that the ledger date alone is not enough and that the clock needs the ledger
+live AND the loop running. Both hold as of 2026-08-20T00:00Z. Whoever starts
+the clock should date it from the loop restart at 20:06:30Z rather than from
+the ledger's first window, because the restart is the later of the two.
+
+**Consequence 3, that the thesis figures are frozen, is lifted** - but the
+figures should not simply be re-derived and grown. They were built by SIBLING
+INFERENCE, which this proposal's own kill condition forbids as the graded
+method. The ledger now supplies the admissible method, and the two must not be
+mixed into one series.
+
+### The first ledger-sourced observation runs AGAINST the thesis
+
+Proposal 043 builds the join from an exit to its own venue resolution
+(`market_resolutions.market_slug = positions.pair` AND `outcome_side` from
+`signals.features_json`). Run over all exit reasons it returns exactly **one**
+`sell:time_stop` position with a venue resolution: 20 shares sold for 3.18 USD,
+an exit price of 0.1590, against a realised value of **0.00**. That is +0.159
+per share IN THE SELLER'S FAVOUR - the opposite sign to the +0.184 AGAINST the
+seller that this thesis reports from 16 sibling-inferred observations.
+
+**n = 1. This is not evidence and it does not amend the hypothesis.** It is
+recorded for two reasons. First, it is the first observation of the kind this
+proposal's kill condition actually demands, and its existence is what proves
+the graded measurement is now constructible rather than aspirational. Second,
+the direction is a warning: the tick-4 note and the "Why this might fail"
+section both argue that 038's loser-biased recovery works AGAINST this finding
+and therefore makes it robust. On venue-sourced rows proposal 043 measures that
+bias at **0.25% of shares** rather than the ~20 points sibling inference
+carried, which removes the robustness argument entirely. The finding is not
+protected by a bias that turns out to be two and a half parts in a thousand.
+Whether it survives is now an open question the 120 matched observations will
+answer, and a reader who was relying on the bias argument should stop.
