@@ -1809,3 +1809,365 @@ def test_config_yaml_notional_cap_matches_the_delegated_default():
     # place, rather than having to reconstruct the transitive path.
     assert (cfg['polymarket']['risk']['notional_cap_usdc']
             == risk_constraints.DEFAULT_LIMITS.per_trade_notional_usd)
+
+
+# -- D-382: confidence-based position sizing --------------------------------
+
+class TestConfidenceCurve:
+    """The pure mapping, tested without an adapter or a book anywhere near it.
+
+    D-382 R3 left the exact curve to the implementation and required only that
+    it be conservative and monotone. These pin the shape that was chosen, so
+    changing it is a visible edit to a test rather than a quiet re-parameter-
+    isation of every position the book takes.
+    """
+
+    def test_the_ruled_knots_map_exactly(self):
+        expected = {0.50: 0.01, 0.60: 0.02, 0.70: 0.05,
+                    0.80: 0.10, 0.90: 0.20, 0.95: 0.30}
+        for conf, pct in expected.items():
+            assert pa_module.base_position_pct(conf) == pytest.approx(pct)
+
+    def test_the_curve_constant_and_the_knots_agree(self):
+        """The table is the source; a test that restated it would prove nothing."""
+        assert dict(pa_module.CONFIDENCE_SIZE_CURVE) == {
+            0.50: 0.01, 0.60: 0.02, 0.70: 0.05,
+            0.80: 0.10, 0.90: 0.20, 0.95: 0.30}
+
+    def test_it_is_monotone_non_decreasing_across_the_whole_range(self):
+        """More confidence never buys a smaller position. R3's one hard shape."""
+        pcts = [pa_module.base_position_pct(i / 200.0) for i in range(0, 201)]
+        assert all(b >= a for a, b in zip(pcts, pcts[1:]))
+
+    def test_it_interpolates_linearly_between_knots(self):
+        """0.65 sits halfway between 2% and 5%."""
+        assert pa_module.base_position_pct(0.65) == pytest.approx(0.035)
+        assert pa_module.base_position_pct(0.75) == pytest.approx(0.075)
+
+    def test_below_the_first_knot_is_the_floor_not_a_refusal(self):
+        """D-382 adds no gate. Sub-0.50 confidence sizes small, it does not skip."""
+        for conf in (0.49, 0.10, 0.0, -3.0):
+            assert pa_module.base_position_pct(conf) == pa_module.MIN_POSITION_PCT
+
+    def test_above_the_last_knot_is_flat_at_the_top_of_the_curve(self):
+        for conf in (0.95, 0.99, 1.0, 7.5):
+            assert pa_module.base_position_pct(conf) == pytest.approx(0.30)
+
+    def test_a_missing_or_unusable_confidence_is_the_floor_and_never_raises(self):
+        """Conservative and non-crashing: the smallest size, not an exception."""
+        for conf in (None, float('nan'), float('inf'), 'not-a-number', object()):
+            assert pa_module.base_position_pct(conf) == pa_module.MIN_POSITION_PCT
+
+    def test_the_top_of_the_curve_is_far_under_the_ninety_percent_ceiling(self):
+        """The ceiling is a limit, not a target (D-382 R2/R4).
+
+        `confidence` is a model output, not a measured win rate, so the curve
+        deliberately stops at 30% rather than running up to the 90% the ruling
+        permits.
+        """
+        assert max(p for _, p in pa_module.CONFIDENCE_SIZE_CURVE) == 0.30
+
+
+class TestWinRateFactor:
+    """The multiplier can only ever shrink a position, never inflate one."""
+
+    def test_the_table_is_empty_because_no_win_rate_is_ratified(self):
+        assert pa_module.DEFAULT_STRATEGY_WIN_RATES == {}
+
+    def test_an_unknown_win_rate_does_not_penalise_the_curve(self):
+        assert pa_module.win_rate_factor(None) == 1.0
+
+    def test_it_spans_the_floor_to_one(self):
+        assert pa_module.win_rate_factor(0.0) == pytest.approx(0.5)
+        assert pa_module.win_rate_factor(0.5) == pytest.approx(0.75)
+        assert pa_module.win_rate_factor(1.0) == pytest.approx(1.0)
+
+    def test_it_never_leaves_the_range_even_for_a_nonsense_input(self):
+        """A caller bug clamps; it does not raise inside a sizing path."""
+        assert pa_module.win_rate_factor(1.4) == pytest.approx(1.0)
+        assert pa_module.win_rate_factor(-2.0) == pytest.approx(0.5)
+        for bad in (float('nan'), 'x', object()):
+            assert pa_module.win_rate_factor(bad) == 1.0
+
+    def test_a_measured_win_rate_shrinks_the_position(self, tmp_path):
+        a = make_adapter(tmp_path, starting_equity_usdc=1000.0)
+        full = a.confidence_position_pct(0.80)
+        halved = a.confidence_position_pct(0.80, win_rate=0.0)
+        assert full == pytest.approx(0.10)
+        assert halved == pytest.approx(0.05)
+
+    def test_the_per_strategy_table_feeds_the_factor(self, tmp_path):
+        a = make_adapter(tmp_path, starting_equity_usdc=1000.0)
+        a.strategy_win_rates['weak'] = 0.0
+        assert a.confidence_position_pct(0.80, 'weak') == pytest.approx(0.05)
+        assert a.confidence_position_pct(0.80, 'unknown') == pytest.approx(0.10)
+
+
+class TestConfidenceSizingCeiling:
+    """D-382 R2/R4: 90% is the hard ceiling and nothing gets past it."""
+
+    def test_the_ceiling_holds_even_if_the_curve_is_raised_past_it(self, tmp_path,
+                                                                  monkeypatch):
+        """The clamp is applied LAST, so it survives a re-parameterised curve."""
+        monkeypatch.setattr(pa_module, 'CONFIDENCE_SIZE_CURVE',
+                            ((0.50, 0.10), (0.95, 5.0)))
+        a = make_adapter(tmp_path, starting_equity_usdc=1000.0)
+        for conf in (0.5, 0.7, 0.95, 1.0, 99.0):
+            assert a.confidence_position_pct(conf) <= a.max_position_pct
+
+    def test_a_configured_ceiling_below_the_curve_wins(self, tmp_path):
+        a = make_adapter(tmp_path, starting_equity_usdc=1000.0,
+                         max_position_pct=0.05)
+        assert a.confidence_position_pct(0.95) == pytest.approx(0.05)
+
+    def test_a_ceiling_below_the_floor_still_wins(self, tmp_path):
+        """The ruling's limit outranks the not-worth-trading convenience."""
+        a = make_adapter(tmp_path, starting_equity_usdc=1000.0,
+                         max_position_pct=0.001)
+        assert a.confidence_position_pct(0.95) == pytest.approx(0.001)
+
+    def test_the_budget_never_exceeds_the_d366_max_position_cost(self, tmp_path):
+        a = make_adapter(tmp_path, starting_equity_usdc=1000.0)
+        for conf in (0.0, 0.5, 0.7, 0.9, 0.95, 1.0):
+            assert a.sizing_budget_usdc(conf) <= a.max_position_cost() + 1e-9
+
+
+class TestConfidenceSizingOnEntry:
+    """The taker path. D-382 R1: the $10 flat order size is REPLACED."""
+
+    def test_the_default_mode_is_confidence(self, tmp_path):
+        assert pa_module.DEFAULT_POSITION_SIZING_MODE == 'confidence'
+        assert make_adapter(tmp_path).position_sizing_mode == 'confidence'
+
+    def test_a_confident_signal_sizes_up_past_the_ten_dollar_cap(self, tmp_path):
+        """The ruling in one test: $10 was too low, 0.70 confidence buys $50."""
+        a = make_adapter(tmp_path, starting_equity_usdc=1000.0,
+                         notional_cap_usdc=10.0)
+        pos = a.simulate_taker_buy('strat', 'slug-1', 'tok-1', 'Up',
+                                   limit_price=0.50, shares=20,
+                                   book=make_book([(0.50, 5000)]),
+                                   confidence=0.70)
+        assert pos is not None
+        assert pos.shares == 100                     # 5% of $1,000 at 50c
+        assert pos.cost_usdc == pytest.approx(50.0)
+
+    def test_a_more_confident_signal_buys_more(self, tmp_path):
+        a = make_adapter(tmp_path, starting_equity_usdc=1000.0,
+                         notional_cap_usdc=10.0)
+        pos = a.simulate_taker_buy('strat', 'slug-1', 'tok-1', 'Up',
+                                   limit_price=0.50, shares=20,
+                                   book=make_book([(0.50, 5000)]),
+                                   confidence=0.95)
+        assert pos.shares == 600                     # 30% of $1,000 at 50c
+        assert pos.cost_usdc == pytest.approx(300.0)
+        assert pos.cost_usdc <= a.starting_equity * a.max_position_pct
+
+    def test_a_low_confidence_signal_sizes_at_the_one_percent_floor(self, tmp_path):
+        a = make_adapter(tmp_path, starting_equity_usdc=1000.0,
+                         notional_cap_usdc=10.0)
+        pos = a.simulate_taker_buy('strat', 'slug-1', 'tok-1', 'Up',
+                                   limit_price=0.50, shares=20,
+                                   book=make_book([(0.50, 5000)]),
+                                   confidence=0.50)
+        assert pos.shares == 20                      # 1% of $1,000 at 50c
+        assert pos.cost_usdc == pytest.approx(10.0)
+
+    def test_the_resize_is_counted_in_sizing_counts_not_decision_counts(self, tmp_path):
+        """Same accounting identity D-366 protects: one decision count per row."""
+        a = make_adapter(tmp_path, starting_equity_usdc=1000.0,
+                         notional_cap_usdc=10.0)
+        a.simulate_taker_buy('strat', 'slug-1', 'tok-1', 'Up',
+                             limit_price=0.50, shares=20,
+                             book=make_book([(0.50, 5000)]), confidence=0.70)
+        assert a.sizing_counts == {'taker_sized_up_at_confidence': 1}
+        assert a.decision_counts == {'ENTER': 1}
+        assert len(log_rows(a)) == sum(a.decision_counts.values())
+
+    def test_a_size_down_is_counted_under_its_own_key(self, tmp_path):
+        """The gate asked for more than 1% of the book; confidence trimmed it."""
+        a = make_adapter(tmp_path, starting_equity_usdc=1000.0,
+                         notional_cap_usdc=1000.0)
+        a.simulate_taker_buy('strat', 'slug-1', 'tok-1', 'Up',
+                             limit_price=0.50, shares=200,
+                             book=make_book([(0.50, 5000)]), confidence=0.50)
+        assert a.sizing_counts == {'taker_sized_down_at_confidence': 1}
+        assert a.decision_counts == {'ENTER': 1}
+
+    def test_the_log_row_keeps_both_the_request_and_the_fill(self, tmp_path):
+        """D-366's `requested_shares`/`filled_shares` semantics, preserved."""
+        a = make_adapter(tmp_path, starting_equity_usdc=1000.0,
+                         notional_cap_usdc=10.0)
+        a.simulate_taker_buy('strat', 'slug-1', 'tok-1', 'Up',
+                             limit_price=0.50, shares=20,
+                             book=make_book([(0.50, 5000)]), confidence=0.70)
+        row = log_rows(a)[0]
+        assert float(row['requested_shares']) == 20
+        assert float(row['filled_shares']) == 100
+
+    def test_confidence_is_read_off_features_when_not_passed_explicitly(self, tmp_path):
+        """A caller that was never updated must not silently keep the flat size."""
+        a = make_adapter(tmp_path, starting_equity_usdc=1000.0,
+                         notional_cap_usdc=10.0)
+        pos = a.simulate_taker_buy('strat', 'slug-1', 'tok-1', 'Up',
+                                   limit_price=0.50, shares=20,
+                                   book=make_book([(0.50, 5000)]),
+                                   features={'confidence': 0.70})
+        assert pos.shares == 100
+
+    def test_an_explicit_confidence_beats_the_features_dict(self, tmp_path):
+        a = make_adapter(tmp_path, starting_equity_usdc=1000.0,
+                         notional_cap_usdc=10.0)
+        pos = a.simulate_taker_buy('strat', 'slug-1', 'tok-1', 'Up',
+                                   limit_price=0.50, shares=20,
+                                   book=make_book([(0.50, 5000)]),
+                                   features={'confidence': 0.50},
+                                   confidence=0.70)
+        assert pos.shares == 100
+
+    def test_a_call_with_no_confidence_at_all_is_not_resized(self, tmp_path):
+        """Absent is not zero. A caller outside D-382 keeps the gate's size."""
+        a = make_adapter(tmp_path, starting_equity_usdc=1000.0,
+                         notional_cap_usdc=1000.0)
+        pos = a.simulate_taker_buy('strat', 'slug-1', 'tok-1', 'Up',
+                                   limit_price=0.50, shares=100,
+                                   book=make_book([(0.50, 5000)]))
+        assert pos.shares == 100
+        assert a.sizing_counts == {}
+
+
+class TestConfidenceSizingAddsNoRefusal:
+    """D-366 R1 survives D-382: the book still never skips for lack of funds."""
+
+    def test_a_bled_book_fills_instead_of_refusing(self, tmp_path):
+        """$20 left. 1% is $0.20 and buys nothing, so D-382 steps aside.
+
+        This is the regression that matters most. Measuring the passed-through
+        order against a $0.20 budget would re-create `insufficient_capital` by
+        accident, under the name `over_notional_cap`.
+        """
+        a = make_adapter(tmp_path, starting_equity_usdc=20.0,
+                         notional_cap_usdc=1000.0)
+        pos = a.simulate_taker_buy('strat', 'slug-1', 'tok-1', 'Up',
+                                   limit_price=0.50, shares=20,
+                                   book=make_book([(0.50, 5000)]),
+                                   confidence=0.50)
+        assert pos is not None                       # NOT skipped
+        assert pos.shares == 20
+        assert a.decision_counts == {'ENTER': 1}
+        assert a.sizing_counts == {}                 # D-382 did not apply
+
+    def test_the_only_physical_skip_is_still_the_d366_one(self, tmp_path):
+        """90c shares, $2 left: unchanged from D-366, and no new reason."""
+        a = make_adapter(tmp_path, starting_equity_usdc=2.0,
+                         notional_cap_usdc=1000.0)
+        pos = a.simulate_taker_buy('strat', 'slug-1', 'tok-1', 'Up',
+                                   limit_price=0.90, shares=20,
+                                   book=make_book([(0.90, 500)]),
+                                   confidence=0.95)
+        assert pos is None
+        assert a.decision_counts == {'SKIP:unsizable_at_position_pct': 1}
+        assert a.realized_pnl() == 0.0               # not booked as a loss
+
+    def test_no_skip_reason_mentions_confidence_anywhere(self, tmp_path):
+        """D-382 introduced no reason string, on any path, at any confidence."""
+        seen = {}
+        for i, conf in enumerate((0.0, 0.5, 0.7, 0.95, 1.0, None)):
+            a = make_adapter(tmp_path / f'r{i}', starting_equity_usdc=1000.0,
+                             notional_cap_usdc=1000.0)
+            a.simulate_taker_buy('strat', f'slug-{i}', 'tok-1', 'Up',
+                                 limit_price=0.50, shares=20,
+                                 book=make_book([(0.50, 5000)]),
+                                 confidence=conf)
+            seen.update(a.decision_counts)
+        assert not [k for k in seen if 'confidence' in k]
+
+    def test_the_d366_clip_is_still_reachable_underneath(self, tmp_path):
+        """The ceiling still bites a pass-through order, exactly as before."""
+        a = make_adapter(tmp_path, starting_equity_usdc=100.0,
+                         notional_cap_usdc=1000.0)
+        pos = a.simulate_taker_buy('strat', 'slug-1', 'tok-1', 'Up',
+                                   limit_price=0.50, shares=200,
+                                   book=make_book([(0.50, 5000)]))
+        assert pos.shares == 180                     # 90% of $100 at 50c
+        assert a.sizing_counts == {'taker_capped_at_position_pct': 1}
+
+
+class TestFlatModeStillReproducesTheOldBook:
+    """`flat` keeps the pre-D-382 order size, so the ~2,300 measured trades
+    remain reproducible without editing source."""
+
+    def test_flat_mode_ignores_confidence_entirely(self, tmp_path):
+        a = make_adapter(tmp_path, starting_equity_usdc=1000.0,
+                         notional_cap_usdc=10.0,
+                         position_sizing_mode='flat')
+        pos = a.simulate_taker_buy('strat', 'slug-1', 'tok-1', 'Up',
+                                   limit_price=0.50, shares=20,
+                                   book=make_book([(0.50, 5000)]),
+                                   confidence=0.95)
+        assert pos.shares == 20
+        assert a.sizing_counts == {}
+
+    def test_flat_mode_still_enforces_the_notional_cap(self, tmp_path):
+        """`over_notional_cap` is alive and still guards the flat cap."""
+        a = make_adapter(tmp_path, starting_equity_usdc=1000.0,
+                         notional_cap_usdc=10.0,
+                         position_sizing_mode='flat')
+        pos = a.simulate_taker_buy('strat', 'slug-1', 'tok-1', 'Up',
+                                   limit_price=0.50, shares=100,
+                                   book=make_book([(0.50, 5000)]),
+                                   confidence=0.95)
+        assert pos is None
+        assert a.decision_counts == {'SKIP:over_notional_cap': 1}
+
+    def test_an_unknown_mode_refuses_to_construct(self, tmp_path):
+        """Neither silent degradation direction is acceptable."""
+        with pytest.raises(ValueError):
+            make_adapter(tmp_path, position_sizing_mode='kelly')
+
+
+class TestConfidenceSizingOnTheMakerPath:
+    """Both entry paths, same rule (D-382 task 1)."""
+
+    def test_a_resting_bid_sizes_on_confidence(self, tmp_path):
+        a = make_maker_adapter(tmp_path, starting_equity_usdc=1000.0,
+                               notional_cap_usdc=10.0)
+        order = rest_a_bid(a, limit=0.50, shares=20, confidence=0.70)
+        assert order is not None
+        assert order.shares == 100                   # 5% of $1,000 at 50c
+        assert a.sizing_counts == {'maker_sized_up_at_confidence': 1}
+
+    def test_a_resting_bid_reads_confidence_off_features_too(self, tmp_path):
+        a = make_maker_adapter(tmp_path, starting_equity_usdc=1000.0,
+                               notional_cap_usdc=10.0)
+        order = rest_a_bid(a, limit=0.50, shares=20,
+                           features={'confidence': 0.70})
+        assert order.shares == 100
+
+    def test_a_resting_bid_without_confidence_is_not_resized(self, tmp_path):
+        a = make_maker_adapter(tmp_path, starting_equity_usdc=1000.0,
+                               notional_cap_usdc=1000.0)
+        order = rest_a_bid(a, limit=0.50, shares=20)
+        assert order.shares == 20
+        assert a.sizing_counts == {}
+
+    def test_the_maker_path_adds_no_refusal_on_a_bled_book(self, tmp_path):
+        a = make_maker_adapter(tmp_path, starting_equity_usdc=20.0,
+                               notional_cap_usdc=1000.0)
+        order = rest_a_bid(a, limit=0.50, shares=20, confidence=0.50)
+        assert order is not None
+        assert order.shares == 20
+        assert a.sizing_counts == {}
+
+
+def test_d382_leaves_the_real_money_limits_alone():
+    """The ruling is a SHADOW sizing change. Real money is untouched.
+
+    Pinned here as well as in the D-366 tests because D-382 is the second
+    consecutive ruling to move a number that looks like this one.
+    """
+    from engine.risk import constraints as risk_constraints
+    limits = risk_constraints.DEFAULT_LIMITS
+    assert limits.per_trade_notional_usd == 10.0
+    assert limits.per_event_notional_usd == 30.0
+    assert limits.aggregate_notional_usd == 60.0
+    assert limits.max_drawdown_frac == 0.25

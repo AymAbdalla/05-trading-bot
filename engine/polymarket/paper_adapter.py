@@ -193,7 +193,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from engine.halt import is_halted
 from engine.polymarket.client import PolymarketClient
@@ -268,6 +268,135 @@ DEFAULT_NOTIONAL_CAP_USDC = risk_constraints.DEFAULT_LIMITS.per_trade_notional_u
 # D-366 R3: choosing the percentage PER TRADE (1-90%, by conviction) is a future
 # feature. Today it is one fixed ceiling, applied to every entry.
 DEFAULT_MAX_POSITION_PCT = 0.90
+
+# D-382 (Aym ruling 2026-08-20), which ANSWERS the question D-366 R3 deferred:
+# "i disagree, 10 is too low, the strategies should size up based on confidence
+# and winning percentage, and not exceed 90% per trade."
+#
+# The $10 flat order size is REPLACED. An entry is now sized to a PERCENTAGE of
+# available capital chosen from the signal's own confidence, scaled by the
+# strategy's measured win rate, clamped into [1%, max_position_pct]. D-366's 90%
+# stays exactly where it was, as the ceiling this can never cross (R2/R4).
+#
+# WHY THIS IS A SIZE-TO AND NOT A SIZE-UP. The risk gate hands the adapter a
+# share count already cut to `notional_cap_usdc`, so an adapter that only ever
+# shrinks could not implement R1 at all. Under `confidence` mode the confidence
+# budget REPLACES `notional_cap_usdc` as the order size, which is what R1 says
+# in words. Nothing else in the gate's budget list is bypassed by this, because
+# in shadow every other budget there is already at D-363 R3's 100,000 sentinel -
+# `notional_cap_usdc` is the only one that was binding.
+DEFAULT_POSITION_SIZING_MODE = 'confidence'
+POSITION_SIZING_MODES = ('confidence', 'flat')
+
+# The confidence -> percentage-of-capital curve, as (confidence, pct) knots,
+# interpolated linearly between them and flat outside the ends. Deliberately
+# CONSERVATIVE (D-382 R3: "the default should be conservative"): at the top of
+# the curve a maximally confident signal still risks under a third of the book,
+# nowhere near the 90% the ruling permits. The ceiling is a ceiling, not a
+# target.
+#
+# It is conservative for a measured reason, not a stylistic one. `confidence` is
+# a MODEL OUTPUT, not a measured win rate - `weather_arb` stamps exactly that on
+# every row it emits (`confidence_is_model_output_not_measured_win_rate=True`).
+# Treating an uncalibrated 0.95 as a 95% chance and sizing at 90% of the book
+# would be the single most expensive way to discover the model is miscalibrated.
+# Raise these knots when a strategy demonstrates calibration, not before.
+CONFIDENCE_SIZE_CURVE = (
+    (0.50, 0.01),
+    (0.60, 0.02),
+    (0.70, 0.05),
+    (0.80, 0.10),
+    (0.90, 0.20),
+    (0.95, 0.30),
+)
+
+# The floor of the clamp. Below this an order is not economically meaningful,
+# and it is also the value an ABSENT or unusable confidence sizes at: a signal
+# that did not say how sure it is gets the smallest size on the curve, never the
+# benefit of the doubt.
+MIN_POSITION_PCT = 0.01
+
+# `win_rate_factor` maps a measured win rate into [WIN_RATE_FACTOR_FLOOR, 1.0]
+# and multiplies the curve. It can only ever SHRINK a position: a strategy with
+# a proven-poor win rate sizes at half the curve, a perfect one sizes at the
+# curve, and an UNKNOWN win rate also sizes at the curve. That last case is the
+# one worth naming - unknown does not mean penalised, because the curve above is
+# already the conservative default and docking it again for the mere absence of
+# a number would make the factor do the curve's job twice.
+WIN_RATE_FACTOR_FLOOR = 0.5
+
+# Per-strategy measured win rates feeding the factor above. EMPTY ON PURPOSE.
+#
+# No strategy in this book has a RATIFIED measured win rate. `breakeven_win_rate`
+# is everywhere in this codebase and is not one - it is the threshold a strategy
+# would have to clear, not what it cleared. `summary()['win_rate']` is a live
+# session number over resolved positions, and reading it per-order would put a
+# moving statistic inside the sizing path and a DB-shaped read inside an adapter
+# that is deliberately pure. So every strategy is currently "unknown" and sizes
+# at the curve, and populating this table is a decision (whose number, measured
+# over what window, clustered how - see convention 046) rather than a default to
+# fill in silently.
+DEFAULT_STRATEGY_WIN_RATES: Dict[str, float] = {}
+
+
+def base_position_pct(confidence: Optional[float]) -> float:
+    """Fraction of available capital `confidence` alone justifies risking.
+
+    Piecewise-linear on `CONFIDENCE_SIZE_CURVE`, flat below the first knot and
+    above the last, so the result is monotone non-decreasing in confidence and
+    always inside [MIN_POSITION_PCT, curve max].
+
+    A missing, non-numeric or NaN confidence returns the floor rather than
+    raising. A strategy that forgot to say how sure it is still gets to trade -
+    D-382 adds no refusal - it just trades at the smallest size on offer.
+    """
+    try:
+        conf = float(confidence)
+    except (TypeError, ValueError):
+        return MIN_POSITION_PCT
+    if not math.isfinite(conf):
+        return MIN_POSITION_PCT
+
+    first_conf, first_pct = CONFIDENCE_SIZE_CURVE[0]
+    if conf <= first_conf:
+        # Below the first knot is where the ruling says an entry should not be
+        # happening at all. That gate lives upstream and is not duplicated here
+        # (D-382 adds no new refusal), so the honest answer is the floor.
+        return max(MIN_POSITION_PCT, first_pct)
+
+    last_conf, last_pct = CONFIDENCE_SIZE_CURVE[-1]
+    if conf >= last_conf:
+        return last_pct
+
+    for (lo_c, lo_p), (hi_c, hi_p) in zip(CONFIDENCE_SIZE_CURVE,
+                                          CONFIDENCE_SIZE_CURVE[1:]):
+        if lo_c <= conf <= hi_c:
+            span = hi_c - lo_c
+            if span <= 0:
+                return hi_p
+            return lo_p + (hi_p - lo_p) * ((conf - lo_c) / span)
+    return MIN_POSITION_PCT
+
+
+def win_rate_factor(win_rate: Optional[float]) -> float:
+    """Multiplier in [WIN_RATE_FACTOR_FLOOR, 1.0] for a measured win rate.
+
+    `None`, non-numeric and NaN all return 1.0 - see DEFAULT_STRATEGY_WIN_RATES
+    for why unknown is not penalised. Out-of-range inputs are clamped rather
+    than rejected: a win rate of 1.4 is a caller bug, and the safe reading of a
+    caller bug is "no more than the curve", not "raise inside a sizing path".
+    """
+    if win_rate is None:
+        return 1.0
+    try:
+        rate = float(win_rate)
+    except (TypeError, ValueError):
+        return 1.0
+    if not math.isfinite(rate):
+        return 1.0
+    rate = min(1.0, max(0.0, rate))
+    return WIN_RATE_FACTOR_FLOOR + (1.0 - WIN_RATE_FACTOR_FLOOR) * rate
+
 
 # Names the exact fill rule below, so a log row, a strategy feature and a
 # summary block all say the same thing and a later change to the rule is a
@@ -605,6 +734,24 @@ class PolymarketPaperAdapter:
         # D-366: fraction of AVAILABLE capital any single entry may cost.
         self.max_position_pct = float(cfg.get('max_position_pct',
                                               DEFAULT_MAX_POSITION_PCT))
+        # D-382: how an entry's size is chosen. 'confidence' sizes off the
+        # signal's confidence and the strategy's win rate; 'flat' is the old
+        # `notional_cap_usdc` order size, kept so a comparison run against the
+        # ~2,300 trades already measured at $10 is still possible without
+        # editing source. `config.yaml` carries neither key and is untouched -
+        # the default here is what activates the ruling.
+        mode = str(cfg.get('position_sizing_mode',
+                           DEFAULT_POSITION_SIZING_MODE)).lower()
+        if mode not in POSITION_SIZING_MODES:
+            # A typo'd mode must not silently degrade to a $10 book or to an
+            # unbounded one. Both failure directions are worse than refusing to
+            # construct (convention 20).
+            raise ValueError(
+                'position_sizing_mode must be one of {}, got {!r}'
+                .format(POSITION_SIZING_MODES, mode))
+        self.position_sizing_mode = mode
+        self.strategy_win_rates: Dict[str, float] = dict(
+            DEFAULT_STRATEGY_WIN_RATES)
         # D-360: count cap removed in shadow, capital is the only cap.
         self.max_concurrent_positions = int(cfg.get('max_concurrent_positions',
                                                     100_000))
@@ -756,6 +903,127 @@ class PolymarketPaperAdapter:
             return shares
         return math.floor(budget / limit_price + 1e-9)
 
+    # -- D-382 confidence sizing --------------------------------------------
+
+    def confidence_position_pct(self, confidence: Optional[float],
+                                strategy: str = '',
+                                win_rate: Optional[float] = None) -> float:
+        """D-382: the fraction of available capital this signal may risk.
+
+        `base_position_pct(confidence) * win_rate_factor(win_rate)`, clamped
+        into `[MIN_POSITION_PCT, self.max_position_pct]`. The upper clamp is
+        D-366's ceiling and is applied LAST, so no combination of inputs - not a
+        confidence of 10.0, not a raised curve - can return more than the 90%
+        R2 forbids exceeding.
+
+        `win_rate` defaults to the strategy's entry in `strategy_win_rates`,
+        which is empty today: every live strategy is "unknown" and sizes at the
+        curve. An explicit argument wins over the table so a test can pin a
+        factor without mutating module state.
+        """
+        if win_rate is None:
+            win_rate = self.strategy_win_rates.get(strategy)
+        pct = base_position_pct(confidence) * win_rate_factor(win_rate)
+        # max_position_pct can itself be configured below the floor; the
+        # ceiling wins in that case, because it is the ruling's hard limit and
+        # the floor is only a "not worth trading" convenience.
+        return min(self.max_position_pct, max(MIN_POSITION_PCT, pct))
+
+    def sizes_on_confidence(self, confidence: Optional[float]) -> bool:
+        """Whether D-382 sizing applies to a call carrying this confidence.
+
+        `flat` mode disables it outright. So does an ABSENT confidence, and that
+        second case is a deliberate distinction rather than a convenience: a
+        caller that passed no confidence at all is not the same thing as a
+        signal that reported a confidence of zero. The first has not
+        participated in D-382 and keeps the size the gate approved; the second
+        has, and sizes at the floor of the curve.
+
+        The live loop always passes a number (it reads `confidence` off the
+        signal's features and defaults it to 0.0 before calling), so on the
+        three shadow books this only ever returns True. What it protects is
+        every other caller - fixtures, backtests, future internal callers -
+        which would otherwise be silently re-sized by a curve they never opted
+        into.
+        """
+        return self.position_sizing_mode == 'confidence' and confidence is not None
+
+    def sizing_budget_usdc(self, confidence: Optional[float] = None,
+                           strategy: str = '',
+                           win_rate: Optional[float] = None) -> float:
+        """The most this entry may cost, under whichever sizing mode is active.
+
+        Under `flat` - and for a call with no confidence at all - this is
+        `notional_cap_usdc`, the pre-D-382 order size, unchanged. Otherwise it
+        is the confidence percentage of available capital, which is bounded
+        above by `max_position_cost()` by construction (the clamp in
+        `confidence_position_pct` shares its percentage), so the D-366 ceiling
+        holds without needing to be re-checked here.
+
+        Floored at 0.0 for the same reason `max_position_cost` is: a book that
+        has gone negative asks for no shares, not a negative number of them.
+        """
+        if not self.sizes_on_confidence(confidence):
+            return self.notional_cap_usdc
+        pct = self.confidence_position_pct(confidence, strategy, win_rate)
+        return max(0.0, self.get_equity() * pct)
+
+    def shares_at_confidence(self, shares: float, limit_price: float,
+                             confidence: Optional[float] = None,
+                             strategy: str = '',
+                             win_rate: Optional[float] = None) -> float:
+        """`shares`, re-sized to the D-382 budget. May size UP as well as down.
+
+        Returns `shares` untouched under `flat` mode and for a call carrying no
+        confidence, so the old book is exactly reproducible.
+
+        WHY A TOO-SMALL BUDGET LEAVES THE REQUEST ALONE. On a book bled down to
+        $20, the 1% floor is $0.20 and buys nothing. Sizing to that would refuse
+        an order for lack of funds, which is precisely what D-366 R1 forbids and
+        what Aym overruled. So when the confidence budget cannot buy the
+        exchange minimum, the incoming request passes through untouched and the
+        D-366 clip below decides its fate with its own reasons. D-382 therefore
+        adds NO refusal of any kind: it can only ever change a size.
+
+        `limit_price <= 0` is left alone for the price-range gate to refuse.
+        """
+        return self.size_entry(shares, limit_price, confidence, strategy,
+                               win_rate)[0]
+
+    def size_entry(self, shares: float, limit_price: float,
+                   confidence: Optional[float] = None,
+                   strategy: str = '',
+                   win_rate: Optional[float] = None
+                   ) -> Tuple[float, float, bool]:
+        """`(shares, budget_usdc, applied)` for one entry under D-382.
+
+        The two entry paths need the budget as well as the size, because the
+        `over_notional_cap` guard downstream has to be measured against the
+        budget the order was ACTUALLY sized from. Returning them together is
+        what keeps those two facts from drifting apart.
+
+        `applied` is False in every pass-through case - `flat` mode, no
+        confidence, an unusable price, or a budget too small to buy the exchange
+        minimum - and in each of those the budget returned is
+        `notional_cap_usdc`, the cap that governed the size the caller handed
+        us. That last case is the one that matters: on a book bled down to $20
+        the 1% floor is $0.20, D-382 steps aside, and the guard has to step
+        aside with it. Measuring a passed-through order against a $0.20 budget
+        would refuse it for lack of funds - which is exactly the refusal D-366
+        R1 forbids and Aym overruled, re-created by accident one line further
+        down.
+        """
+        flat = (shares, self.notional_cap_usdc, False)
+        if not self.sizes_on_confidence(confidence):
+            return flat
+        if limit_price <= 0:
+            return flat
+        budget = self.sizing_budget_usdc(confidence, strategy, win_rate)
+        sized = math.floor(budget / limit_price + 1e-9)
+        if sized < self.min_shares:
+            return flat
+        return (sized, budget, True)
+
     def round_to_tick(self, price: float, direction: str = 'down') -> float:
         """Snap a price to the tick grid. 'down' for a buy cap, 'up' for a sell.
 
@@ -784,15 +1052,23 @@ class PolymarketPaperAdapter:
                            limit_price: float, shares: float,
                            window_ts: Optional[int] = None,
                            features: Optional[dict] = None,
-                           book: Optional[Orderbook] = None
+                           book: Optional[Orderbook] = None,
+                           confidence: Optional[float] = None
                            ) -> Optional[PaperPosition]:
         """Simulate a marketable buy by walking the live book.
 
         Returns the opened PaperPosition, or None if nothing filled. Every exit
         path writes a log row first, so a None return always has a recorded
         reason.
+
+        `confidence` drives D-382 sizing. It falls back to `features` when the
+        caller does not pass it, because every strategy already emits it there
+        and a silent 1% floor for callers that were never updated would look
+        exactly like a working implementation.
         """
         features = features or {}
+        if confidence is None:
+            confidence = features.get('confidence')
         feat_str = ';'.join(f'{k}={v}' for k, v in sorted(features.items()))
         # `or ''` would turn a legitimate window_ts of 0 into "no window".
         ts_cell = '' if window_ts is None else window_ts
@@ -831,11 +1107,34 @@ class PolymarketPaperAdapter:
             self._log(strategy, market_slug, 'SKIP', 'unsizable_at_cap', **base)
             return None
 
+        # D-382, and it runs BEFORE the D-366 clip because it is the thing being
+        # clipped. This is the order size now: the gate's `notional_cap_usdc`
+        # number arrives here and is replaced by a confidence-chosen percentage
+        # of available capital. It can size up or down; it never refuses.
+        #
+        # `base` still holds the ORIGINAL request in `requested_shares`, so an
+        # ENTER row carries both the gate's number and what D-382 made of it,
+        # and a re-size is readable in the log rather than inferred from it.
+        resized, sizing_budget, sized_on_confidence = self.size_entry(
+            shares, limit_price, confidence, strategy)
+        if sized_on_confidence and resized != shares:
+            key = ('taker_sized_up_at_confidence' if resized > shares
+                   else 'taker_sized_down_at_confidence')
+            self.sizing_counts[key] = self.sizing_counts.get(key, 0) + 1
+            logger.info('PM PAPER D-382 sized %s %s from %s to %s shares '
+                        '(confidence %s -> %.1f%% of available, budget $%.2f)',
+                        strategy, market_slug, shares, resized, confidence,
+                        self.confidence_position_pct(confidence,
+                                                     strategy) * 100,
+                        sizing_budget)
+        shares = resized
+
         # D-366, and it is a SIZE-DOWN, not a gate. Aym ruled the book never
         # refuses a trade for lack of funds: it buys what 90% of available
-        # capital can buy and fills that. `base` keeps the ORIGINAL request in
-        # `requested_shares`, so the ENTER row below carries both numbers and
-        # the clip is visible in the log rather than inferred from it.
+        # capital can buy and fills that. Still enforced after D-382 above even
+        # though the confidence clamp shares its ceiling: this is the ruling's
+        # hard limit, and a limit that is only ever satisfied by construction
+        # elsewhere is one refactor away from not being a limit.
         capped = self.shares_within_position_pct(shares, limit_price)
         if capped < shares:
             if capped < self.min_shares:
@@ -860,10 +1159,16 @@ class PolymarketPaperAdapter:
         # A declared risk cap that is not enforced is an unbounded fabricated
         # -PnL surface: whatever edge per share the strategy claims gets
         # multiplied by a position the account could never have funded. Checked
-        # AFTER the D-366 clip above, on the size that will actually be sent:
-        # the percentage ceiling can only ever make an order smaller, so this
-        # still refuses exactly the orders it refused before.
-        if shares * limit_price > self.notional_cap_usdc + 1e-9:
+        # AFTER the D-366 clip above, on the size that will actually be sent.
+        #
+        # D-382 moved WHICH number this enforces, not whether it is enforced.
+        # Under `flat` it is `notional_cap_usdc`, exactly as before. Under
+        # `confidence` the order size IS the confidence budget, so holding this
+        # guard at the old $10 would refuse every sized-up order and re-impose
+        # by the back door the flat cap the ruling replaced. The guard's job is
+        # "the order does not exceed the budget it was sized from", and that is
+        # what it still does.
+        if shares * limit_price > sizing_budget + 1e-9:
             self._log(strategy, market_slug, 'SKIP', 'over_notional_cap', **base)
             return None
 
@@ -1232,7 +1537,9 @@ class PolymarketPaperAdapter:
                            features: Optional[dict] = None,
                            book: Optional[Orderbook] = None,
                            ttl_seconds: Optional[float] = None,
-                           intent: str = '') -> Optional[RestingOrder]:
+                           intent: str = '',
+                           confidence: Optional[float] = None
+                           ) -> Optional[RestingOrder]:
         """Rest a limit BUY on the book. Returns the order, or None if refused.
 
         THIS DOES NOT FILL AND DOES NOT OPEN A POSITION. It returns a
@@ -1258,6 +1565,8 @@ class PolymarketPaperAdapter:
         Every exit path writes a log row before returning (convention 20).
         """
         features = features or {}
+        if confidence is None:
+            confidence = features.get('confidence')
         feat_str = ';'.join(f'{k}={v}' for k, v in sorted(features.items()))
         ts_cell = '' if window_ts is None else window_ts
 
@@ -1286,6 +1595,26 @@ class PolymarketPaperAdapter:
             self._log(strategy, market_slug, 'SKIP', 'unsizable_at_cap', **base)
             return None
 
+        # D-382, same size-to as the taker path, and measured at REST time for
+        # the same reason the D-366 clip below is: a resting order ties up no
+        # premium, so `get_equity()` is read once here and never re-read at fill
+        # time. Re-sizing a resting order later would mean editing an order the
+        # book has already seen.
+        resized, sizing_budget, sized_on_confidence = self.size_entry(
+            shares, limit_price, confidence, strategy)
+        if sized_on_confidence and resized != shares:
+            key = ('maker_sized_up_at_confidence' if resized > shares
+                   else 'maker_sized_down_at_confidence')
+            self.sizing_counts[key] = self.sizing_counts.get(key, 0) + 1
+            logger.info('PM PAPER D-382 rested %s %s at %s shares instead of '
+                        '%s (confidence %s -> %.1f%% of available, budget '
+                        '$%.2f)', strategy, market_slug, resized, shares,
+                        confidence,
+                        self.confidence_position_pct(confidence,
+                                                     strategy) * 100,
+                        sizing_budget)
+        shares = resized
+
         # D-366, same size-down as the taker path, measured at REST time.
         #
         # Rest time is the only honest place to measure it here. A resting order
@@ -1312,7 +1641,9 @@ class PolymarketPaperAdapter:
                         self.max_position_cost(), self.max_position_pct * 100)
             shares = capped
 
-        if shares * limit_price > self.notional_cap_usdc + 1e-9:
+        # Same guard, same move as the taker path: it enforces the budget the
+        # order was sized from, which under `confidence` is no longer $10.
+        if shares * limit_price > sizing_budget + 1e-9:
             self._log(strategy, market_slug, 'SKIP', 'over_notional_cap', **base)
             return None
 

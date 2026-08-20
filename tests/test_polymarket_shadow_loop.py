@@ -369,7 +369,13 @@ def test_entry_writes_signal_order_fill_and_position(tmp_path, entry_time):
     pos = positions[0]
     assert pos['strategy_id'] == 'PM_streak_snapper'
     assert pos['mode'] == 'paper'
-    assert pos['qty'] == 19          # floor($10 / 0.52), his flat stake
+    # D-382 replaced the flat $10 stake with confidence-based sizing, so the
+    # share count is a POLICY number now and this is a WIRING test. Pinning it
+    # here is what broke this test the day the ruling landed; the size itself is
+    # asserted in `TestConfidenceSizingOnEntry`. What wiring owes the reader is
+    # that the row is internally consistent with the fill it records.
+    assert pos['qty'] > 0
+    assert pos['entry_px'] == pytest.approx(0.50)
     assert pos['entry_px'] == pytest.approx(0.50)
     # A losing binary share is worth exactly 0.00 and that IS the stop.
     assert pos['stop_px'] == 0.0
@@ -385,7 +391,10 @@ def test_entry_writes_signal_order_fill_and_position(tmp_path, entry_time):
 
     fills = rows(loop, 'SELECT * FROM fills WHERE order_id = ?', (orders[0]['id'],))
     assert len(fills) == 1
-    assert fills[0]['qty'] == 19
+    # Same reason as `pos['qty']` above: the fill quantity is whatever D-382
+    # sized, and what wiring owes is that the fill row AGREES with the position
+    # row it came from.
+    assert fills[0]['qty'] == pos['qty']
     assert fills[0]['price'] == pytest.approx(0.50)
 
     acted = rows(loop, 'SELECT * FROM signals WHERE acted = 1')
@@ -1020,8 +1029,11 @@ def test_resolution_settles_the_position_row(tmp_path, entry_time):
     assert row['closed_ts'] is not None
     assert row['exit_px'] == 1.0
     assert row['exit_reason'] == 'target'
-    # 19 shares bought at 0.50 redeem at 1.00: +$9.50 on $9.50 risked, R = 1.0.
-    assert row['pnl_net'] == pytest.approx(9.5)
+    # Shares bought at 0.50 redeem at 1.00, so the win is the premium risked and
+    # R = 1.0. Derived from the row rather than pinned at the pre-D-382 stake of
+    # 19 shares / $9.50: the settlement ARITHMETIC is what this test owns, and
+    # the size it operates on is a sizing-policy number that moved under D-382.
+    assert row['pnl_net'] == pytest.approx(row['qty'] * (1.0 - row['entry_px']))
     assert row['r_multiple'] == pytest.approx(1.0)
 
     closed = rows(loop, "SELECT * FROM audit_log WHERE event_type = 'position_closed'")
@@ -1059,14 +1071,20 @@ def test_equity_reflects_realized_pnl_after_resolution(tmp_path, entry_time):
     loop.run_cycle(now=entry_time)
     # Open positions are held at ZERO by the adapter, so equity DIPS by the
     # premium at risk while the window is live. Documented, not a bug.
-    assert loop.adapter.get_equity() == pytest.approx(1000.0 - 9.5)
+    pos = rows(loop, 'SELECT qty, entry_px FROM positions')[0]
+    premium_at_risk = pos['qty'] * pos['entry_px']
+    assert loop.adapter.get_equity() == pytest.approx(1000.0 - premium_at_risk)
 
     resolved['on'] = True
     loop.resolve()
-    assert loop.adapter.get_equity() == pytest.approx(1009.5)
+    # A win at 1.00 returns the premium and the same again, so equity ends up
+    # the starting book plus what was risked. Derived, not pinned at the
+    # pre-D-382 $1,009.50 - the stake moved, the accounting did not.
+    won = pytest.approx(1000.0 + premium_at_risk)
+    assert loop.adapter.get_equity() == won
 
     snap = loop.snapshot_equity()
-    assert snap['equity'] == pytest.approx(1009.5)
+    assert snap['equity'] == won
     assert snap['open_risk'] == 0.0
 
 

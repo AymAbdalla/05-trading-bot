@@ -460,9 +460,20 @@ def lift_shadow_capital_caps(gate) -> dict:
     D-366 RULED ON THE CAPPING HALF, and against the sentinel. The per-trade
     ceiling that binds is now a PERCENTAGE of available capital, enforced in
     `PolymarketPaperAdapter` (`max_position_pct`, default 0.90) as a SIZE-DOWN
-    rather than a skip - see `DEFAULT_MAX_POSITION_PCT` there. That is why
-    `notional_cap_usdc` is still not lifted here and must not be: raising it
-    would change the ORDER SIZE, which D-366 R3 explicitly defers.
+    rather than a skip - see `DEFAULT_MAX_POSITION_PCT` there.
+
+    D-382 THEN RULED ON THE SIZING HALF, the one D-366 R3 deferred (Aym: "10 is
+    too low, the strategies should size up based on confidence and winning
+    percentage, and not exceed 90% per trade"). The ORDER SIZE is no longer
+    `notional_cap_usdc` at all: the adapter re-sizes every entry to a
+    confidence-chosen percentage of available capital, inside the D-366 ceiling
+    - see `DEFAULT_POSITION_SIZING_MODE` and `CONFIDENCE_SIZE_CURVE` there.
+
+    `notional_cap_usdc` is STILL not lifted here, and the reason has changed
+    with it. It is no longer the order size, so lifting it would no longer buy
+    $100,000 of premium per trade - it would simply have no effect under
+    `confidence` mode, while silently removing the old book's only order-size
+    cap the moment anyone switched back to `flat` to reproduce it. It stays.
 
     The structural caps (`max_positions_per_market_side`,
     `max_positions_per_market`) and the price bounds (`min_premium`,
@@ -3057,7 +3068,7 @@ class PolymarketShadowLoop:
                 outcome_side=leg.outcome_side, limit_price=leg.limit_price,
                 shares=verdict.shares, window_ts=ctx.window_ts,
                 features={k: v for k, v in feats.items() if v is not None},
-                book=book)
+                book=book, confidence=confidence)
             if position is None:
                 adapter_logged = True
                 moved = [k for k, v in self.adapter.decision_counts.items()
@@ -3301,7 +3312,8 @@ class PolymarketShadowLoop:
                 outcome_side=leg.outcome_side, limit_price=leg.limit_price,
                 shares=verdict.shares, window_ts=ctx.window_ts,
                 features={k: v for k, v in feats.items() if v is not None},
-                book=book, intent=decision.reason or 'maker_quote')
+                book=book, intent=decision.reason or 'maker_quote',
+                confidence=confidence)
             if order is None:
                 adapter_logged = True
                 moved = [k for k, v in self.adapter.decision_counts.items()
