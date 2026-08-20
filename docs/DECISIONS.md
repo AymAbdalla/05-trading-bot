@@ -4002,3 +4002,13 @@ R1. max_concurrent_positions count cap REMOVED in shadow mode. No count limit on
 R2. Capital is the ONLY cap: when the account has no money left to buy, that is the cap. Per-trade notional, per-event and aggregate capital limits stay (they are the natural cap).
 R3. Files to change: engine/polymarket/risk_gate.py (DEFAULT_MAX_CONCURRENT_POSITIONS 10 -> sentinel), engine/polymarket/paper_adapter.py (10 -> sentinel), engine/risk/__init__.py (2 -> sentinel if in shadow path). Tests updated.
 R4. The restart that landed at 11:41 EDT (Cody, cody-restart-now) executed BEFORE this ruling arrived, so D-360 requires a SECOND restart to activate. Aym pre-approved it ("we might have to do another restart"). The second restart happens after Cody lands the restart-now handoff and the D-360 changes are made + tested.
+
+### D-361. Shadow environment split: fair_value isolation book + run 038 backfill (AYM APPROVAL, 2026-08-20)
+
+Aym approved: (1) run the 038 backfill, (2) Cody's membership swap — env B becomes the fair_value isolation book, main becomes the diversified book.
+
+R1. RUN the 038 backfill (one command, tagged sibling_inference_backfill, excluded from coverage by construction). D-354 R4's Aym-only gate is now satisfied by this explicit approval.
+R2. APPROVE the shadow-environment split per Cody's section 5.3: make env B the fair_value isolation book (add PM_fair_value_arb, _hft, _inverse to its roster), remove the fair_value family from main via the reversible D-322 supported_market_types mechanism (same as the dip_arb kill).
+R3. The split is RE-MEASURED after the second restart before acting further — the 5.1 table moves once the cap lifts (Cody's recommended sequence).
+R4. Both changes land with the second restart (D-360 + D-359 + split membership + 038 backfill all ride it).
+R5. Safety note accepted: with D-359 (no auto-halt) + D-360 (no count cap), the only remaining limits are per-trade notional, per-event (30 USD) and aggregate capital — exactly as Aym specified. Paper money, blast radius is a number in a database.
