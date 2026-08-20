@@ -1336,6 +1336,38 @@ def derive_gaps(decision_summary: Dict[str, Any],
 # Entry point
 # ---------------------------------------------------------------------------
 
+def read_counterfactual(conn: sqlite3.Connection) -> Dict[str, Any]:
+    """Proposal 043's exit counterfactual, reported here and nowhere else.
+
+    Rule 8, and the same rule as 038 rule 6 and 042 rule 7: the only consumers
+    of `market_resolutions` are `backtest/` and this module. A STRATEGY
+    reading it would be look-ahead by construction, because a resolution
+    record exists only after the window closes - which is after every entry
+    and exit decision for that window.
+
+    Never raises. A zero match is 043's loud failure and it belongs in the
+    artefact as a NAMED status, but an evaluator that died on it would take
+    every other measurement in this report down with it. The CLI
+    (`backtest/settlement_coverage.py --counterfactual`) is where it exits
+    non-zero.
+    """
+    from backtest.settlement_coverage import ZeroMatchError, counterfactual
+    try:
+        return counterfactual(conn)
+    except ZeroMatchError as exc:
+        return {
+            'status': 'ZERO_MATCH',
+            'reason': str(exc),
+            'note': ('proposal 043 rule 3: a silent zero is a missing number '
+                     '(convention 20). Reported, never swallowed.'),
+        }
+    except sqlite3.Error as exc:
+        return {
+            'status': 'NOT_TESTED',
+            'reason': f'{type(exc).__name__}: {exc}',
+            'note': 'NOT_TESTED, not empty. Convention 11.',
+        }
+
 def evaluate(db_path: str = DEFAULT_DB,
              paper_log_path: str = DEFAULT_PAPER_LOG,
              mode: Optional[str] = None) -> Dict[str, Any]:
@@ -1361,6 +1393,7 @@ def evaluate(db_path: str = DEFAULT_DB,
         positions = read_positions(conn)
         equity = read_equity(conn)
         tables = sorted(_table_names(conn))
+        counterfactual_report = read_counterfactual(conn)
     except (ShadowUnreadable, sqlite3.Error) as exc:
         return {
             'status': 'unreadable',
@@ -1386,6 +1419,7 @@ def evaluate(db_path: str = DEFAULT_DB,
         'positions': position_summary,
         'equity': equity_summary,
         'paper_log': paper_log,
+        'counterfactual': counterfactual_report,
         'gaps': derive_gaps(decision_summary, position_summary),
     }
 

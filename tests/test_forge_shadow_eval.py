@@ -803,3 +803,47 @@ def f(ctx):
     return decide('SKIP', status)
 """)
     assert len(unresolved) == 1
+
+
+# ---------------------------------------------------------------------------
+# Proposal 043: the exit counterfactual is reported here, and never by a
+# strategy (043 rule 8)
+# ---------------------------------------------------------------------------
+
+def test_the_counterfactual_is_reported_and_is_not_tested_without_a_ledger(
+        tmp_path):
+    path = str(tmp_path / 'shadow.db')
+    _build_db(path, signals=[('PM_a', 1, None)],
+              positions=[('PM_a', 2, 1.0)])
+    report = se.evaluate(path, str(tmp_path / 'gone.csv'))['counterfactual']
+    # No `market_resolutions` in this database: NOT_TESTED, never an empty
+    # table of zeroes (convention 11).
+    assert report['status'] == 'NOT_TESTED'
+    assert report['ledger_table_present'] is False
+
+
+def test_a_counterfactual_zero_match_is_a_named_status_not_an_exception(
+        tmp_path):
+    path = str(tmp_path / 'shadow.db')
+    _build_db(path, signals=[('PM_a', 1, None)],
+              positions=[('PM_a', 2, 1.0)])
+    conn = sqlite3.connect(path)
+    conn.execute('update positions set signal_id = ?, exit_reason = ?',
+                 ('sig0', 'sell:salvage_floor'))
+    conn.execute('update signals set features_json = ?',
+                 (json.dumps(dict(outcome_side='Up')),))
+    conn.execute(
+        'CREATE TABLE market_resolutions (market_slug TEXT, '
+        'outcome_side TEXT, resolved_px REAL, resolved_ts REAL, '
+        'window_ts INTEGER, source TEXT, '
+        'UNIQUE (market_slug, outcome_side))')
+    conn.execute('insert into market_resolutions values (?,?,?,?,?,?)',
+                 ('somewhere-else', 'Up', 0.0, 1.0, 1, 'venue'))
+    conn.commit()
+    conn.close()
+    report = se.evaluate(path, str(tmp_path / 'gone.csv'))['counterfactual']
+    # A populated ledger that joins to nothing is a KEYING fault. The
+    # evaluator must NAME it rather than die on it, and must never print it
+    # as an empty counterfactual.
+    assert report['status'] == 'ZERO_MATCH'
+    assert 'outcome_side' in report['reason']
