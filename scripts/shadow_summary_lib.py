@@ -279,6 +279,10 @@ _EXACT = {
     'max_concurrent_positions': OPERATIONAL,
     'over_notional_cap': OPERATIONAL,
     'unsizable_at_cap': OPERATIONAL,
+    # D-366. Operational, not NO_TRADE: the strategy wanted the trade and the
+    # book had too little money left to buy the exchange minimum. Reading it as
+    # "no signal" would hide a book that needs re-funding (D-358).
+    'unsizable_at_position_pct': OPERATIONAL,
 
     # -- ours, and broken
     'enter_without_legs': ERROR,

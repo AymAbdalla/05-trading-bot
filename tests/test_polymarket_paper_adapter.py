@@ -361,6 +361,126 @@ class TestSizing:
             'SKIP', 'max_concurrent_positions')
 
 
+class TestPositionPercentCap:
+    """D-366: an entry costs at most a PERCENTAGE of available capital.
+
+    The ruling is as much about what does NOT happen as what does. Aym rejected
+    skipping a trade the book cannot fully fund ("i dont want it to skip the
+    trade if the available capital is less than the capital needed"), so every
+    test that asserts a smaller fill here is also asserting the absence of a
+    refusal. The one skip left is physical, not a policy: 90% of what remains
+    cannot buy the exchange minimum of 5 shares.
+    """
+
+    def test_the_default_is_ninety_percent(self):
+        assert pa_module.DEFAULT_MAX_POSITION_PCT == 0.90
+
+    def test_max_cost_is_the_percentage_of_available_capital(self, tmp_path):
+        """The two numbers from the ruling, verbatim: $1,000 -> $900, $100 -> $90."""
+        thousand = make_adapter(tmp_path, starting_equity_usdc=1000.0)
+        assert thousand.max_position_cost() == pytest.approx(900.0)
+        hundred = make_adapter(tmp_path / 'b', starting_equity_usdc=100.0)
+        assert hundred.max_position_cost() == pytest.approx(90.0)
+
+    def test_the_percentage_is_configurable(self, tmp_path):
+        half = make_adapter(tmp_path, starting_equity_usdc=1000.0,
+                            max_position_pct=0.5)
+        assert half.max_position_cost() == pytest.approx(500.0)
+
+    def test_an_entry_inside_the_cap_fills_at_the_size_asked_for(self, tmp_path):
+        """The normal case. The cap must be invisible until capital is short."""
+        a = make_adapter(tmp_path, starting_equity_usdc=1000.0,
+                         notional_cap_usdc=1000.0)
+        pos = a.simulate_taker_buy('strat', 'slug-1', 'tok-1', 'Up',
+                                   limit_price=0.50, shares=100,
+                                   book=make_book([(0.50, 500)]))
+        assert pos is not None
+        assert pos.shares == 100
+        assert a.sizing_counts == {}
+
+    def test_an_entry_over_the_cap_is_sized_down_and_still_fills(self, tmp_path):
+        """The ruling's whole point: a smaller trade, never a refused one."""
+        a = make_adapter(tmp_path, starting_equity_usdc=100.0,
+                         notional_cap_usdc=1000.0)
+        pos = a.simulate_taker_buy('strat', 'slug-1', 'tok-1', 'Up',
+                                   limit_price=0.50, shares=200,
+                                   book=make_book([(0.50, 500)]))
+        assert pos is not None                       # NOT skipped
+        assert pos.shares == 180                     # 90% of $100 at 50c
+        assert pos.cost_usdc == pytest.approx(90.0)
+        assert a.decision_counts == {'ENTER': 1}     # no skip row anywhere
+
+    def test_the_down_size_is_counted_but_not_as_a_decision(self, tmp_path):
+        """`decision_counts` keeps one count per CSV row; this is not a row."""
+        a = make_adapter(tmp_path, starting_equity_usdc=100.0,
+                         notional_cap_usdc=1000.0)
+        a.simulate_taker_buy('strat', 'slug-1', 'tok-1', 'Up',
+                             limit_price=0.50, shares=200,
+                             book=make_book([(0.50, 500)]))
+        assert a.sizing_counts == {'taker_capped_at_position_pct': 1}
+        assert len(log_rows(a)) == sum(a.decision_counts.values())
+
+    def test_the_log_row_keeps_the_size_that_was_asked_for(self, tmp_path):
+        """Requested and filled are both on the row, so the clip is readable."""
+        a = make_adapter(tmp_path, starting_equity_usdc=100.0,
+                         notional_cap_usdc=1000.0)
+        a.simulate_taker_buy('strat', 'slug-1', 'tok-1', 'Up',
+                             limit_price=0.50, shares=200,
+                             book=make_book([(0.50, 500)]))
+        row = log_rows(a)[0]
+        assert float(row['requested_shares']) == 200
+        assert float(row['filled_shares']) == 180
+
+    def test_the_cap_shrinks_with_the_book_trade_after_trade(self, tmp_path):
+        """Available capital is net of premium already at risk, so it decays.
+
+        This is the natural floor D-366 R5 names: each entry leaves 10% of what
+        was there behind, so entries alone can never zero the book.
+        """
+        a = make_adapter(tmp_path, starting_equity_usdc=100.0,
+                         notional_cap_usdc=1000.0)
+        book = make_book([(0.50, 500)])
+        first = a.simulate_taker_buy('s', 'slug-1', 'tok-1', 'Up',
+                                     limit_price=0.50, shares=200, book=book)
+        assert first.cost_usdc == pytest.approx(90.0)
+        assert a.get_equity() == pytest.approx(10.0)
+        second = a.simulate_taker_buy('s', 'slug-2', 'tok-2', 'Up',
+                                      limit_price=0.50, shares=200, book=book)
+        assert second is not None
+        assert second.cost_usdc == pytest.approx(9.0)   # 90% of the $10 left
+        assert a.get_equity() == pytest.approx(1.0)
+
+    def test_a_book_too_small_for_the_minimum_is_a_cannot_run(self, tmp_path):
+        """90c shares, $2 left: the cap buys 2 and the exchange minimum is 5."""
+        a = make_adapter(tmp_path, starting_equity_usdc=2.0,
+                         notional_cap_usdc=1000.0)
+        pos = a.simulate_taker_buy('strat', 'slug-1', 'tok-1', 'Up',
+                                   limit_price=0.90, shares=20,
+                                   book=make_book([(0.90, 500)]))
+        assert pos is None
+        assert a.decision_counts == {'SKIP:unsizable_at_position_pct': 1}
+        assert a.realized_pnl() == 0.0               # not booked as a loss
+
+    def test_a_resting_maker_bid_is_sized_down_the_same_way(self, tmp_path):
+        a = make_maker_adapter(tmp_path, starting_equity_usdc=100.0,
+                               notional_cap_usdc=1000.0)
+        order = rest_a_bid(a, limit=0.45, shares=500)
+        assert order is not None                     # NOT refused
+        assert order.shares == 200                   # 90% of $100 at 45c
+        assert a.sizing_counts == {'maker_capped_at_position_pct': 1}
+
+    def test_the_cap_never_raises_an_order_above_the_notional_cap(self, tmp_path):
+        """The percentage ceiling only ever shrinks. $10 stays $10 at $1,000."""
+        a = make_adapter(tmp_path, starting_equity_usdc=1000.0,
+                         notional_cap_usdc=10.0)
+        pos = a.simulate_taker_buy('strat', 'slug-1', 'tok-1', 'Up',
+                                   limit_price=0.50, shares=20,
+                                   book=make_book([(0.50, 500)]))
+        assert pos is not None
+        assert pos.cost_usdc == pytest.approx(10.0)
+        assert a.sizing_counts == {}
+
+
 class TestRoundToTick:
     def test_rounds_off_grid_prices_in_the_right_direction(self, adapter):
         assert adapter.round_to_tick(0.5449, 'down') == 0.54

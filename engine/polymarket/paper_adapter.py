@@ -247,6 +247,28 @@ DEFAULT_MAKER_TTL_SECONDS = 300
 # `affordable_shares` sizes down to it.
 DEFAULT_NOTIONAL_CAP_USDC = risk_constraints.DEFAULT_LIMITS.per_trade_notional_usd
 
+# D-366 (Aym ruling 2026-08-20). The per-trade ceiling that actually binds when
+# the book runs low is a PERCENTAGE of the capital available at entry time, not
+# a fixed dollar number: "$1,000 available -> max entry cost $900; $100
+# available -> max $90".
+#
+# The ruling is about what happens when an order costs MORE than the book can
+# fund. The rejected answer was to skip it (`insufficient_capital`, the D-365
+# addendum). The ruling's answer is to SIZE DOWN to this fraction of available
+# capital and fill. The book never refuses a trade for lack of funds, so this
+# number never removes a measurement - it only shrinks one. What it buys is the
+# natural floor: every entry leaves at least (1 - pct) of the book behind, so
+# entries alone cannot zero it, and a bleed decays instead of terminating.
+#
+# "Available" is `get_equity()`: starting capital + realized PnL - premium
+# already tied up in open positions. Premium at risk is subtracted because it is
+# genuinely spent - a second trade cannot be funded twice out of the same
+# dollar.
+#
+# D-366 R3: choosing the percentage PER TRADE (1-90%, by conviction) is a future
+# feature. Today it is one fixed ceiling, applied to every entry.
+DEFAULT_MAX_POSITION_PCT = 0.90
+
 # Names the exact fill rule below, so a log row, a strategy feature and a
 # summary block all say the same thing and a later change to the rule is a
 # visible string change rather than a silent one. Read the module docstring for
@@ -580,6 +602,9 @@ class PolymarketPaperAdapter:
                                                DEFAULT_MAKER_TTL_SECONDS))
         self.notional_cap_usdc = float(cfg.get('notional_cap_usdc',
                                                DEFAULT_NOTIONAL_CAP_USDC))
+        # D-366: fraction of AVAILABLE capital any single entry may cost.
+        self.max_position_pct = float(cfg.get('max_position_pct',
+                                              DEFAULT_MAX_POSITION_PCT))
         # D-360: count cap removed in shadow, capital is the only cap.
         self.max_concurrent_positions = int(cfg.get('max_concurrent_positions',
                                                     100_000))
@@ -608,6 +633,14 @@ class PolymarketPaperAdapter:
         # Folding those looks into `decision_counts` would break that identity
         # and bury the terminal outcomes under thousands of no-ops.
         self.maker_counts: Dict[str, int] = {}
+
+        # D-366 down-sizes. Kept OUT of `decision_counts` for the same reason
+        # `maker_counts` is: `decision_counts` holds an accounting identity with
+        # the CSV, one count per row, and a down-sized order still goes on to
+        # produce its own ENTER or NO_FILL row. Counting it there would break
+        # that identity. It is counted SOMEWHERE, though - a cap that silently
+        # reshapes orders is a cap no later analysis can find (convention 20).
+        self.sizing_counts: Dict[str, int] = {}
 
     # -- logging ------------------------------------------------------------
 
@@ -692,6 +725,37 @@ class PolymarketPaperAdapter:
         n = math.floor(notional / limit_price + 1e-9)
         return n if n >= self.min_shares else 0
 
+    def max_position_cost(self) -> float:
+        """D-366: the most a single entry is allowed to cost right now.
+
+        Floored at 0.0 so a book that has gone negative asks for no shares
+        rather than a negative number of them. A negative budget is not a
+        smaller trade, it is a nonsense trade.
+        """
+        return max(0.0, self.get_equity() * self.max_position_pct)
+
+    def shares_within_position_pct(self, shares: float,
+                                   limit_price: float) -> float:
+        """`shares`, sized DOWN to what the D-366 ceiling can fund.
+
+        Returns `shares` untouched when it already fits, which is the normal
+        case: the gate sizes at `notional_cap_usdc` and the book starts orders
+        of magnitude above that. This only bites once available capital has
+        fallen to roughly the order size - which is exactly the case D-366 was
+        ruled on, and the answer there is a smaller fill, never a refusal.
+
+        Whole shares only, floored: an exchange minimum is in shares, and
+        rounding UP here would put the order back over the ceiling it was just
+        brought under. `limit_price <= 0` is left alone for the price-range
+        gate to refuse with its own reason - dividing by it here would raise.
+        """
+        if limit_price <= 0:
+            return shares
+        budget = self.max_position_cost()
+        if shares * limit_price <= budget + 1e-9:
+            return shares
+        return math.floor(budget / limit_price + 1e-9)
+
     def round_to_tick(self, price: float, direction: str = 'down') -> float:
         """Snap a price to the tick grid. 'down' for a buy cap, 'up' for a sell.
 
@@ -767,9 +831,38 @@ class PolymarketPaperAdapter:
             self._log(strategy, market_slug, 'SKIP', 'unsizable_at_cap', **base)
             return None
 
+        # D-366, and it is a SIZE-DOWN, not a gate. Aym ruled the book never
+        # refuses a trade for lack of funds: it buys what 90% of available
+        # capital can buy and fills that. `base` keeps the ORIGINAL request in
+        # `requested_shares`, so the ENTER row below carries both numbers and
+        # the clip is visible in the log rather than inferred from it.
+        capped = self.shares_within_position_pct(shares, limit_price)
+        if capped < shares:
+            if capped < self.min_shares:
+                # NOT the refusal D-366 forbids. 90% of what is left cannot buy
+                # the exchange minimum, so no order of any size existed here -
+                # a cannot-run, in the convention 11 sense. It gets its own
+                # reason rather than folding into `unsizable_at_cap` above,
+                # because the two diagnose opposite things: that one is a
+                # caller asking for too few shares, this one is a book with too
+                # little money left. D-358's fund-if-zero is the exit from it.
+                self._log(strategy, market_slug, 'SKIP',
+                          'unsizable_at_position_pct', **base)
+                return None
+            self.sizing_counts['taker_capped_at_position_pct'] = (
+                self.sizing_counts.get('taker_capped_at_position_pct', 0) + 1)
+            logger.info('PM PAPER D-366 sized %s %s down from %s to %s shares '
+                        '(max position cost $%.2f at %.0f%% of available)',
+                        strategy, market_slug, shares, capped,
+                        self.max_position_cost(), self.max_position_pct * 100)
+            shares = capped
+
         # A declared risk cap that is not enforced is an unbounded fabricated
         # -PnL surface: whatever edge per share the strategy claims gets
-        # multiplied by a position the account could never have funded.
+        # multiplied by a position the account could never have funded. Checked
+        # AFTER the D-366 clip above, on the size that will actually be sent:
+        # the percentage ceiling can only ever make an order smaller, so this
+        # still refuses exactly the orders it refused before.
         if shares * limit_price > self.notional_cap_usdc + 1e-9:
             self._log(strategy, market_slug, 'SKIP', 'over_notional_cap', **base)
             return None
@@ -1192,6 +1285,32 @@ class PolymarketPaperAdapter:
         if shares < self.min_shares:
             self._log(strategy, market_slug, 'SKIP', 'unsizable_at_cap', **base)
             return None
+
+        # D-366, same size-down as the taker path, measured at REST time.
+        #
+        # Rest time is the only honest place to measure it here. A resting order
+        # is not a position yet, so it ties up no premium and `get_equity()`
+        # does not know about it; by the time it crosses, the book may hold less
+        # than it did. Re-checking at fill would mean CANCELLING a maker order
+        # for lack of funds, which is the refusal D-366 forbids, so the fill
+        # path is deliberately left alone. The residual is that several orders
+        # resting at once are each capped against the same available capital.
+        # That is a maker-only artefact worth naming rather than hiding: the
+        # two maker strategies here (box_builder, grid_hedge) rest one order at
+        # a time and have booked no entries at all so far.
+        capped = self.shares_within_position_pct(shares, limit_price)
+        if capped < shares:
+            if capped < self.min_shares:
+                self._log(strategy, market_slug, 'SKIP',
+                          'unsizable_at_position_pct', **base)
+                return None
+            self.sizing_counts['maker_capped_at_position_pct'] = (
+                self.sizing_counts.get('maker_capped_at_position_pct', 0) + 1)
+            logger.info('PM PAPER D-366 rested %s %s down from %s to %s shares '
+                        '(max position cost $%.2f at %.0f%% of available)',
+                        strategy, market_slug, shares, capped,
+                        self.max_position_cost(), self.max_position_pct * 100)
+            shares = capped
 
         if shares * limit_price > self.notional_cap_usdc + 1e-9:
             self._log(strategy, market_slug, 'SKIP', 'over_notional_cap', **base)

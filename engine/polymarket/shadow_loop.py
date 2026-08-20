@@ -455,8 +455,14 @@ def lift_shadow_capital_caps(gate) -> dict:
     measurement R3 exists to produce, and it would break comparability with
     every one of the ~2,300 trades already measured at $10. R3's per-trade
     ceiling IS lifted, in `SHADOW_RISK_LIMITS.per_trade_notional_usd` above -
-    that one is a genuine ceiling. Sizing is a separate decision from capping,
-    and it needs its own ruling. See the handoff.
+    that one is a genuine ceiling. Sizing is a separate decision from capping.
+
+    D-366 RULED ON THE CAPPING HALF, and against the sentinel. The per-trade
+    ceiling that binds is now a PERCENTAGE of available capital, enforced in
+    `PolymarketPaperAdapter` (`max_position_pct`, default 0.90) as a SIZE-DOWN
+    rather than a skip - see `DEFAULT_MAX_POSITION_PCT` there. That is why
+    `notional_cap_usdc` is still not lifted here and must not be: raising it
+    would change the ORDER SIZE, which D-366 R3 explicitly defers.
 
     The structural caps (`max_positions_per_market_side`,
     `max_positions_per_market`) and the price bounds (`min_premium`,
