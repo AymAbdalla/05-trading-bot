@@ -88,6 +88,10 @@ db/trading-realm-c.db-wal
 db/trading-realm-c.db-shm
 research/polymarket_paper_realmc/
 
-# Pre-sweep database snapshots (`scripts/sweep_orphan_positions.py`). Full
-# copies of a live book, taken through the sqlite backup API before it writes.
-db/*.presweep-*.bak
+# Database snapshots: pre-sweep (`scripts/sweep_orphan_positions.py`) and
+# pre-restart. Full copies of a live book taken through the sqlite backup API.
+# Deliberately broad - every one of these is a multi-MB copy of an ignored
+# database and none of them belong in git.
+# The trailing * also catches the -wal / -shm siblings sqlite leaves beside a
+# snapshot; without it those show up untracked while the .bak itself is hidden.
+db/*.bak*
