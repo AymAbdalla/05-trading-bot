@@ -121,8 +121,17 @@ DEFAULT_NOTIONAL_CAP_USDC = risk_constraints.DEFAULT_LIMITS.per_trade_notional_u
 # the daily loss breaker.
 DEFAULT_MAX_TOTAL_EXPOSURE_USDC = risk_constraints.DEFAULT_LIMITS.aggregate_notional_usd
 
-# Concurrent open positions. Matches the paper adapter's default of 10.
-DEFAULT_MAX_CONCURRENT_POSITIONS = 10  # D-321: raised 5->10, shadow only
+# Concurrent open positions. Matches the paper adapter's default.
+#
+# D-360: count cap removed in shadow, capital is the only cap. The sentinel is
+# a large finite number rather than None/inf on purpose: `check_order` compares
+# `snap.count >= self.max_concurrent_positions`, so an int keeps that one
+# comparison and its SKIP taxonomy intact, and the counter stays readable if a
+# future ruling ever puts a real cap back. Nothing on this book approaches
+# 100,000 concurrent positions before the capital limits in
+# engine.risk.constraints (per-trade notional, per-event, aggregate) bind -
+# those stay, and they ARE the natural cap (D-360 R2).
+DEFAULT_MAX_CONCURRENT_POSITIONS = 100_000
 
 # Positions per (market, outcome side). 1 stops a strategy averaging into the
 # same side of the same window and quietly exceeding the per-trade cap.

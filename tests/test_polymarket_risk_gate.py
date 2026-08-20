@@ -631,12 +631,19 @@ class TestPerAssetDailyLossBreaker:
 
         The shadow config turns the breaker off to let strategies run to zero.
         That must not quietly take the exposure and position caps with it.
+
+        The cap is passed EXPLICITLY rather than read from the module default.
+        Since D-360 that default is the 100_000 sentinel (no count cap in
+        shadow), so ranging over it would build 100,000 exposures to assert a
+        skip-path mechanic that binds at any cap. What this test is about is
+        that a disabled breaker does not disable the OTHER gates; the cap's
+        value is asserted in `TestConfigWiring`, which is where it belongs.
         """
-        g = gate(daily_loss_limit_usdc=0.0, portfolio_daily_loss_limit_usdc=0.0)
+        g = gate(daily_loss_limit_usdc=0.0, portfolio_daily_loss_limit_usdc=0.0,
+                 max_concurrent_positions=5)
         v = g.check_order(
             BTC5M, 'Up', 0.50,
-            open_positions=[expo() for _ in
-                            range(rg.DEFAULT_MAX_CONCURRENT_POSITIONS)],
+            open_positions=[expo() for _ in range(5)],
             realized_pnl_today_usdc=-9_999.0)
         assert not v.approved
         assert v.reason.startswith('max_concurrent_positions')
@@ -1368,10 +1375,13 @@ class TestVerdictShape:
             g.check_order(BTC5M, 'Up', 0.50, realized_pnl_today_usdc=-500.0),
             g.check_order(BTC5M, 'Up', 0.0),
             g.check_order(BTC5M, 'Up', 'junk'),
-            g.check_order(
+            # Explicit small cap, not the module default: since D-360 that
+            # default is the 100_000 sentinel and this assertion is about the
+            # VERDICT SHAPE of a count rejection, not about where the cap sits.
+            gate(max_concurrent_positions=5).check_order(
                 BTC5M, 'Up', 0.50,
-                open_positions=[expo(slug='m{}'.format(i)) for i in
-                                range(rg.DEFAULT_MAX_CONCURRENT_POSITIONS + 1)]),
+                open_positions=[expo(slug='m{}'.format(i))
+                                for i in range(6)]),
             g.check_order(BTC5M, 'Up', 0.50, open_positions=[expo(side='Up')]),
             gate(notional_cap_usdc=1.0).check_order(BTC5M, 'Up', 0.90),
             gate(sizing_mode='kelly').check_order(BTC5M, 'Up', 0.50),

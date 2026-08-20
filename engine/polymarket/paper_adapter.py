@@ -580,7 +580,9 @@ class PolymarketPaperAdapter:
                                                DEFAULT_MAKER_TTL_SECONDS))
         self.notional_cap_usdc = float(cfg.get('notional_cap_usdc',
                                                DEFAULT_NOTIONAL_CAP_USDC))
-        self.max_concurrent_positions = int(cfg.get('max_concurrent_positions', 10))  # D-321: raised 5->10, shadow only
+        # D-360: count cap removed in shadow, capital is the only cap.
+        self.max_concurrent_positions = int(cfg.get('max_concurrent_positions',
+                                                    100_000))
         self.min_shares = int(cfg.get('min_shares', MIN_SHARES))
         self.price_tick = float(cfg.get('price_tick', PRICE_TICK))
 
