@@ -1,13 +1,14 @@
 # Decisions Index — one line per decision (human view)
 
-**Source:** docs/DECISIONS.md (the full append-only log, 3,604 lines, is the machine truth).
-**Generated:** 2026-08-19 · 157 decisions D-101..D-353.
+**Source:** docs/DECISIONS.md (the full append-only log, 3,668 lines, is the machine truth).
+**Generated:** 2026-08-19 · 158 decisions D-101..D-354.
 **Purpose:** read this, not the log. Every line links to its section via line number.
 
 Status markers: ACTIVE = in force · SUPERSEDED = replaced by a later D · AMENDED = changed in place.
 
 ---
 
+- **D-354** (line 3606) — 043 post-build rulings: rule 10 amended, band unchanged, sign flip recorded, backfill deferred (Raven ruling, 2026-08-19
 - **D-353** (line 3546) — Orphaned-position sweep: RULED yes, booking at 0.00 exit, execution deferred to post-restart window (Raven ruling, 2026-
 - **D-352** (line 3495) — Main shadow loop death on 2026-08-19 and Raven's tmux restart are recorded; the launch mode lesson is binding (Raven rul
 - **D-351** (line 3487) — The prediction-market edge floor is ratified at 20 bps on the observed tick; the 200 bps premise is struck from the reco

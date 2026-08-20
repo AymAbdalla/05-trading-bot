@@ -15,21 +15,54 @@ entry_exit_rules: |
   7. The break-even is stated in every report as the identity it is: holding beats exiting at price s if and only if the realised settle rate on those shares exceeds the share-weighted mean of s. No probability model, no fair value, no calibration is used anywhere in this measurement, and none may be added to it. This is what makes the comparison admissible under D-342 R5 - the payoff difference is an identity in the two recorded prices, not the output of a forecaster.
   8. Do NOT wire any strategy to read this output. Resolution is knowable only after the window closes, so a strategy consuming it is look-ahead by construction. Consumers are `backtest/` and `agents/forge_shadow_eval.py` only. Same rule as proposal 038 rule 6 and proposal 042 rule 7, and for the same reason.
   9. Report `sell:mean_reverted` and `sell:time_stop` but mark both NOT GRADEABLE at n=2 and n=1. The time_stop row is the one that matters for proposal 039 and it currently reads 20 shares sold for 3.18 that were worth 0.00, which runs OPPOSITE to 039's sibling-inferred +0.184 per share. One position is not evidence against 039 and must not be reported as if it were; it is recorded because 039's own kill condition demands ledger-sourced observations and this is the first one that exists.
-  10. Environment B is EXCLUDED from this instrument until it has a ledger. `db/trading-survivors.db` has no `market_resolutions` table at all - verified at the snapshot - so its 433 salvage closes and -1814.63 USD cannot be counterfactualled by any method, and the larger salvage population is the one we cannot measure. Do NOT satisfy this by pooling environment B's salvage rows against environment A's ledger: the two books trade different strategies on overlapping markets and a resolution row is per market-side, so the join would silently succeed and produce a number that means nothing.
+  10. Environment B is graded as a SEPARATE ARM on its own `--db` and its results are NEVER pooled with environment A's. **[AMENDED 2026-08-19 per D-354 R1 - see the amendment note directly below the front matter. This rule as FILED read: "Environment B is EXCLUDED from this instrument until it has a ledger. `db/trading-survivors.db` has no `market_resolutions` table at all - verified at the snapshot - so its 433 salvage closes and -1814.63 USD cannot be counterfactualled by any method, and the larger salvage population is the one we cannot measure."]** That premise is now FALSE: `db/trading-survivors.db` HAS a `market_resolutions` table, accruing venue-sourced rows forward since Raven restarted environment B onto current HEAD, so the exclusion this rule imposed for want of a ledger is LIFTED. Environment B is graded as its own arm, on its own `--db`, against its own ledger, under its own 400-matched bar and its own rule 0. What does NOT change: do NOT satisfy this by pooling environment B's salvage rows against environment A's ledger, and do NOT pool the two books' counterfactual results in either direction - the two books trade different strategies on overlapping markets and a resolution row is per market-side, so the join would silently succeed and produce a number that means nothing (convention 32).
 data_requirements: |
   HAVE, verified read-only in db/trading.db at 2026-08-19T23:57:33Z: `market_resolutions` exists and holds 350 rows over 175 distinct market slugs, `source` = `venue`, columns `market_slug`, `outcome_side`, `resolved_px`, `resolved_ts`, `window_ts`. This is proposal 038 landed and live; it did not exist when 038 was written and CLAUDE.md still carried "the table does NOT exist in the live db" as of this cycle.
   HAVE: `positions.pair` is the market slug in the exact form `market_resolutions.market_slug` uses (`btc-updown-5m-1787183400`), `positions.exit_px`, `qty`, `entry_px`, `pnl_net`, `exit_reason`, `opened_ts`, `closed_ts`, `signal_id`, and `signals.features_json.outcome_side`. Every figure in the thesis came from these and nothing else.
   HAVE: the self-check population. 148 positions carry both an independent settlement and a ledger row, which is what makes rule 6 computable today rather than aspirational.
   MISSING, and it bounds the verdict rather than blocking it: resolution for the 5 of 64 ledger-era salvage closes that did not match, and for all 132 salvage closes that predate the ledger's first window (`window_ts` 1787169600). The pre-ledger population cannot be recovered except by proposal 038's `--backfill`, which is unrun and is Raven's call, and which recovers a loser-biased 38.8% - so backfilled rows must be reported as a SEPARATE arm and never merged into the venue-sourced one. The kill condition grades the venue arm only.
-  MISSING, blocking for environment B only: `market_resolutions` in `db/trading-survivors.db`. See rule 10. Creating it is not this proposal's lane and this proposal does not request it; it records that environment B's salvage population is unmeasurable until someone does.
+  HAVE as of 2026-08-19, formerly MISSING **[AMENDED per D-354 R1. This entry as FILED read: "MISSING, blocking for environment B only: `market_resolutions` in `db/trading-survivors.db`. See rule 10. Creating it is not this proposal's lane and this proposal does not request it; it records that environment B's salvage population is unmeasurable until someone does."]**: `market_resolutions` EXISTS in `db/trading-survivors.db`, created when Raven restarted environment B onto current HEAD. Measured read-only by the build session: 6 venue-sourced rows and 11 matched positions, `sell:salvage_floor` matching 5 of 454 closes at +0.0900/share, and the rule 6 self-check NOT_TESTED for want of settled overlap. Environment B is therefore gradeable as its own arm under rule 10 - and at 5 matched salvage positions it is nowhere near the 400-matched bar, so rule 0 applies to it in full: NOTHING about environment B's salvage counterfactual is readable yet.
   NOT NEEDED: the 15m keying change, `market_duration`, the calibration tape, `market_tape` in any form. This instrument reads settled outcomes and recorded exit prices, both of which are already stored per position.
   NOT NEEDED: the rebate, the taker fee schedule, or proposal 040's regrade. The counterfactual compares two exits on the SAME position, and the entry cost is common to both arms and cancels. A fee applies to the salvage sale and not to the redemption, which biases the comparison AGAINST salvage by roughly one taker fee per share - so under proposal 040's peaked schedule salvage would look worse than measured here, and the thesis's finding that salvage still wins by 44.8% is stated before that correction rather than after it. Recording this so the next reader does not discover it as a defect: it is a known, signed, quantifiable gap and it runs against the result rather than producing it.
-markets: "Polymarket crypto Up/Down 5m windows, db/trading.db only. `sell:salvage_floor` is exclusively PM_fair_value_settlement_exit in both databases (196 of 196 lifetime closes in trading.db, 433 of 433 in survivors), so the graded arm is that one strategy; the other exit reasons are reported across all strategies as context. Explicitly NOT db/trading-survivors.db, which has no resolution ledger."
+markets: "Polymarket crypto Up/Down 5m windows. `sell:salvage_floor` is exclusively PM_fair_value_settlement_exit in both databases (196 of 196 lifetime closes in trading.db, 433 of 433 in survivors), so the graded arm is that one strategy; the other exit reasons are reported across all strategies as context. Each database is graded SEPARATELY, on its own `--db` against its own ledger, and the two are NEVER pooled (convention 32). AMENDED 2026-08-19 per D-354 R1: this field as FILED opened `Polymarket crypto Up/Down 5m windows, db/trading.db only` and closed `Explicitly NOT db/trading-survivors.db, which has no resolution ledger` - db/trading-survivors.db now HAS a resolution ledger and is graded as its own arm."
 kind: experiment
 status: PROPOSED
 source: "forge"
 forge_warnings: "no_graveyard_link_warning"
 ---
+
+**AMENDMENT NOTE - 2026-08-19, per D-354 R1 (`cody-043-rulings`).** Three fields
+of the front matter above were amended in place AFTER this proposal was filed:
+rule 10 of `entry_exit_rules`, the `markets:` line, and the environment-B entry
+of `data_requirements`. As filed, all three recorded that
+`db/trading-survivors.db` had no `market_resolutions` table at all and that
+environment B was therefore EXCLUDED from this instrument. That premise is now
+FALSE: Raven restarted environment B onto current HEAD and it accrues a
+venue-sourced ledger forward - 6 venue rows, 11 matched positions,
+`sell:salvage_floor` 5 matched of 454 closes at +0.0900/share, rule 6 self-check
+NOT_TESTED for want of settled overlap. Environment B is no longer excluded for
+want of a ledger; it is graded as its OWN arm on its own `--db`. Pooling the two
+books remains FORBIDDEN in both directions (convention 32).
+
+PROSE ONLY. The instrument is NOT re-scoped and the kill condition is NOT
+changed. The 0.010 band is NOT re-sized, even though the rule 6 self-check bias
+has since moved 0.0025 -> 0.0043 and the band's stated margin with it, 4x -> 2.3x
+(D-354 R2: the band is not re-sized mid-experiment, and the current margin is
+quoted alongside the verdict at grade time). Rule 0 stands unchanged: NOTHING
+about the salvage counterfactual is readable before 400 matched positions in a
+given database - reinforced by D-354 R3, which records that the headline flipped
+sign, +0.0286/share at 59 matched to -0.0014/share at 69 matched, and that
+neither number is carried by anyone. The 038 backfill stays DEFERRED on BOTH
+databases (D-354 R4). The filing text of each amended field is quoted inside
+that field, so the record still shows what was true at filing.
+
+ONE STALE SENTENCE IS DELIBERATELY LEFT AS FILED. The risk paragraph below that
+begins "Third, the instrument may simply not accumulate" still reads
+"environment B has no ledger at all". That is false as of this date. It was left
+in place because D-354 R1 enumerated three fields and instructed "do not rewrite
+the proposal", and because that sentence is narrative reasoning recorded at
+filing time rather than a normative field. It is flagged here for Raven rather
+than silently corrected.
 
 > **This proposal REFUSES the direction the cycle brief suggested.** The brief
 > proposed testing whether holding losers to resolution beats the salvage exit,

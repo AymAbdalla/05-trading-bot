@@ -3602,3 +3602,67 @@ fallback was needed. `engine.concurrency who` reported ZERO active checkouts at
 session start. The brief's stated HEAD, `76f2269`, was STALE: `git rev-parse
 HEAD` read `8a5984c` (the bleed-investigation handoff commit) with a clean tree,
 the fourth recorded drift of a transcribed HEAD (convention 25).*
+
+### D-354. 043 post-build rulings: rule 10 amended, band unchanged, sign flip recorded, backfill deferred (Raven ruling, 2026-08-19)
+
+**Problem being ruled on.** The 043 build session measured four things that the spec and the review must now account for: (1) `db/trading-survivors.db` HAS a `market_resolutions` table (6 venue rows, 11 matched positions, salvage 5 of 454 closes at +0.0900/share), making proposal 043 rule 10's factual premise false; (2) the rule 6 self-check direction split moved 15/10 -> 20/10 and the net bias roughly doubled (0.0025 -> 0.0043), shrinking the 0.010 kill band's stated margin from 4x to 2.3x; (3) the salvage headline FLIPPED SIGN between 59 and 69 matched positions (+32.52 USD -> -1.84 USD); (4) the 038 backfill question is now live for env B, which accrues a venue ledger forward.
+
+**Decision.**
+
+**R1 - Rule 10 prose amendment (records only).** Proposal 043 rule 10 says "Environment B is EXCLUDED from this instrument until it has a ledger... has no `market_resolutions` table at all." That premise is FALSE as measured this session: env B has a ledger, created by Raven's restart onto current HEAD, and the instrument already grades it as its OWN arm on its own `--db` (rule 10 / convention 32, never pooled). AMEND the proposal's rule 10 prose, the `markets:` line, and the `data_requirements` MISSING block that repeat the stale claim: env B is no longer excluded for want of a ledger; it is graded as a separate arm; pooling remains forbidden. Prose-only, dated amendment note, no re-scope of the instrument, no kill-condition change. Do not rewrite the proposal; mark the amendment with a dated note so the record shows what was true at filing.
+
+**R2 - The 0.010 kill band is UNCHANGED; the margin is re-quoted at grade time.** The band was sized at 4x the 0.0025 snapshot bias; the bias is now 0.0043, a 2.3x margin. Not breached, not close to the 0.0500 ceiling, and the instrument is 69/400 matched. The band is NOT re-sized mid-experiment; that would be moving the goalpost against the measurement. At grade time (400 matched), the report MUST quote the current self-check margin explicitly alongside the verdict. If the bias ever breaches 0.010 at or before 400, the kill condition fires as written; no new threshold is created today.
+
+**R3 - The salvage sign flip is recorded as evidence, not a finding.** The headline moved from +0.0286/share (59 matched) to -0.0014/share (69 matched): a 0.0300/share swing on a sample that grew 17%. This is the first direct evidence of proposal 043's stated time-selection instability and it confirms the snapshot was inside the 0.010 band only by luck of n. Nobody carries +32.52, nobody carries -1.84. NOTHING about the salvage counterfactual is readable before 400 matched positions. Proposal rule 0 stands.
+
+**R4 - The 038 backfill stays DEFERRED on BOTH databases.** Env B now accrues clean venue-sourced rows forward; backfilled rows recover a loser-biased 38.8% and are a SEPARATE arm that can never be merged into venue-sourced rows. Running it now would add a biased population to a clean forward ledger and cannot change any verdict before 400. Do not run it. Revisit only on Aym's explicit call.
+
+**Where:** `strategies/proposals/043-pm-early-exit-counterfactual-ledger.md` (rule 10, the `markets:` line, the `data_requirements` environment-B entry), `backtest/settlement_coverage.py --counterfactual`, `agents/forge_shadow_eval.py`, `market_resolutions` in both `db/trading.db` and `db/trading-survivors.db`, `docs/handoffs/from-raven/2026-08-19-043-rulings-amend.md`, `docs/handoffs/2026-08-19-043-counterfactual-built.md`, this entry.
+
+*Recording-session note (`cody-043-rulings`, 2026-08-19). This paragraph sits
+OUTSIDE the verbatim ruling text above, per the transcription convention.*
+
+*R1 through R4 are the ruling text of
+`docs/handoffs/from-raven/2026-08-19-043-rulings-amend.md`, transcribed from its
+RULING section; the Problem block is that brief's "Problem being ruled on" block.
+Nothing was added to, removed from, or reordered inside the four rulings. The
+ONLY deviation from the brief's characters is the ruling-label separator: the
+brief writes `R1 —` and this entry writes `R1 -`, matching the repo's standing
+no-em-dash convention. D-354 was verified FREE before writing: the highest `###
+D-` heading in the file was 353 and there were zero literal occurrences of
+"D-354" anywhere in it.*
+
+*Records-only session, per the brief's hard constraints. NO database access of
+any kind - not even read-only - so every figure in the Problem block and in R1
+through R4 is TRANSCRIBED from the 043 build session's handoff and is NOT
+re-measured here (convention 25: a number in a doc is a claim, these included).
+That is a deliberate difference from D-353, whose evidence this session's
+predecessor did re-measure. No code change, no importable file touched, no
+`--backfill` on either database, no orphan sweep, no loop restart, no process
+signalled, no `config.yaml`, no `agents/forge.py`, no proposal 044.*
+
+*The full suite and `backtest/validate_harness.py` were NOT re-run and are NOT
+claimed fresh: 4,116 passed / 1 skipped / 0 failed and 21/21 rc 0 are INHERITED
+from `cody-043-counterfactual` earlier the same day. No importable file was
+touched, so there was nothing for a re-run to measure.*
+
+*Gate as measured at session start: `git rev-parse HEAD` read `4a53d78` with a
+clean tree, matching the brief - the second brief running whose stated HEAD was
+correct. `engine.concurrency who` reported ZERO active checkouts. `AGENT_ID`
+read EMPTY (python `os.environ.get`), so the sanctioned `CONFLICT_CHECK_AGENT_ID`
+channel carried the identity. The Write tool was REFUSED and the Edit tool was
+GRANTED on the same paths in the same session - a combination not previously
+recorded; every edit here went through `engine.concurrency.safe_edit` regardless,
+per the brief. One `claude` sibling was alive (pid 60841, the D-353 recording
+session, idle 3h24m since its own commit `1bd15d9`, holding zero checkouts); it
+is NOT an orphan-sweep execution and the gate was read as PASSED.*
+
+*Scope note on R1: three fields of proposal 043 were amended - rule 10, the
+`markets:` line, and the `data_requirements` environment-B entry - exactly the
+three R1 names. A FOURTH occurrence of the same stale claim survives in the
+proposal body, in the risk paragraph beginning "Third, the instrument may simply
+not accumulate", which still reads "environment B has no ledger at all". It was
+left as filed because R1 enumerated three fields and instructed "do not rewrite
+the proposal", and because that sentence is narrative reasoning recorded at
+filing time rather than a normative field. The dated amendment note in the
+proposal flags it explicitly. Raven to rule whether it should also be amended.*
