@@ -4038,3 +4038,10 @@ R3. NO CAPITAL CAPS: remove per-trade $10, per-event $30, aggregate $60 notional
 R4. FULL MARKET TAPE: tape covers ALL windows including crypto. No exclusion. Aym: "let's have full market tape, no reason to limit it."
 R5. NO STRATEGY OVERLAP across realms: each strategy runs in exactly ONE realm. Fix the 7-strategy overlap (env B currently runs 7 survivors that main also runs). Every strategy is in exactly one book.
 R6. D-362 safety note superseded: with R3, the ONLY remaining constraint is the paper book hitting $0 (fund-if-zero per D-358). That is the natural cap Aym specified.
+
+### D-364. Session-collision note + re-dispatch authority (RAVEN, 2026-08-20)
+
+R1. The tick7-complete sibling (PID 23571) was dispatched BEFORE D-363 was recorded and expected D-363 free. Its draft rulings were for tick7 completion + orphan sweep. It died before committing. NO duplicate D-363 was written.
+R2. The tick7 rulings, when they are recorded, get D-365+ (D-363 is taken). The sweep belongs to the D-363 realms brief ONLY (single owner).
+R3. D-363 supersedes the sibling draft on the three contradictions: tape = FULL (crypto included), overlap = FIXED (disjoint partition), restart = all three books.
+R4. D-363 realms re-dispatched as single-owner after the sibling died. No concurrent sessions on this work.
