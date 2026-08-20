@@ -1,13 +1,15 @@
 # Decisions Index — one line per decision (human view)
 
 **Source:** docs/DECISIONS.md (the full append-only log, 3,668 lines, is the machine truth).
-**Generated:** 2026-08-20 · 159 decisions D-101..D-356 (D-355 reserved, unwritten).
+**Generated:** 2026-08-20 · 161 decisions D-101..D-381 (D-355 reserved, unwritten). D-357..D-379 are recorded in the log but NOT yet indexed here - read the log for those. D-380+ is the reserved block for queued Raven-recorded rulings (D-380 provenance note).
 **Purpose:** read this, not the log. Every line links to its section via line number.
 
 Status markers: ACTIVE = in force · SUPERSEDED = replaced by a later D · AMENDED = changed in place.
 
 ---
 
+- **D-381** (line 4084) — D-362 execution review rulings, amended for the D-363 supersession: freeze-gate rule and from-raven gitignore STILL LIVE, tape exclusion and roster overlap HISTORICAL (Raven ruling, 2026-08-20)
+- **D-380** (line 4068) — tick 7 rulings: 048 findings ratified but implementation HELD, 049 accepted and BUILT, 042 form amendment accepted; D-380+ reserved block convention (Raven ruling, 2026-08-20)
 - **D-356** (line 3670) — tick 6 rulings: 045 ratified; 046 and 047 repairs accepted and built; dip_arb kill executed; context recorded (Raven ruling, 2026-08-20)
 - **D-354** (line 3606) — 043 post-build rulings: rule 10 amended, band unchanged, sign flip recorded, backfill deferred (Raven ruling, 2026-08-19
 - **D-353** (line 3546) — Orphaned-position sweep: RULED yes, booking at 0.00 exit, execution deferred to post-restart window (Raven ruling, 2026-
