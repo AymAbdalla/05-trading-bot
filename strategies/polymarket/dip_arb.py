@@ -727,8 +727,35 @@ class DipArb(PolymarketStrategy):
     #: weather market's token also lives for days, not one window, so the tape
     #: is exactly as continuous there. Its own population, scored apart from
     #: the other four - convention 7 again, one more time.
-    supported_market_types = ((MARKET_TYPE_CRYPTO_UPDOWN, MARKET_TYPE_WEATHER)
-                              + GENERAL_BINARY_MARKET_TYPES)
+    #: PAUSED (D-356 R4, 2026-08-20). dip_arb's OWN kill condition - the
+    #: module docstring's trailing-30 win rate below 45% once 30 closed trades
+    #: exist - has fired decisively and has been firing for a long time.
+    #: Lifetime at the ruling: 348 closes / WR 0.181 / -179.23 USD in
+    #: db/trading.db and 58 closes / WR 0.172 / -20.60 in
+    #: db/trading-survivors.db. The vault digest already recorded KILL
+    #: RECOMMENDED at 138 trades / -49.73 and the loss has grown ~3.6x since,
+    #: unexecuted.
+    #:
+    #: The D-322 carve-out that kept this alive as proposal 031's
+    #: tape-experiment subject is MOOT: 031's tape persistence was never
+    #: implemented - no `tape_rows_available` and no persistent tape code
+    #: exists anywhere in engine/.
+    #:
+    #: This is NOT a deletion. `build_strategies()` still returns this
+    #: instance at its pinned index, the registry entry stands, config.yaml is
+    #: untouched, and the strategy file is intact. Declaring a market type
+    #: nothing in the loop ever asks for is the D-312 mechanism - "a strategy
+    #: joins a universe by declaring it", so leaving every universe is the
+    #: same declaration pointed the other way. REVERTING IS DELETING THIS
+    #: OVERRIDE, which restores
+    #: `(MARKET_TYPE_CRYPTO_UPDOWN, MARKET_TYPE_WEATHER)
+    #: + GENERAL_BINARY_MARKET_TYPES`, the declaration argued for at length
+    #: in the comment above.
+    #:
+    #: The running loop does NOT pick this up until its next restart: Python
+    #: snapshots source at import (convention 13). The kill takes effect at
+    #: the next natural restart; no process was signalled to apply it.
+    supported_market_types = ('smart_money',)  # sentinel: no cycle ever routes this type generically (see comment above)
 
     def __init__(self, dip_threshold: float = DIP_THRESHOLD,
                  min_observations: int = MIN_OBSERVATIONS,

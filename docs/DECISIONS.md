@@ -3666,3 +3666,159 @@ left as filed because R1 enumerated three fields and instructed "do not rewrite
 the proposal", and because that sentence is narrative reasoning recorded at
 filing time rather than a normative field. The dated amendment note in the
 proposal flags it explicitly. Raven to rule whether it should also be amended.*
+
+### D-356. tick 6 rulings: 045 ratified; 046 and 047 repairs accepted and built; dip_arb kill executed; context recorded (Raven ruling, 2026-08-20)
+
+**Problem being ruled on.** The forge reasoner's tick 6 produced three proposals and one referral set. (1) 045 refuses the brief's TWAP-amendment priority on identification grounds: zero positions in either book predate the 2026-08-07 settlement change, so there is no time-series or cross-sectional contrast and the change is absorbed into the baseline. (2) 046 shows the 043 counterfactual's 0.010 kill band is narrower than one sigma at the instrument's own 400-position bar, because the share is not the unit of independence: the market-side is, and 22.4-23.1 shares cluster per market-side. (3) 047 shows the counterfactual's graded source set defaults to LIVE_SOURCES, which is wider than the venue-only set proposal 043 names; zero rows are affected today. (4) dip_arb's kill recommendation, already recorded in the vault digest, is unexecuted while the loss has grown ~3.6x.
+
+**Decision.**
+
+**R1 - Proposal 045 is RATIFIED as written (governance, records only).** The TWAP direction is closed with measurements: the stack has no pre-TWAP observation and never will, and the natural control (hourly crypto) is n=0 in both books. No 038/039/043 amendment carrying a TWAP conditioning term, a pre/post split, or a regime dummy is written. No exit threshold (SALVAGE_FLOOR included) moves on the TWAP mechanic; the SALVAGE_FLOOR-vs-TWAP gap is recorded as an open item, not acted on, per D-342 R5. The three numbered reversal conditions stand. Raven explicitly RATIFIES the proposal's decline to buy the control arm (reversal condition 1): do NOT add hourly or non-crypto markets to the universe to satisfy a control, because allocation in a bleeding book is a cost 045 did not price and this ruling does not authorize.
+
+**R2 - Proposal 046 is ACCEPTED and its threshold question is answered: print the sigma, gate the verdict, change NO constant.** The repair is ratified exactly as written: report cluster counts and cluster-level standard errors beside every exit reason, and gate the VERDICT line at 3 sigma regardless of the 400-position bar. The referred threshold question (move the bar to ~5,800/~7,100, or widen the band to ~0.038/0.042) is answered NEITHER. The bar stays 400 and the band stays 0.010, per D-354 R2's refusal to re-size a live experiment's decision threshold mid-experiment. The 3-sigma gate is the mechanism that fixes the substance: it makes the effective verdict requirement data-dependent (delta must exceed 3 times the CURRENT cluster SE), which is exactly what a widened band would have done statically, without touching a constant. This also settles the fast-decision-rule question from the handoff: 043 is a hypothesis-test instrument (its rule 0's stated purpose is that nothing is readable before the bar), not a fast decision rule that deliberately accepts a high error rate, so the gate STAYS. Apply the identical cluster correction to the rule 6 self-check (046 rule 5) and do NOT re-size its 0.0500 threshold. The self-check's net bias moving 0.0025 -> 0.0043 is recorded as a margin re-quote, exactly as D-354 R2 ordered, and is now reported alongside a cluster-corrected sigma.
+
+**R3 - Proposal 047 is ACCEPTED, arrow direction decided: tighten the code.** The repair is ratified as written: a new named venue-only source constant for the counterfactual's graded set (NOT a re-definition of LIVE_SOURCES, which 038's coverage metric depends on and which stays unchanged), a refuse-and-report header that names excluded sources and their row counts instead of silently filtering, and a constructed-fixture test pinning that a venue + inferred_terminal_price ledger grades only the venue row and reports the exclusion. The self-check (rule 4 of 047) gets the same source set by construction. Raven decides the arrow question in the direction Cody recommended: the CODE is tightened, not the proposal text. The self-check's independence warrant is written for the winner field specifically (venue = CLOB winner vs Gamma outcomePrices, different endpoints, different fields); a terminal book price is not independent of Gamma's outcomePrices, so the instrument's own error bar requires venue-only grading regardless of what the proposal's author meant by "venue". The zero-delta rollback check stands: matched counts must be unchanged after the repair lands (baseline re-derived immediately before and after).
+
+**R4 - dip_arb KILL is EXECUTED via the D-322 mechanism: a reversible pause, not a deletion.** dip_arb's own kill condition (trailing-30 win rate below 45% once 30 closed trades exist) has fired decisively: WR 0.181 at 348 closes (trading.db), 0.172 at 58 (survivors), lifetime PnL -179.23 / -20.60. The vault digest already recommended KILL at 138 trades / -49.73, and the loss has grown ~3.6x since. The D-322 carve-out that kept it alive as proposal 031's tape-experiment subject is moot because 031 was never implemented. Kill it the same way D-322 paused fair_value_arb_hft/inverse: override `supported_market_types` on the `DipArb` class to a universe no cycle polls, reversibly, one line, explicitly NOT a deletion of the strategy file or its registry entry. Reverting is deleting the override. The running loop will not pick this up until the next restart (convention 13: Python snapshots source at import); this session does NOT restart anything. The kill takes effect at the next natural restart.
+
+**R5 - Context ratified, no action.** (a) mid_price_continuation is NOT a rotation candidate: lifetime WR 0.518 is a coin flip and the +22.33 window is more than the entire lifetime P&L; recorded as noise-pending-accumulation, no proposal. (b) 034 censoring re-derived FLAT a third time (53.5%/62.0% vs 041's 53.0%/61.9% and tick 5's 52.1%/61.5%); 041's prediction is confirmed, not re-litigated. (c) 037 stays BLOCKED; the corridor_pair cross-window probe is correctly not filed (blocked_upstream) while the shared resolution-join instrument has an open sizing defect - it can be filed after 046 lands. (d) The AGENT_ID-empty tally (6 SET / 12 EMPTY) is noted; the sanctioned CONFLICT_CHECK_AGENT_ID fallback remains the identity channel for gateway spawns. (e) The 038 backfill stays deferred on both databases (D-354 R4); only Aym's explicit call revisits it.
+
+**Where:** `docs/DECISIONS.md`, `docs/DECISIONS-INDEX.md`, `strategies/proposals/045-pm-twap-settlement-regime-unidentifiable.md`, `strategies/proposals/046-pm-counterfactual-independent-unit-repair.md`, `strategies/proposals/047-pm-counterfactual-source-filter-gap.md`, `strategies/proposals/031-pm-offcrypto-tape-bootstrap-probe.md` (amendment note only), `backtest/settlement_coverage.py`, `engine/polymarket/resolution_ledger.py` (constants only), `strategies/polymarket/dip_arb.py`, `tests/test_resolution_ledger.py`, `CLAUDE.md` (session stamp), `docs/handoffs/from-raven/2026-08-20-tick6-rulings-and-repairs.md`, `docs/handoffs/2026-08-20-tick6-rulings-executed.md`.
+
+*Recording-session note (`cody-tick6-rulings`, 2026-08-20). This paragraph sits
+OUTSIDE the verbatim ruling text above, per the transcription convention.*
+
+*R1 through R5 are the ruling text of
+`docs/handoffs/from-raven/2026-08-20-tick6-rulings-and-repairs.md`, transcribed
+from its RULING section; the Problem block is that brief's "Problem being ruled
+on" block. Nothing was added to, removed from, or reordered inside the five
+rulings. The only deviations from the brief's characters are the ruling-label
+separators (the brief's `R1 -` spacing is preserved) and the insertion of a
+`**Decision.**` line before R1, matching the D-354 entry shape the brief told
+this session to follow.*
+
+*NUMBERING. The brief is internally inconsistent about its own number: its
+title, its numbering note and its RULING heading all say D-356, while its step 6,
+its step 8 and its Constraints section say "D-355 R4" and "the D-355 entry". The
+explicit numbering note won, because it is the clause that reasons about the
+conflict: it states that D-355 is already allocated to
+`docs/handoffs/from-raven/2026-08-20-orphan-sweep-implement.md` and instructs
+"Do not use D-355 for anything." This entry is therefore D-356 and D-355 is left
+free for the orphan-sweep session. Verified before writing: ZERO literal
+occurrences of "D-356" in `docs/DECISIONS.md`, and zero of "D-355"; the highest
+`### D-` heading in the file was 354. The in-code comment on the dip_arb
+override cites D-356 R4, not the brief's "D-355 R4".*
+
+*WHAT WAS BUILT, and the three places the implementation departs from the
+proposals' literal text. All three are deliberate and none was silent.*
+
+*(1) 046's SE formula is `sqrt(p*(1-p)/clusters)` exactly as its kill condition
+specifies, and its own rollback checks were run and PASS on both books. But at
+p = 0.0 or p = 1.0 that formula returns EXACTLY ZERO, which would make the
+3-sigma gate vacuously satisfied by any delta whatever - a hole 046's text does
+not address because it assumes an interior p. The gate therefore fails CLOSED on
+a zero sigma and records NOT_TESTED, naming the degeneracy in its reason string
+(convention 11: an unreadable state is not an empty one). This is the one place
+the instrument is STRICTER than 046 as written.*
+
+*(2) 047's kill condition clause 3 asks for a fixture holding "one `venue` row
+and one `inferred_terminal_price` row for the same market-side". That is
+UNCONSTRUCTIBLE and the proposal did not know it: `market_resolutions` carries
+`UNIQUE (market_slug, outcome_side)`, verified by direct insert this session
+(`IntegrityError: UNIQUE constraint failed`), and `write_resolutions` uses
+`INSERT OR IGNORE`, so a market-side holds exactly ONE row whatever its source
+and the first writer wins. The realisable failure is therefore whole ADDITIONAL
+market-sides entering the graded arm and the self-check, which is the mechanism
+that actually mattered in 047's argument, and that is what the fixture builds -
+one venue market-side, one inferred_terminal_price market-side, asserting the
+default grades ONE and that `sources=LIVE_SOURCES` grades TWO (so the test passes
+for the right reason rather than because the second row is missing). A separate
+test pins the UNIQUE constraint itself, so a later session reads this as a
+deliberate deviation and not a weakened test.*
+
+*(3) Three pre-existing tests in `TestCounterfactualKillVerdict` asserted
+CONFIRMED, NEGATIVE and INCONCLUSIVE verdicts on 400-position books whose deltas
+the cluster-level sigma cannot separate from zero - which is precisely 046's
+thesis, arriving as three red tests. They were RE-SIZED (to 500, 600 and 3,000
+positions) so the band logic they exist to test is still reached, and the
+blocking behaviour they used to assert is now pinned explicitly in a new
+`TestTheThreeSigmaGate`, including a test that 400 matched positions with a
+delta past the 0.010 band still returns NOT_TESTED. No threshold was re-sized:
+`KILL_BAND` is 0.010, `KILL_MIN_MATCHED` is 400 and
+`SELF_CHECK_MAX_DISAGREEMENT_RATE` is 0.0500, each pinned by assertion (046
+rule 4, D-354 R2).*
+
+*ROLLBACK CHECKS, both run and both PASS on both databases. 047's zero-delta
+check could not be run the way its kill condition words it - "the pre-repair
+count" and the post-repair count are minutes apart and BOTH BOOKS MOVE UNDER
+READ, so that comparison measures drift, not the repair. A first attempt showed
+exactly that: `narrow` matched 429 against `wide` 428 in env B, a direction a
+NARROWER filter cannot produce. The check was re-run with both source sets read
+inside ONE pinned WAL snapshot (`BEGIN` ... `COMMIT`), which is the comparison
+the kill condition means: matched counts IDENTICAL, 964 = 964 in env A and
+433 = 433 in env B, self-check positions identical at 332 and 123. The census
+confirms why it had to be zero: both ledgers are venue-only (840 and 438 priced
+rows, zero excluded), so the two source sets select the same rows by
+construction. 046's check A (cluster count never exceeds matched count) passes
+for every exit reason in both books; its check B (printed sigma equals
+`sqrt(p*(1-p)/clusters)` recomputed from the tool's OWN PRINTED p and cluster
+count) was run by parsing stdout with no database access, exactly as worded, and
+passes on 9 rows in env A and 7 in env B.*
+
+*READINGS AT 2026-08-20T04:59:39Z, point-in-time and NOT carried as findings
+(043 rule 0 and 046 both forbid it). Env A `sell:salvage_floor`: 157 matched,
+3,014 shares, 135 market-sides, 1.16 positions and 22.3 shares per cluster,
+settle rate 0.0537, cluster sigma 0.0194, delta +0.0115/share = 0.59 sigma.
+Env B: 145 matched, 2,831 shares, 124 market-sides, 1.17 and 22.8, settle rate
+0.0699, cluster sigma 0.0229, delta -0.0001/share = 0.00 sigma. The design
+effect 046 measured reproduces exactly (22.4 and 23.1 shares per cluster at its
+read). Both books remain NOT_TESTED on the 400-position bar alone, before the
+new gate is reached. The two arms still disagree in SIGN, and env B's delta is
+now one ten-thousandth of a dollar per share - which is what 046 predicted a
+statistic with no signal would keep doing.*
+
+*dip_arb was RE-DERIVED before the kill rather than taken from the brief
+(convention 25), and the numbers had MOVED: 354 closes / -169.14 USD / WR 0.186
+in `db/trading.db` and 58 / -20.60 / 0.172 in `db/trading-survivors.db`, against
+the brief's 348 / -179.23 / 0.181 and 58 / -20.60 / 0.172. The env A loss is
+10.09 USD SMALLER than the brief states while the close count is 6 higher, so
+the ruling's "grown ~3.6x since the vault recommendation" is a 3.4x on this
+read. The kill is unaffected and is if anything more decisive on the measure the
+strategy's OWN kill condition names: trailing-30 win rate is 0.100 in env A and
+0.200 in env B, both far below the 0.45 line, on 354 and 58 closes against the
+30 it requires. The override is `supported_market_types = ('smart_money',)` with
+the D-322 comment shape; `build_strategies()`, the registry and `config.yaml`
+are untouched, and `supports_market_type` was verified False for crypto_updown,
+weather, event, sports and political after the edit. NO PROCESS WAS SIGNALLED OR
+RESTARTED: both shadow loops are still running the source they imported at
+their own start times, so the kill takes effect at the next natural restart
+(convention 13).*
+
+*Suite and harness were RE-DERIVED FRESH, as the brief required, because
+importable files changed: 4,136 passed / 1 skipped / 0 failed in 390.94s
+(`tests/` less `test_dashboard_charts.py`), which is the inherited 4,116 plus
+the 20 tests added this session, and `backtest/validate_harness.py` 21/21
+rc 0. An AST pass over `tests/test_resolution_ledger.py` confirms all 103 of its
+`test_` functions are module-or-class level with none nested inside another
+function - the `5864461` dead-test trap, checked rather than assumed.*
+
+*Gate as measured at session start: `git rev-parse HEAD` read
+`c97fa32907409525c0f64d3b17db80c1cd390303`, matching the brief with a clean tree
+- the fourth correct brief HEAD in a row. `engine.concurrency who` reported ZERO
+active checkouts. `AGENT_ID` read `cody-tick6-rulings` (python
+`os.environ.get`), so it was SET on this gateway spawn and no
+`CONFLICT_CHECK_AGENT_ID` fallback was needed; the standing tally moves to 7 SET
+/ 12 EMPTY. Write and Edit were BOTH GRANTED. Every edit went through
+`engine.concurrency.safe_edit` regardless (convention 26). No `claude` sibling
+was alive: the only match was this session itself (pid 85566) and the tmux
+server's stale Aug-19 argv, both known traps. Both shadow loops were alive and
+untouched throughout - pid 52733 (`raven-shadow-restart`, main) and pid 73117
+(`raven-env-b-restart`, `--db db/trading-survivors.db`). Ledger rows moved
+822 -> 840 (env A) and 420 -> 438 (env B) WITHIN this session, and matched
+salvage 153 -> 157 and 141 -> 145; every figure above is point-in-time
+(convention 25).*
+
+*Constraints honoured: no loop restart, no `config.yaml`, no 038 `--backfill` on
+either database, no orphan sweep (D-353/D-355 stay unexecuted), 037 left
+BLOCKED, 039's counting scheme untouched, no wallet or API key touched, no live
+path, no backtest run.*

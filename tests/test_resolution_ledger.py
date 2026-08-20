@@ -32,6 +32,7 @@ replace.
    `TestUnresolvedAccounting` pins the count, the reason and the window.
 """
 import json
+import math
 import os
 import sqlite3
 import sys
@@ -43,7 +44,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from engine.polymarket.market_resolution import (  # noqa: E402
     MarketResolution, STATUS_NOT_CLOSED, STATUS_RESOLVED)
 from engine.polymarket.resolution_ledger import (  # noqa: E402
-    BACKFILL_SOURCES, LIVE_SOURCES, RESOLUTION_SOURCES,
+    BACKFILL_SOURCES, COUNTERFACTUAL_GRADED_SOURCES, LIVE_SOURCES,
+    RESOLUTION_SOURCES, SOURCE_INFERRED_TERMINAL_PRICE,
     SOURCE_SIBLING_INFERENCE_BACKFILL, SOURCE_VENUE, ResolutionLedger,
     ensure_schema, resolution_for, resolution_row_for, table_exists,
     write_resolutions)
@@ -991,23 +993,39 @@ class TestCounterfactualKillVerdict(object):
         assert verdict['required_matched'] == 400
         assert verdict['verdict'] == 'NOT_TESTED'
 
+    # The three sizes below are set so the delta clears BOTH the 0.010 band
+    # and the 3-sigma gate D-356 R2 added. They were 400 positions each until
+    # 046 showed that at 400 clusters the band is under one sigma wide, so a
+    # verdict there was noise: the sizes moved, the thresholds did NOT
+    # (046 rule 4). The gate's own blocking behaviour is pinned in
+    # TestTheThreeSigmaGate, including the cases these used to assert.
+
     def test_salvage_beating_hold_by_the_band_confirms_the_floor(self):
-        verdict = SC.counterfactual(self.salvage_book(400, 0.05))['verdict']
-        assert verdict['realised_settle_rate'] == 0.0
+        # 500 clusters at p=0.02: sigma 0.0063, 3 sigma 0.0188 < 0.03.
+        verdict = SC.counterfactual(
+            self.salvage_book(500, 0.05, settle_every=50))['verdict']
+        assert verdict['realised_settle_rate'] == pytest.approx(0.02)
         assert verdict['mean_exit_px'] == pytest.approx(0.05)
+        assert verdict['margin_sigma'] > 3.0
         assert verdict['verdict'] == 'CONFIRMED'
 
     def test_hold_beating_salvage_by_the_band_is_negative(self):
         # 5% of salvaged shares settle at 1.00 against a 0.02 exit price.
+        # 600 clusters at p=0.05: sigma 0.0089, 3 sigma 0.0267 < 0.03.
         verdict = SC.counterfactual(
-            self.salvage_book(400, 0.02, settle_every=20))['verdict']
+            self.salvage_book(600, 0.02, settle_every=20))['verdict']
         assert verdict['realised_settle_rate'] == pytest.approx(0.05)
+        assert verdict['margin_sigma'] > 3.0
         assert verdict['verdict'] == 'NEGATIVE'
 
     def test_inside_the_band_is_inconclusive_not_a_verdict(self):
-        # settle rate 0.05 against a 0.055 mean exit: a 0.005 margin.
+        # A margin INSIDE the band must still clear the gate to be called
+        # anything, so this needs a sigma well under the band: 3000 clusters
+        # at p=0.0033 give 0.0011, 3 sigma 0.0032, against a 0.0067 margin.
         verdict = SC.counterfactual(
-            self.salvage_book(400, 0.055, settle_every=20))['verdict']
+            self.salvage_book(3000, 0.010, settle_every=300))['verdict']
+        assert abs(verdict['margin']) < SC.KILL_BAND
+        assert verdict['margin_sigma'] > 3.0
         assert verdict['verdict'] == 'INCONCLUSIVE'
 
     def test_nothing_but_the_salvage_floor_is_graded(self):
@@ -1149,3 +1167,288 @@ class TestCounterfactualIsAReadNotAWrite(object):
                           SOURCE_VENUE)
         disk.close()
         assert SC.main(['--db', path, '--counterfactual']) == 2
+
+
+# ---------------------------------------------------------------------------
+# 8. The independent unit is the MARKET-SIDE, not the share (proposal 046,
+#    D-356 R2), and the graded source set is VENUE-ONLY (proposal 047,
+#    D-356 R3)
+# ---------------------------------------------------------------------------
+
+
+class TestClusterIsTheUnitOfIndependence(object):
+    """046. A market-side resolves ONCE; its shares are one draw, not many."""
+
+    def test_many_shares_on_one_market_side_are_one_cluster(self):
+        # The whole argument in one assertion. Three positions, 300 shares,
+        # ONE market-side. A per-share error bar would call this 300 draws.
+        conn = make_book(
+            [('m1', 'Up', 0.05, 'sell:salvage_floor', 100.0, 1000),
+             ('m1', 'Up', 0.05, 'sell:salvage_floor', 100.0, 1000),
+             ('m1', 'Up', 0.05, 'sell:salvage_floor', 100.0, 1000)],
+            [('m1', 'Up', 0.0, 100)])
+        row = row_for(SC.counterfactual(conn), 'sell:salvage_floor')
+        assert row['matched'] == 3
+        assert row['shares'] == 300.0
+        assert row['clusters'] == 1
+        assert row['positions_per_cluster'] == pytest.approx(3.0)
+        assert row['shares_per_cluster'] == pytest.approx(300.0)
+
+    def test_both_halves_of_the_key_make_the_cluster(self):
+        # Clustering on the slug alone would merge Up and Down - two
+        # ANTI-correlated outcomes - into one draw, understating the cluster
+        # count and producing an error bar too small in the opposite
+        # direction from the one this repair exists to fix (046 rule 1).
+        conn = make_book(
+            [('m1', 'Up', 0.05, 'sell:salvage_floor', 10.0, 1000),
+             ('m1', 'Down', 0.05, 'sell:salvage_floor', 10.0, 1000)],
+            [('m1', 'Up', 0.0, 100), ('m1', 'Down', 1.0, 100)])
+        row = row_for(SC.counterfactual(conn), 'sell:salvage_floor')
+        assert row['clusters'] == 2
+
+    def test_the_sigma_is_computed_on_clusters_not_shares(self):
+        # 100 shares per side across 4 market-sides, one of which settled.
+        # p = 0.25 share-weighted; the SE divides by 4 draws, not 400 shares.
+        conn = make_book(
+            [('m%d' % i, 'Up', 0.05, 'sell:salvage_floor', 100.0, 1000)
+             for i in range(4)],
+            [('m%d' % i, 'Up', 1.0 if i == 0 else 0.0, 100)
+             for i in range(4)])
+        row = row_for(SC.counterfactual(conn), 'sell:salvage_floor')
+        assert row['clusters'] == 4
+        assert row['realised_settle_rate'] == pytest.approx(0.25)
+        assert row['settle_rate_se'] == pytest.approx(
+            math.sqrt(0.25 * 0.75 / 4))
+        # The per-SHARE error bar it replaces is exactly sqrt(400/4) = 10x
+        # smaller. That ratio is the design effect, and on the live books it
+        # is sqrt(22.4) = 4.7x.
+        assert row['settle_rate_se'] == pytest.approx(
+            10 * math.sqrt(0.25 * 0.75 / 400))
+
+    def test_the_point_estimate_stays_share_weighted(self):
+        # 046 rule 3. The money at stake really is proportional to shares and
+        # the break-even identity is a share-weighted statement. Only the
+        # SAMPLE SIZE was wrong, never the weighting. A 90-share loser and a
+        # 10-share winner is a 0.10 settle rate, not the 0.50 an
+        # equal-weighted cluster mean would report.
+        conn = make_book(
+            [('m1', 'Up', 0.05, 'sell:salvage_floor', 90.0, 1000),
+             ('m2', 'Up', 0.05, 'sell:salvage_floor', 10.0, 1000)],
+            [('m1', 'Up', 0.0, 100), ('m2', 'Up', 1.0, 100)])
+        row = row_for(SC.counterfactual(conn), 'sell:salvage_floor')
+        assert row['realised_settle_rate'] == pytest.approx(0.10)
+        assert row['clusters'] == 2
+
+    def test_every_exit_reason_carries_its_own_cluster_count(self):
+        # 046 rule 2: not only the graded one. The context rows carry the
+        # largest deltas in the live table and the least support.
+        conn = make_book([
+            ('m1', 'Up', 0.90, 'sell:profit_target', 10.0, 1000),
+            ('m2', 'Up', 0.05, 'sell:salvage_floor', 10.0, 1000),
+            ('m3', 'Up', 0.31, 'sell:model_stop', 10.0, 1000),
+        ], [('m1', 'Up', 1.0, 100), ('m2', 'Up', 0.0, 100),
+            ('m3', 'Up', 0.0, 100)])
+        result = SC.counterfactual(conn)
+        for row in result['by_exit_reason']:
+            assert 'clusters' in row
+            assert 'settle_rate_se' in row
+        assert row_for(result, 'sell:model_stop')['clusters'] == 1
+
+    def test_the_cluster_count_never_exceeds_the_matched_count(self):
+        # 046's own rollback check A: a cluster count above the position count
+        # would mean the grouping key is inverted and each row is minting its
+        # own cluster.
+        conn = make_book(
+            [('m%d' % (i % 3), 'Up', 0.05, 'sell:salvage_floor', 10.0, 1000)
+             for i in range(9)],
+            [('m%d' % i, 'Up', 0.0, 100) for i in range(3)])
+        for row in SC.counterfactual(conn)['by_exit_reason']:
+            assert row['clusters'] <= row['matched']
+
+    def test_the_self_check_carries_the_same_correction(self):
+        # 046 rule 5. The self-check is the instrument's ONLY error bar and
+        # has the identical defect. Two settlements on ONE market-side are one
+        # draw there too.
+        conn = make_book(
+            [('m1', 'Up', 1.0, 'target', 10.0, 1000),
+             ('m1', 'Up', 1.0, 'target', 10.0, 1000),
+             ('m2', 'Up', 0.0, 'stop', 10.0, 1000)],
+            [('m1', 'Up', 1.0, 100), ('m2', 'Up', 0.0, 100)])
+        check = SC.counterfactual(conn)['self_check']
+        assert check['positions'] == 3
+        assert check['clusters'] == 2
+        assert check['positions_per_cluster'] == pytest.approx(1.5)
+
+    def test_the_ceiling_and_the_band_are_not_re_sized(self):
+        # 046 rule 4 and D-356 R2: the gate is ADDITIVE. D-354 R2 refused to
+        # re-size a live experiment's threshold mid-experiment and that
+        # refusal holds for a reason discovered later just as it held before.
+        assert SC.KILL_BAND == 0.010
+        assert SC.KILL_MIN_MATCHED == 400
+        assert SC.SELF_CHECK_MAX_DISAGREEMENT_RATE == 0.0500
+        assert SC.KILL_SIGMA_MULTIPLE == 3.0
+
+
+class TestTheThreeSigmaGate(object):
+    """046. The 400-position bar is NECESSARY and is not SUFFICIENT."""
+
+    def salvage_book(self, n, exit_px, settle_every=None):
+        rows = [('s%d' % i, 'Up', exit_px, 'sell:salvage_floor', 10.0, 1000)
+                for i in range(n)]
+        resolutions = [
+            ('s%d' % i, 'Up',
+             1.0 if (settle_every and i % settle_every == 0) else 0.0, 100)
+            for i in range(n)]
+        return make_book(rows, resolutions)
+
+    def test_the_bar_can_be_met_and_the_verdict_still_refused(self):
+        # 400 matched positions, a delta of 0.03 that clears the 0.010 band
+        # in the NEGATIVE direction - and 400 clusters at p=0.05 give a
+        # sigma of 0.0109, so 3 sigma is 0.0327 and 0.03 does not reach it.
+        # Before 046 this returned NEGATIVE on noise.
+        verdict = SC.counterfactual(
+            self.salvage_book(400, 0.02, settle_every=20))['verdict']
+        assert verdict['matched'] == 400
+        assert verdict['margin'] == pytest.approx(0.03)
+        assert verdict['margin'] >= SC.KILL_BAND
+        assert verdict['clusters'] == 400
+        assert verdict['margin_sigma'] < 3.0
+        assert verdict['verdict'] == 'NOT_TESTED'
+        assert 'sigma' in verdict['reason']
+
+    def test_a_delta_past_three_sigma_and_past_the_band_still_grades(self):
+        # The gate does not close the instrument, it raises the evidence bar.
+        # 600 clusters at p=0.05: sigma 0.0089, 3 sigma 0.0267 < 0.03.
+        verdict = SC.counterfactual(
+            self.salvage_book(600, 0.02, settle_every=20))['verdict']
+        assert verdict['clusters'] == 600
+        assert verdict['margin_sigma'] > 3.0
+        assert verdict['verdict'] == 'NEGATIVE'
+
+    def test_a_zero_sigma_fails_closed_rather_than_admitting_anything(self):
+        # Every cluster settling the same way makes sqrt(p*(1-p)/clusters)
+        # exactly 0.0, which would satisfy any delta VACUOUSLY. A zero error
+        # bar is an absent one, not a narrow one, so this fails CLOSED
+        # (convention 11). Not in 046's literal text, which assumes an
+        # interior p; recorded in D-356's handoff as a boundary judgment.
+        verdict = SC.counterfactual(self.salvage_book(400, 0.05))['verdict']
+        assert verdict['realised_settle_rate'] == 0.0
+        assert verdict['settle_rate_se'] == 0.0
+        assert verdict['verdict'] == 'NOT_TESTED'
+        assert 'zero error bar' in verdict['reason']
+
+    def test_the_gate_is_reported_even_when_the_bar_is_what_blocked(self):
+        # The reader must be able to see the sigma the verdict was measured
+        # against, not only the count that stopped it short.
+        report = SC.counterfactual(self.salvage_book(100, 0.02,
+                                                     settle_every=20))
+        verdict = report['verdict']
+        assert verdict['verdict'] == 'NOT_TESTED'
+        assert verdict['clusters'] == 100
+        assert verdict['sigma_multiple'] == 3.0
+        assert any('sigma' in line for line
+                   in SC.format_counterfactual(report))
+
+
+class TestCounterfactualGradesVenueOnly(object):
+    """047 / D-356 R3: 043 says `source = venue`; the code now says it too."""
+
+    def test_the_default_graded_set_is_venue_only(self):
+        assert COUNTERFACTUAL_GRADED_SOURCES == (SOURCE_VENUE,)
+
+    def test_live_sources_is_unchanged_because_038_depends_on_it(self):
+        # 047 rule 1. Coverage and grading genuinely need DIFFERENT source
+        # sets: for COVERAGE an inferred terminal price IS a legitimately
+        # recovered resolution and counting it is right. The fix is a second
+        # named constant, never a change to the first.
+        assert LIVE_SOURCES == (SOURCE_VENUE, SOURCE_INFERRED_TERMINAL_PRICE)
+        assert SOURCE_INFERRED_TERMINAL_PRICE in RESOLUTION_SOURCES
+
+    def two_source_book(self):
+        """One venue market-side and one inferred_terminal_price market-side.
+
+        047's kill condition asks for both sources on the SAME market-side.
+        That is UNCONSTRUCTIBLE: `market_resolutions` carries
+        `UNIQUE (market_slug, outcome_side)`, so a market-side holds exactly
+        one row whatever its source, and `write_resolutions` uses
+        `INSERT OR IGNORE` so the first writer wins. The realisable failure
+        is therefore whole ADDITIONAL market-sides entering the graded arm,
+        which is what this builds and what actually matters - the same-side
+        variant is pinned as impossible in the test below.
+        """
+        conn = make_book(
+            [('m-venue', 'Up', 0.05, 'sell:salvage_floor', 10.0, 1000),
+             ('m-inferred', 'Up', 0.05, 'sell:salvage_floor', 10.0, 1000)],
+            [('m-venue', 'Up', 0.0, 100)])
+        write_resolutions(conn, [('m-inferred', 'Up', 0.0, 100)],
+                          SOURCE_INFERRED_TERMINAL_PRICE)
+        return conn
+
+    def test_only_the_venue_row_is_graded(self):
+        row = row_for(SC.counterfactual(self.two_source_book()),
+                      'sell:salvage_floor')
+        assert row['matched'] == 1
+        assert row['clusters'] == 1
+
+    def test_the_old_default_would_have_graded_both(self):
+        # Proves the fixture really carries both sources, so the test above
+        # passes for the RIGHT reason rather than because the second row is
+        # missing. This is the assertion that would have caught the defect.
+        row = row_for(
+            SC.counterfactual(self.two_source_book(), sources=LIVE_SOURCES),
+            'sell:salvage_floor')
+        assert row['matched'] == 2
+
+    def test_the_excluded_source_is_reported_not_silently_dropped(self):
+        # 047 rule 3, convention 20: silent exclusion and silent inclusion are
+        # the same defect facing opposite directions.
+        report = SC.counterfactual(self.two_source_book())
+        census = report['source_census']
+        assert census['excluded'] == [
+            dict(source=SOURCE_INFERRED_TERMINAL_PRICE, rows=1)]
+        assert census['graded_rows'] == 1
+        assert census['total_rows'] == 2
+        header = '\n'.join(SC.format_counterfactual(report))
+        assert SOURCE_INFERRED_TERMINAL_PRICE in header
+        assert 'EXCLUDED' in header
+
+    def test_an_all_venue_ledger_reports_no_exclusion(self):
+        conn = make_book(
+            [('m1', 'Up', 0.05, 'sell:salvage_floor', 10.0, 1000)],
+            [('m1', 'Up', 0.0, 100)])
+        census = SC.counterfactual(conn)['source_census']
+        assert census['excluded'] == []
+        assert census['excluded_rows'] == 0
+
+    def test_the_self_check_uses_the_graded_set_too(self):
+        # 047 rule 4. The self-check's independence warrant is a claim about
+        # the venue WINNER FIELD against Gamma's outcomePrices. A terminal
+        # BOOK PRICE is the same kind of quantity as outcomePrices, so
+        # admitting it would turn the check from field-against-price into
+        # price-against-price and the disagreement rate would FALL for
+        # reasons unrelated to the ledger being more correct. An error bar
+        # that shrinks because the instrument got worse is the most dangerous
+        # failure available to this design.
+        conn = make_book(
+            [('m-venue', 'Up', 1.0, 'target', 10.0, 1000),
+             ('m-inferred', 'Up', 1.0, 'target', 10.0, 1000)],
+            [('m-venue', 'Up', 1.0, 100)])
+        write_resolutions(conn, [('m-inferred', 'Up', 1.0, 100)],
+                          SOURCE_INFERRED_TERMINAL_PRICE)
+        assert SC.counterfactual(conn)['self_check']['positions'] == 1
+        assert SC.counterfactual(
+            conn, sources=LIVE_SOURCES)['self_check']['positions'] == 2
+
+    def test_one_market_side_cannot_hold_two_sources(self):
+        # Pins the schema fact that makes 047's literal fixture
+        # unconstructible, so a later session reads this as a DELIBERATE
+        # deviation rather than a weakened test.
+        conn = make_book(
+            [('m1', 'Up', 0.05, 'sell:salvage_floor', 10.0, 1000)],
+            [('m1', 'Up', 0.0, 100)])
+        write_resolutions(conn, [('m1', 'Up', 1.0, 100)],
+                          SOURCE_INFERRED_TERMINAL_PRICE)
+        rows = conn.execute(
+            'SELECT source, resolved_px FROM market_resolutions '
+            'WHERE market_slug = ?', ('m1',)).fetchall()
+        assert rows == [(SOURCE_VENUE, 0.0)]

@@ -27,6 +27,51 @@ source: "forge"
 forge_warnings: "no_graveyard_link_warning"
 ---
 
+**RULED - 2026-08-20, D-356 R3 (`cody-tick6-rulings`). ACCEPTED and BUILT;
+the arrow points at the CODE.** Raven confirmed the header claim live - the tool
+printed `sources ['venue', 'inferred_terminal_price']` on both databases while
+`market_resolutions` GROUP BY source returned only `venue` - and decided the
+referred arrow question in the direction this proposal recommended: the CODE is
+tightened, not 043's text. The reason is the one given here, that the
+self-check's independence warrant is written for the winner FIELD specifically,
+so a terminal book price fails it regardless of what 043's author meant by
+"venue".
+
+BUILT this session. `COUNTERFACTUAL_GRADED_SOURCES = (SOURCE_VENUE,)` is a new
+named constant in `engine/polymarket/resolution_ledger.py`;
+`LIVE_SOURCES` is UNCHANGED and still carries both sources, because 038's
+coverage metric depends on it (rule 1); `SOURCE_INFERRED_TERMINAL_PRICE` is not
+deleted from the vocabulary (rule 2); the report names excluded sources and
+their row counts in its header instead of filtering silently (rule 3); the
+self-check gets the same set by construction (rule 4).
+
+**One clause of the kill condition could not be satisfied as worded, and the
+reason is a schema fact this proposal did not know.** Clause 3 asks for a fixture
+holding "one `venue` row and one `inferred_terminal_price` row for the same
+market-side". `market_resolutions` carries `UNIQUE (market_slug, outcome_side)`,
+verified this session by direct insert (`IntegrityError: UNIQUE constraint
+failed`), and `write_resolutions` uses `INSERT OR IGNORE` - so a market-side
+holds exactly ONE row whatever its source and the first writer wins. The
+same-market-side contamination this proposal describes is therefore
+IMPOSSIBLE, and the realisable failure is whole ADDITIONAL market-sides entering
+the graded arm and the self-check. That is the mechanism that actually carried
+the argument, and it is what the fixture builds: one venue market-side, one
+inferred_terminal_price market-side, asserting the default grades ONE while
+`sources=LIVE_SOURCES` grades TWO, so the test passes for the right reason
+rather than because the second row is missing. A separate test pins the UNIQUE
+constraint itself so this reads as a deliberate deviation and not a weakened
+test.
+
+The zero-delta rollback check PASSES on both books, but not as worded: a
+pre-repair and post-repair count minutes apart measure LIVE DRIFT, not the
+repair, and a first attempt showed exactly that - `narrow` matched 429 against
+`wide` 428 in environment B, a direction a NARROWER filter cannot produce. Re-run
+with both source sets read inside ONE pinned WAL snapshot, the matched counts are
+IDENTICAL: 964 = 964 in environment A and 433 = 433 in environment B, with
+self-check positions identical at 332 and 123. The census confirms why it had to
+be zero - both ledgers are venue-only, 840 and 438 priced rows, zero excluded -
+so the defect was latent exactly as filed and nothing needed re-running.
+
 > **LATENT, NOT LIVE. Nothing measured is wrong.** `market_resolutions` holds
 > `venue` rows and only `venue` rows in both databases - 786 and 390 at this
 > snapshot - and the source this proposal excludes has never been written by

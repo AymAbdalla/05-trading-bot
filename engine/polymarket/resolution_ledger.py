@@ -109,6 +109,31 @@ SOURCE_SIBLING_INFERENCE_BACKFILL = 'sibling_inference_backfill'
 #: would let the repair pass on data that predates it.
 LIVE_SOURCES = (SOURCE_VENUE, SOURCE_INFERRED_TERMINAL_PRICE)
 
+#: The sources proposal 043's COUNTERFACTUAL grades, and the only ones its
+#: rule-6 self-check may run against. Named for what it ADMITS rather than for
+#: what it excludes, which is the naming failure proposal 047 diagnosed:
+#: `LIVE_SOURCES` reads at a call site as "the sources that are live", which is
+#: true and is not the question 043 asks. 043 asks for observations of the
+#: VENUE'S OWN resolution, which is strictly smaller.
+#:
+#: Deliberately NOT a re-definition of `LIVE_SOURCES` (047 rule 1). That
+#: constant serves 038's rule-2 coverage number, a different kill condition on
+#: a different question, and it is correct as written: for COVERAGE an inferred
+#: terminal price IS a legitimately recovered resolution and counting it is
+#: right. Two metrics, two correct-but-different source sets.
+#:
+#: The substantive reason is the self-check's independence warrant, which is a
+#: claim about `source = 'venue'` specifically: the ledger reads the CLOB's
+#: `tokens[].winner` FIELD while the paper adapter read Gamma's `outcomePrices`
+#: - different endpoint, different field, different failure modes. An
+#: `inferred_terminal_price` row is a terminal BOOK PRICE, the same KIND of
+#: quantity as `outcomePrices`, so admitting it would turn the check from a
+#: field-against-price comparison into price-against-price and the
+#: disagreement rate would FALL for reasons unrelated to the ledger being more
+#: correct. An error bar that shrinks because the instrument got worse is the
+#: most dangerous failure available to this design (047).
+COUNTERFACTUAL_GRADED_SOURCES = (SOURCE_VENUE,)
+
 BACKFILL_SOURCES = (SOURCE_SIBLING_INFERENCE_BACKFILL,)
 
 #: Every legal value. The writer rejects anything else rather than letting a
@@ -564,6 +589,7 @@ class ResolutionLedger(object):
 __all__ = [
     'SOURCE_VENUE', 'SOURCE_INFERRED_TERMINAL_PRICE',
     'SOURCE_SIBLING_INFERENCE_BACKFILL', 'LIVE_SOURCES', 'BACKFILL_SOURCES',
+    'COUNTERFACTUAL_GRADED_SOURCES',
     'RESOLUTION_SOURCES', 'SCHEMA_SQL', 'table_exists', 'ensure_schema',
     'write_resolutions',
     'resolution_for', 'resolution_row_for', 'ResolutionLedger',

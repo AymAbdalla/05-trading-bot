@@ -27,6 +27,45 @@ source: "forge"
 forge_warnings: "no_graveyard_link_warning"
 ---
 
+**RULED - 2026-08-20, D-356 R2 (`cody-tick6-rulings`). ACCEPTED and BUILT;
+no field was changed and no constant was re-sized.** Raven independently
+reproduced the cluster claim before ruling: grouping matched
+`sell:salvage_floor` positions by `(market_slug, outcome_side)` yields settle
+rates taking EXACTLY {0.0, 1.0} in both books, at 22.4 and 23.1 shares per
+market-side. The diagnosis - that only ledger measurement error was budgeted and
+sampling error was not - is accepted as sound.
+
+**The referred threshold question is answered NEITHER.** The bar does NOT move to
+~5,800/~7,100 and the band does NOT widen to ~0.038/0.042. `KILL_MIN_MATCHED`
+stays 400 and `KILL_BAND` stays 0.010, per D-354 R2's refusal to re-size a live
+experiment's decision threshold mid-experiment. The 3-sigma gate is the
+mechanism that fixes the substance instead: it makes the verdict requirement
+DATA-DEPENDENT (the delta must exceed 3x the CURRENT cluster SE), which is what a
+widened band would have done statically, without touching a constant.
+
+**The fast-decision-rule question this proposal raised against itself, in the
+third objection of "Why this repair might be wrong", is settled in favour of the
+gate.** 043 is a hypothesis-test instrument - rule 0's stated purpose is that
+nothing is readable before the bar - and not a decision rule that deliberately
+accepts a high error rate to decide quickly. So the gate STAYS rather than being
+dropped in favour of the printed sigma alone. The two were written separable and
+Raven took the joined option.
+
+Rule 5's correction is applied to the rule 6 self-check and its 0.0500 threshold
+is likewise NOT re-sized.
+
+BUILT this session in `backtest/settlement_coverage.py`, with one departure from
+the text above, which is STRICTER and not looser: at p = 0.0 or p = 1.0 the
+specified `sqrt(p*(1-p)/clusters)` returns EXACTLY ZERO, which would make the
+3-sigma gate vacuously satisfied by any delta whatever - a hole this proposal
+does not address because it assumes an interior p. The gate therefore fails
+CLOSED on a zero sigma and records NOT_TESTED naming the degeneracy
+(convention 11). Both of this proposal's own rollback checks were run and PASS on
+both databases: the cluster count never exceeds the matched count for any exit
+reason, and the printed sigma equals `sqrt(p*(1-p)/clusters)` recomputed from the
+tool's own printed p and cluster count, checked by parsing stdout with no
+database access exactly as worded.
+
 > **This repair does not overturn proposal 043 and does not grade it.** 043 asks
 > the right question with the right join and its rule 0 is correct. What is
 > wrong is one number: the sample size used for the error bar. 043 counts

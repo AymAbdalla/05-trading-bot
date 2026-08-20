@@ -103,6 +103,7 @@ backfilled. Picking one would be a coin flip wearing a measurement's clothes.
 """
 import argparse
 import json
+import math
 import os
 import sqlite3
 import sys
@@ -110,7 +111,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from engine.polymarket.resolution_ledger import (  # noqa: E402
-    LIVE_SOURCES, SOURCE_SIBLING_INFERENCE_BACKFILL, ensure_schema,
+    COUNTERFACTUAL_GRADED_SOURCES, LIVE_SOURCES,
+    SOURCE_SIBLING_INFERENCE_BACKFILL, ensure_schema,
     resolution_row_for, table_exists, write_resolutions)
 
 #: `exit_reason` values that mean SETTLEMENT rather than a sale. Everything the
@@ -362,6 +364,22 @@ KILL_MIN_MATCHED = 400
 #: demonstrate it is wrong at.
 KILL_BAND = 0.010
 
+#: 046. How many CLUSTER-level standard errors the delta must clear before the
+#: verdict may read anything other than NOT_TESTED. This sits BESIDE the
+#: `KILL_MIN_MATCHED` bar and does not replace it: both are necessary, neither
+#: is sufficient. Neither `KILL_BAND` nor `KILL_MIN_MATCHED` was re-sized to
+#: accommodate it (046 rule 4, D-354 R2 - a live experiment's decision
+#: threshold is not re-sized mid-experiment, and least of all from inside the
+#: repair that discovered the problem).
+#:
+#: Why a gate rather than a wider band: the band budgets LEDGER MEASUREMENT
+#: ERROR - it is 4x the demonstrated net directional bias - and contains no
+#: allowance for SAMPLING ERROR at all. Two independent error sources, one
+#: budgeted. A static wider band would have to guess the sample size; this gate
+#: reads the CURRENT cluster count every run, so it cannot go stale the way a
+#: constant fitted to today's design effect would.
+KILL_SIGMA_MULTIPLE = 3.0
+
 #: Above this share-weighted self-check disagreement rate the counterfactual
 #: is NOT_TESTED whatever it says, because at that rate the instrument is
 #: measuring itself rather than the book (043 rule 6).
@@ -397,6 +415,81 @@ FEE_INCIDENCE_NOTE = (
     'the entry cost is common to both arms and cancels. A taker fee applies '
     'to the sale and NOT to settlement redemption, so any non-zero fee makes '
     'the early exit look worse than measured here, never better')
+
+
+def _cluster_se(rate, clusters):
+    """Standard error of a settle rate whose independent unit is the CLUSTER.
+
+    046. A market-side resolves ONCE, so every share keyed to it wins or loses
+    together: 22 shares from one market-side are ONE draw observed 22 times,
+    not 22 draws. Measured on the live books, the cluster-level settle rates
+    take exactly {0.0, 1.0} and nothing between - which is not a coincidence to
+    note but the definition of the unit.
+
+    So the sample size for an error bar is the number of CLUSTERS, and
+    `sqrt(p*(1-p)/clusters)` is the classic clustered-sampling correction. At
+    the observed ~22 shares per cluster, a per-share SE understates the true
+    one by sqrt(22) = ~4.7x.
+
+    The point estimate stays SHARE-weighted (046 rule 3) and this does not
+    replace it. The money at stake really is proportional to shares and the
+    break-even identity in 043 rule 7 is a share-weighted statement. What was
+    wrong was using the share count as the SAMPLE SIZE, not the weighting of
+    the estimate. The two answer different questions and neither substitutes
+    for the other.
+
+    Returns a LOWER BOUND on the true SE, and the direction is the point. The
+    Up and Down sides of one window are perfectly anti-correlated and two 5m
+    windows on the same asset minutes apart share a spot path, so the
+    market-side still OVERSTATES the effective sample. Every sigma printed here
+    can only be too small, which means the band-versus-sigma comparison is
+    conservative in the direction that favours 043's existing kill.
+    """
+    if rate is None or not clusters:
+        return None
+    p = float(rate)
+    if p < 0.0 or p > 1.0:
+        return None
+    return math.sqrt(p * (1.0 - p) / float(clusters))
+
+
+def _source_census(conn, sources):
+    """Ledger rows per `source`, split into the graded set and the EXCLUDED.
+
+    047 rule 3. A filter that silently drops rows is convention 20's missing
+    number wearing a different hat: silent exclusion and silent inclusion are
+    the same defect facing opposite directions. So the report names every
+    source it did not grade and how many rows it left behind, rather than
+    printing a bare total that quietly shrank.
+
+    Counted over `resolved_px IS NOT NULL`, the SAME predicate `_ledger_map`
+    applies, so the graded and excluded counts are drawn from one population
+    and their sum is the number of rows that COULD have been graded. Counting
+    the excluded set over a wider predicate would report an exclusion that was
+    really an unpriceable row.
+
+    A NULL `source` is reported under the name `NULL` and counted as excluded.
+    `_ledger_map`'s `source IN (...)` drops it either way; naming it is the
+    difference between a reader learning that and not.
+    """
+    graded = None if sources is None else set(str(s) for s in sources)
+    census, excluded = [], []
+    for source, count in conn.execute(
+            'SELECT source, COUNT(*) FROM market_resolutions '
+            'WHERE resolved_px IS NOT NULL GROUP BY source'):
+        name = 'NULL' if source is None else str(source)
+        entry = dict(source=name, rows=int(count))
+        census.append(entry)
+        if graded is not None and name not in graded:
+            excluded.append(entry)
+    census.sort(key=lambda r: (-r['rows'], r['source']))
+    excluded.sort(key=lambda r: (-r['rows'], r['source']))
+    return dict(
+        census=census, excluded=excluded,
+        total_rows=sum(r['rows'] for r in census),
+        excluded_rows=sum(r['rows'] for r in excluded),
+        graded_rows=sum(r['rows'] for r in census
+                        if r not in excluded))
 
 
 class ZeroMatchError(RuntimeError):
@@ -471,10 +564,12 @@ def _empty_self_check(reason):
         ledger_px_not_binary_shares=0.0,
         net_directional_bias=None,
         max_rate=SELF_CHECK_MAX_DISAGREEMENT_RATE,
+        clusters=0, positions_per_cluster=None, shares_per_cluster=None,
+        rate_se=None, sigma_multiple=KILL_SIGMA_MULTIPLE,
         verdict='NOT_TESTED', reason=reason,
         baseline_note=SELF_CHECK_BASELINE_NOTE,
         strict=dict(positions=0, shares=0.0, disagreeing_shares=0.0,
-                    rate=None))
+                    rate=None, clusters=0))
 
 
 def _finish_self_check(acc, strict, reason=None):
@@ -494,10 +589,23 @@ def _finish_self_check(acc, strict, reason=None):
         positions=strict['positions'], shares=strict['shares'],
         disagreeing_shares=strict['disagreeing_shares'],
         rate=((strict['disagreeing_shares'] / strict['shares'])
-              if strict['shares'] else None))
+              if strict['shares'] else None),
+        clusters=len(strict['clusters']))
+    # 046 rule 5. The self-check is the instrument's ONLY error bar and it has
+    # the identical clustering defect as the graded arm: its disagreeing shares
+    # cluster by market-side exactly as the graded ones do. Its 0.0500
+    # threshold is NOT re-sized - it gets a printed cluster count and sigma
+    # beside it, the same treatment rule 4 gives the band.
+    block['clusters'] = len(acc['clusters'])
+    block['positions_per_cluster'] = (
+        (float(acc['positions']) / block['clusters'])
+        if block['clusters'] else None)
+    block['shares_per_cluster'] = (
+        (acc['shares'] / block['clusters']) if block['clusters'] else None)
     if not acc['shares']:
         return block
     block['rate'] = acc['disagreeing_shares'] / acc['shares']
+    block['rate_se'] = _cluster_se(block['rate'], block['clusters'])
     block['net_directional_bias'] = (
         (acc['settled_win'] - acc['settled_loss']) / acc['shares'])
     block['verdict'] = (
@@ -526,7 +634,14 @@ def _kill_verdict(rows_by_reason, self_check, ledger_span_days):
         mean_exit_px=(None if row is None else row['mean_exit_px']),
         realised_settle_rate=(None if row is None
                               else row['realised_settle_rate']),
-        margin=None,
+        margin=None, margin_sigma=None,
+        clusters=(0 if row is None else row['clusters']),
+        positions_per_cluster=(None if row is None
+                               else row['positions_per_cluster']),
+        shares_per_cluster=(None if row is None
+                            else row['shares_per_cluster']),
+        settle_rate_se=(None if row is None else row['settle_rate_se']),
+        sigma_multiple=KILL_SIGMA_MULTIPLE,
         self_check_verdict=self_check['verdict'],
         self_check_rate=self_check['rate'],
         ledger_span_days=ledger_span_days,
@@ -554,6 +669,46 @@ def _kill_verdict(rows_by_reason, self_check, ledger_span_days):
         return verdict
     margin = row['realised_settle_rate'] - row['mean_exit_px']
     verdict['margin'] = margin
+    se = row['settle_rate_se']
+    clusters = row['clusters']
+    # 046. The bar above counts POSITIONS; this counts independent DRAWS. A
+    # market-side resolves once and every share keyed to it wins or loses with
+    # it, so the 400 positions the bar admits are only ~340 draws, and at that
+    # size the 0.010 band is 0.79 sigma wide - NARROWER THAN ONE SIGMA of the
+    # statistic it grades. The bar and this gate are both necessary and neither
+    # is sufficient. Neither constant was re-sized to add this (046 rule 4).
+    if not clusters or se is None:
+        verdict['reason'] = (
+            'the cluster count is unavailable, so the sampling error on the '
+            'settle rate cannot be computed and the delta cannot be told from '
+            'noise; NOT_TESTED means could not run (convention 11)')
+        return verdict
+    if se == 0.0:
+        # Every cluster fell the same way, so sqrt(p*(1-p)/clusters) is exactly
+        # zero and the gate would be VACUOUSLY satisfied by any delta at all.
+        # A zero error bar is an absent one, not a narrow one, so this fails
+        # CLOSED. Not in 046's literal text, which assumes an interior p;
+        # recorded in the handoff as a judgment call at the boundary.
+        verdict['reason'] = (
+            'all %d clusters settled the same way, so sqrt(p*(1-p)/clusters) '
+            'is exactly 0.0000 and the %.1f-sigma gate would admit any delta '
+            'whatever; a zero error bar is an absent one, not a narrow one, '
+            'so this is NOT_TESTED' % (clusters, KILL_SIGMA_MULTIPLE))
+        return verdict
+    verdict['margin_sigma'] = abs(margin) / se
+    if abs(margin) < KILL_SIGMA_MULTIPLE * se:
+        verdict['reason'] = (
+            'the delta is %+.4f/share against a cluster-level standard error '
+            'of %.4f on %d independent market-sides = %.2f sigma, short of '
+            'the %.1f sigma a verdict requires. The %d-position bar is met and '
+            'is NOT sufficient: the share is not the unit of independence, the '
+            'market-side is, at %.1f shares per draw. Recorded NOT_TESTED '
+            '(046). The %.4f band budgets ledger measurement error and '
+            'allows nothing for sampling error'
+            % (margin, se, clusters, verdict['margin_sigma'],
+               KILL_SIGMA_MULTIPLE, KILL_MIN_MATCHED,
+               row['shares_per_cluster'] or 0.0, KILL_BAND))
+        return verdict
     if margin >= KILL_BAND:
         verdict['verdict'] = 'NEGATIVE'
         verdict['reason'] = (
@@ -600,7 +755,8 @@ def _ledger_span_days(conn, sources):
     return (float(high) - float(low)) / 86400.0
 
 
-def counterfactual(conn, since_ms=None, sources=LIVE_SOURCES):
+def counterfactual(conn, since_ms=None,
+                   sources=COUNTERFACTUAL_GRADED_SOURCES):
     """What each exit took, against what that market-side turned out worth.
 
     READS `market_resolutions`; writes nothing, anywhere, ever. It shares no
@@ -625,11 +781,28 @@ def counterfactual(conn, since_ms=None, sources=LIVE_SOURCES):
     ledger's `window_ts` and `resolved_ts` are SECONDS. Mixing them is a
     factor-of-1000 error that empties the result and looks like a market that
     was never traded.
+
+    `sources` defaults to `COUNTERFACTUAL_GRADED_SOURCES`, which is VENUE-ONLY,
+    because that is what 043's kill condition says it grades: "only positions
+    whose market-side resolution is present in `market_resolutions` with
+    `source` = `venue`". It defaulted to `LIVE_SOURCES` until 047, which is one
+    source wider, and the widening would have been silent in the self-check
+    before it was visible anywhere else. Sources outside the graded set are
+    REPORTED with their row counts in `source_census`, never silently dropped
+    (047 rule 3, convention 20).
+
+    Every per-exit-reason row carries a CLUSTER count - distinct
+    `(market_slug, outcome_side)` - beside its share count, and a cluster-level
+    standard error on the settle rate. The share is not the unit of
+    independence; the market-side is (046). The point estimates stay
+    share-weighted and the sigma is reported beside them, not instead of them.
     """
     result = dict(
         sources=(list(sources) if sources is not None else None),
         since_ms=(None if since_ms is None else int(since_ms)),
         ledger_table_present=False, ledger_rows=0, ledger_span_days=None,
+        source_census=dict(census=[], excluded=[], total_rows=0,
+                           excluded_rows=0, graded_rows=0),
         status='NOT_TESTED', reason=None,
         closed_positions=0, keyed_positions=0, no_outcome_side=0,
         matched_positions=0, unpriceable_positions=0,
@@ -641,7 +814,10 @@ def counterfactual(conn, since_ms=None, sources=LIVE_SOURCES):
         verdict=dict(graded_exit_reason=KILL_GRADED_EXIT_REASON,
                      matched=0, required_matched=KILL_MIN_MATCHED,
                      band=KILL_BAND, mean_exit_px=None,
-                     realised_settle_rate=None, margin=None,
+                     realised_settle_rate=None, margin=None, margin_sigma=None,
+                     clusters=0, positions_per_cluster=None,
+                     shares_per_cluster=None, settle_rate_se=None,
+                     sigma_multiple=KILL_SIGMA_MULTIPLE,
                      self_check_verdict='NOT_TESTED', self_check_rate=None,
                      ledger_span_days=None,
                      requeue_after_days=KILL_REQUEUE_DAYS,
@@ -655,6 +831,7 @@ def counterfactual(conn, since_ms=None, sources=LIVE_SOURCES):
             'run, never ran and found nothing (convention 11)')
         return result
     result['ledger_table_present'] = True
+    result['source_census'] = _source_census(conn, sources)
     ledger = _ledger_map(conn, sources)
     result['ledger_rows'] = len(ledger)
     result['ledger_span_days'] = _ledger_span_days(conn, sources)
@@ -669,8 +846,10 @@ def counterfactual(conn, since_ms=None, sources=LIVE_SOURCES):
 
     buckets = {}
     acc = dict(positions=0, shares=0.0, disagreeing_shares=0.0,
-               settled_win=0.0, settled_loss=0.0, not_binary=0.0)
-    strict = dict(positions=0, shares=0.0, disagreeing_shares=0.0)
+               settled_win=0.0, settled_loss=0.0, not_binary=0.0,
+               clusters=set())
+    strict = dict(positions=0, shares=0.0, disagreeing_shares=0.0,
+                  clusters=set())
 
     for reason, pair, exit_px, qty, features_json in conn.execute(sql, params):
         # A NULL exit_reason on a CLOSED position is a missing number, not an
@@ -680,7 +859,7 @@ def counterfactual(conn, since_ms=None, sources=LIVE_SOURCES):
         if bucket is None:
             bucket = dict(closed=0, keyed=0, matched=0, no_outcome_side=0,
                           unpriceable=0, shares=0.0, proceeds=0.0,
-                          realised=0.0)
+                          realised=0.0, clusters=set())
             buckets[label] = bucket
         bucket['closed'] += 1
         result['closed_positions'] += 1
@@ -693,7 +872,11 @@ def counterfactual(conn, since_ms=None, sources=LIVE_SOURCES):
         bucket['keyed'] += 1
         result['keyed_positions'] += 1
 
-        resolved_px = ledger.get((str(pair), str(side).lower()))
+        # 046. The CLUSTER key, and the join key, are the same pair - which
+        # is the whole argument: the venue resolves this tuple once, so every
+        # share the join attaches to it shares one outcome and is one draw.
+        cluster_key = (str(pair), str(side).lower())
+        resolved_px = ledger.get(cluster_key)
         if resolved_px is None:
             continue
         if qty is None or exit_px is None:
@@ -708,6 +891,7 @@ def counterfactual(conn, since_ms=None, sources=LIVE_SOURCES):
         price = float(exit_px)
         bucket['matched'] += 1
         result['matched_positions'] += 1
+        bucket['clusters'].add(cluster_key)
         bucket['shares'] += shares
         bucket['proceeds'] += price * shares
         if resolved_px >= 1.0:
@@ -721,10 +905,12 @@ def counterfactual(conn, since_ms=None, sources=LIVE_SOURCES):
             # overlap they are a real check and not a tautology.
             acc['positions'] += 1
             acc['shares'] += shares
+            acc['clusters'].add(cluster_key)
             settlement_reason = reason in SETTLEMENT_REASONS
             if settlement_reason:
                 strict['positions'] += 1
                 strict['shares'] += shares
+                strict['clusters'].add(cluster_key)
             if resolved_px != price:
                 acc['disagreeing_shares'] += shares
                 if settlement_reason:
@@ -770,6 +956,13 @@ def counterfactual(conn, since_ms=None, sources=LIVE_SOURCES):
         early_exit = label.startswith(EARLY_EXIT_PREFIX)
         mean_exit_px = (bucket['proceeds'] / shares) if shares else None
         settle_rate = (bucket['realised'] / shares) if shares else None
+        # 046 rule 2: EVERY exit reason, not only the graded one. The context
+        # rows carry the largest deltas in the table and the least support -
+        # `sell:model_stop` prints the biggest per-share number on ~15 matched
+        # positions. They already carry a NOT GRADEABLE label; they should also
+        # carry the number that shows how little is behind them.
+        clusters = len(bucket['clusters'])
+        settle_rate_se = _cluster_se(settle_rate, clusters)
         gradeable = (label == KILL_GRADED_EXIT_REASON
                      and bucket['matched'] >= KILL_MIN_MATCHED)
         if not early_exit:
@@ -801,6 +994,11 @@ def counterfactual(conn, since_ms=None, sources=LIVE_SOURCES):
             match_rate=((float(bucket['matched']) / bucket['closed'])
                         if bucket['closed'] else None),
             shares=shares,
+            clusters=clusters,
+            positions_per_cluster=((float(bucket['matched']) / clusters)
+                                   if clusters else None),
+            shares_per_cluster=((shares / clusters) if clusters else None),
+            settle_rate_se=settle_rate_se,
             proceeds_usd=bucket['proceeds'],
             realised_value_usd=bucket['realised'],
             delta_usd=bucket['proceeds'] - bucket['realised'],
@@ -808,6 +1006,9 @@ def counterfactual(conn, since_ms=None, sources=LIVE_SOURCES):
             realised_settle_rate=settle_rate,
             delta_per_share=(None if shares == 0
                              else mean_exit_px - settle_rate),
+            delta_sigma=(None if (shares == 0 or not settle_rate_se)
+                         else abs(mean_exit_px - settle_rate)
+                         / settle_rate_se),
             gradeable=gradeable,
             not_gradeable_reason=not_gradeable_reason)
         result['by_exit_reason'].append(row)
@@ -833,6 +1034,23 @@ def format_counterfactual(report):
            report['closed_positions'], report['no_outcome_side'],
            report['unpriceable_positions'], report['ledger_rows'],
            report['sources']))
+    census = report.get('source_census') or {}
+    excluded = census.get('excluded') or []
+    if excluded:
+        lines.append(
+            'SOURCES         graded %d of %d ledger rows; EXCLUDED %s. The '
+            'graded set is venue-only (043) and the exclusion is REPORTED, '
+            'not silently filtered'
+            % (census.get('graded_rows', 0), census.get('total_rows', 0),
+               ', '.join('%s %d' % (e['source'], e['rows'])
+                         for e in excluded)))
+    else:
+        lines.append(
+            'SOURCES         graded %d of %d ledger rows; excluded none - the '
+            'ledger holds %s and nothing else'
+            % (census.get('graded_rows', 0), census.get('total_rows', 0),
+               ', '.join(e['source'] for e in census.get('census') or [])
+               or 'no priced rows'))
     lines.append('BREAK-EVEN      %s' % report['break_even']['identity'])
     check = report['self_check']
     lines.append(
@@ -849,6 +1067,17 @@ def format_counterfactual(report):
            'n/a' if check['net_directional_bias'] is None
            else '%.4f' % check['net_directional_bias'],
            check['baseline_note']))
+    lines.append(
+        '                %d market-sides, %s positions each, %s shares each; '
+        'rate sigma %s at cluster level  (046: the share is not the unit of '
+        'independence, the market-side is; the %.4f ceiling is NOT re-sized)'
+        % (check['clusters'],
+           'n/a' if check['positions_per_cluster'] is None
+           else '%.2f' % check['positions_per_cluster'],
+           'n/a' if check['shares_per_cluster'] is None
+           else '%.1f' % check['shares_per_cluster'],
+           'n/a' if check['rate_se'] is None else '%.4f' % check['rate_se'],
+           check['max_rate']))
     for row in report['by_exit_reason']:
         lines.append(
             '%-44s match %d/%d = %s'
@@ -860,6 +1089,18 @@ def format_counterfactual(report):
             '%-44s shares %.1f  sold %.2f  worth %.2f  delta %+.2f USD'
             % ('', row['shares'], row['proceeds_usd'],
                row['realised_value_usd'], row['delta_usd']))
+        lines.append(
+            '%-44s clusters %d market-sides  %s pos/cluster  %s shares/cluster'
+            '  settle-rate sigma %s  delta %s sigma'
+            % ('', row['clusters'],
+               'n/a' if row['positions_per_cluster'] is None
+               else '%.2f' % row['positions_per_cluster'],
+               'n/a' if row['shares_per_cluster'] is None
+               else '%.1f' % row['shares_per_cluster'],
+               'n/a' if row['settle_rate_se'] is None
+               else '%.4f' % row['settle_rate_se'],
+               'n/a' if row['delta_sigma'] is None
+               else '%.2f' % row['delta_sigma']))
         lines.append(
             '%-44s mean exit %s  settle rate %s  delta %s /share  %s'
             % ('',
@@ -876,6 +1117,17 @@ def format_counterfactual(report):
                  % (verdict['graded_exit_reason'], verdict['matched'],
                     verdict['required_matched'], verdict['verdict']))
     lines.append('          %s' % verdict['reason'])
+    lines.append(
+        '          %d clusters, settle-rate sigma %s, delta %s sigma; gate '
+        '%.1f sigma AND %d matched AND band %.4f - all three necessary, none '
+        'sufficient (046)'
+        % (verdict['clusters'],
+           'n/a' if verdict['settle_rate_se'] is None
+           else '%.4f' % verdict['settle_rate_se'],
+           'n/a' if verdict['margin_sigma'] is None
+           else '%.2f' % verdict['margin_sigma'],
+           verdict['sigma_multiple'], verdict['required_matched'],
+           verdict['band']))
     return lines
 
 

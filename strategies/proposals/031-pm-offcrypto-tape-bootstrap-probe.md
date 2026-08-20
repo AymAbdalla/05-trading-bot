@@ -36,6 +36,26 @@ source: "forge"
 forge_warnings: "no_graveyard_link_warning"
 ---
 
+**AMENDMENT NOTE - 2026-08-20, per D-356 R4 (`cody-tick6-rulings`). Prose
+only; no field changed.** This proposal's subject strategy, `dip_arb`, was
+PAUSED on 2026-08-20 by a reversible `supported_market_types` override on the
+`DipArb` class, the D-322 mechanism. Its own kill condition - trailing-30 win
+rate below 45% once 30 closed trades exist - had fired decisively (trailing-30
+WR 0.100 in `db/trading.db` and 0.200 in `db/trading-survivors.db`, on 354 and
+58 lifetime closes at -169.14 and -20.60 USD).
+
+The D-322 carve-out that kept `dip_arb` alive as THIS proposal's tape-experiment
+subject was ruled MOOT, because this proposal was never implemented: no
+`tape_rows_available` and no persistent tape code exists anywhere in `engine/`,
+verified by grep. This experiment therefore cannot run as written while the
+pause stands - its subject no longer joins any universe the loop polls, so no
+off-crypto tape will accumulate for it.
+
+Nothing here re-scopes the proposal or changes its kill condition, and the pause
+is one line and reversible: deleting the override restores the declaration. If
+Raven or Aym wants this experiment run, the override has to come off first, and
+that is a decision about `dip_arb`, not about this document.
+
 ## The observation this rests on
 
 Verified by observation on 2026-08-18 at 17:25 PT, not inferred from code. Since the loop restart, 3,610 off-crypto rows landed in the signals table and 0 were acted.

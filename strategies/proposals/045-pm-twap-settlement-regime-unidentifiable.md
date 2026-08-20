@@ -25,6 +25,30 @@ source: "forge"
 forge_warnings: "no_graveyard_link_warning, validator_kind_not_registered"
 ---
 
+**RULED - 2026-08-20, D-356 R1 (`cody-tick6-rulings`). RATIFIED AS WRITTEN;
+no field was changed.** Raven ratifies this proposal in full and independently
+re-derived its load-bearing measurement before doing so: 0 of 3,840 positions in
+`db/trading.db` and 0 of 2,084 in `db/trading-survivors.db` opened before the
+2026-08-07 TWAP boundary, earliest opens 11-12 days after it. The TWAP direction
+is CLOSED with measurements rather than deferred. No 038/039/043 amendment
+carrying a TWAP conditioning term, a pre/post split or a regime dummy is
+written, and no exit threshold moves on the TWAP mechanic - `SALVAGE_FLOOR`
+included, which stays at 0.10 with its gap recorded as an open item under
+D-342 R5 rather than acted on. The three numbered reversal conditions stand.
+
+Raven EXPLICITLY ratifies reversal condition 1's decline to buy a control arm:
+do NOT add hourly or non-crypto markets to the universe to satisfy a control,
+because allocation in a bleeding book is a cost this proposal did not price and
+D-356 does not authorize. That question is recorded as open for Aym and may be
+overruled only in words.
+
+One factual correction to the front matter, recorded here rather than edited in
+place because the field is a warning LABEL and not a normative claim: the
+`validator_kind_not_registered` warning is STALE. Raven verified `kind:
+governance` IS registered in `agents/forge.py`, in both `KINDS` and
+`NULL_EDGE_KINDS`. The proposal itself flagged this as
+stale-pending-confirmation; it is now confirmed stale, and nothing needs fixing.
+
 > **This proposal REFUSES the direction the cycle brief listed as priority 1**,
 > and refuses priority 3 with the same measurement. The brief's premise is that
 > the shadow stack's exit economics were calibrated pre-TWAP and that the
