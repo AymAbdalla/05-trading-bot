@@ -3984,3 +3984,12 @@ R3. Data preservation mandate: DB snapshots taken pre-resume at backups/2026-08-
 R4. The 04:06:12 external resume is UNATTRIBUTED: not Aym, not Cody (session logs verified), not Hermes cron, not shell history, no login events. HALT removal has no audit trail. Open item for the A-8 audit.
 R5. Env B market_tape freeze is expected, not data loss: the only tape writer is dip_arb, which env B (survivors set) does not run. Its signals/positions/equity all fresh. Main tape healthy (75,419 rows).
 R6. Single-bankroll reality: both books collectively past zero on one unbroken bankroll. 0.40 line stays (already widened from 0.25 once; second widening needs Aym's word).
+
+### D-359. A-17: auto-halt DISABLED in shadow mode (AYM RULING, 2026-08-20)
+
+Aym: "Pause the halt in shadow, like right now, go."
+
+R1. SHADOW_RISK_LIMITS.max_drawdown_frac changed 0.40 -> 1.0 in engine/polymarket/shadow_loop.py. Drawdown halt NEVER fires in shadow now — the book runs until it zeroes and gets re-funded (D-358 policy).
+R2. Real-money default (DEFAULT_LIMITS max_drawdown_frac=0.25) is UNCHANGED and untouched. The halt stays fully armed for any future live mode.
+R3. The change is INERT until the next loop restart (running loop imported 0.40 at startup). Rides the Friday restart with keying + calibration + dip_arb kill + env B whitelist + 038 backfill. Until then, if the book re-halts, resume per D-358 (standing instruction).
+R4. Tests: 547 passed (no test pinned 0.40 as the limit). Recorded + committed by Raven.

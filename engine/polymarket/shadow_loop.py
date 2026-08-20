@@ -402,8 +402,14 @@ DEFAULT_RESOLVE_SEC = 60.0
 #: back to `risk_constraints.DEFAULT_LIMITS` directly) the day a strategy
 #: demonstrates calibrated edge and the book moves toward live - that is a
 #: decision for Raven and Aym, not a default to flip silently.
+#:
+#: A-17 (Aym ruling 2026-08-20): auto-halt DISABLED in shadow mode. The
+#: drawdown guard fights the measurement goal in shadow (D-358: resume,
+#: keep measuring, fund-if-zero). max_drawdown_frac=1.0 means the halt
+#: NEVER fires for drawdown in shadow — the book runs until it zeroes
+#: and gets re-funded. The real-money default (0.25) is UNCHANGED.
 SHADOW_RISK_LIMITS = dataclasses.replace(
-    risk_constraints.DEFAULT_LIMITS, max_drawdown_frac=0.40)
+    risk_constraints.DEFAULT_LIMITS, max_drawdown_frac=1.0)
 
 #: How often the settlement resolution ledger sweeps its pending markets
 #: (Forge proposal 038). Matched to the resolve cadence rather than the poll
