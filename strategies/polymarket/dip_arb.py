@@ -350,11 +350,21 @@ class PriceTapeByToken:
 
     def __init__(self, max_len: int = TAPE_LEN,
                  max_age_sec: float = TAPE_MAX_AGE_SEC,
-                 db_path: Optional[str] = None):
+                 db_path: Optional[str] = None,
+                 write_enabled: bool = True):
         self.max_len = int(max_len)
         self.max_age_sec = float(max_age_sec)
         self.tapes: Dict[str, List[Observation]] = {}
         self.drops: Dict[str, int] = {}
+        #: D-362 R4. Separates READING the persisted tape from WRITING it, so
+        #: exactly one component owns the write. A tape with `db_path` set and
+        #: `write_enabled=False` still backfills itself from `market_tape` on
+        #: first sight of a token - it just never inserts. `DipArb` is that
+        #: reader now; `ShadowLoop` is the writer. Before this split the ONLY
+        #: writer in production was `DipArb`, so sentinel-killing that one
+        #: strategy froze `market_tape` for every book, which is what R4
+        #: exists to fix.
+        self.write_enabled = bool(write_enabled)
         #: Proposal 031 phase 1. None means pure in-memory - the behaviour
         #: every existing caller and test relies on. A real path makes
         #: `observe(..., persist=True)` survive a process restart: the tape
@@ -426,6 +436,13 @@ class PriceTapeByToken:
                       best_bid, best_ask, source: str,
                       condition_id: Optional[str] = None,
                       complement_id: Optional[str] = None) -> None:
+        if not self.write_enabled:
+            # D-362 R4: a read-only tape. Counted, not silent, so "nobody is
+            # writing" and "the write failed" stay distinguishable
+            # (convention 20).
+            self.drops['write_disabled'] = self.drops.get('write_disabled',
+                                                          0) + 1
+            return
         conn = self._ensure_conn()
         if conn is None:
             return
@@ -542,6 +559,55 @@ def reference_price(book) -> Tuple[Optional[float], Optional[str]]:
     if ask is not None:
         return ask, SOURCE_ASK
     return None, None
+
+
+def observe_market_into_tape(tape: 'PriceTapeByToken', ctx, now: float,
+                             persist: bool = True) -> Dict[str, bool]:
+    """Record one context's quote for every token with a book. token -> accepted.
+
+    D-362 R4 lifted this out of `DipArb.observe` so a SECOND caller - the
+    shadow loop itself - can write `market_tape` on every cycle regardless of
+    which strategies are on the roster. It is one function and not two copies
+    on purpose: `condition_id` / `complement_id` stamping (proposal 036) is
+    the join key `agents/forge_complement_check.py` verifies, and two
+    independently-maintained stampers would eventually disagree about it
+    without anything failing loudly.
+
+    `condition_id` / `complement_id` are read straight off `ctx.market` - the
+    complement of a token is simply the OTHER outcome on the same `Market`
+    object, which is already known by construction (Gamma pairs
+    `clobTokenIds` positionally with `outcomes`, see
+    `engine/polymarket/markets.py`). No price is consulted and no candidate is
+    ever chosen among more than one: a market with other than two outcomes has
+    no single complement and gets `None`.
+    """
+    out: Dict[str, bool] = {}
+    if ctx is None or ctx.market is None or now is None:
+        return out
+    outcomes = getattr(ctx.market, 'outcomes', ()) or ()
+    condition_id = getattr(ctx.market, 'condition_id', None) or None
+    complements: Dict[str, str] = {}
+    if len(outcomes) == 2:
+        a, b = outcomes
+        if getattr(a, 'token_id', None) and getattr(b, 'token_id', None):
+            complements[a.token_id] = b.token_id
+            complements[b.token_id] = a.token_id
+    books = getattr(ctx, 'books', None) or {}
+    for outcome in outcomes:
+        token = getattr(outcome, 'token_id', None)
+        if not token:
+            continue
+        book = books.get(token)
+        price, source = reference_price(book)
+        if price is None:
+            continue
+        out[token] = tape.observe(
+            token, now, price, source, persist=persist,
+            best_bid=(None if book is None else book.best_bid),
+            best_ask=(None if book is None else book.best_ask),
+            condition_id=condition_id,
+            complement_id=complements.get(token))
+    return out
 
 
 # --- the exit-side estimate --------------------------------------------------
@@ -795,9 +861,17 @@ class DipArb(PolymarketStrategy):
         self.min_mean = min_mean
         self.max_mean = max_mean
 
+        #: D-362 R4: READ-ONLY against `market_tape`. This strategy still
+        #: backfills its in-memory tape from the table on first sight of a
+        #: token (proposal 031 phase 1, unchanged), but `ShadowLoop` owns the
+        #: write now. Reason: this was the only writer in production and it is
+        #: sentinel-killed, which froze the tape in every book, including books
+        #: that never ran it. A per-cycle writer that lives in the loop cannot
+        #: be turned off by a roster.
         self.tape = PriceTapeByToken(max_len=tape_len,
                                      max_age_sec=tape_max_age_sec,
-                                     db_path=tape_db_path)
+                                     db_path=tape_db_path,
+                                     write_enabled=False)
         #: window_ts -> entry ATTEMPTS. Not fills: the halt check, the risk gate
         #: and the paper adapter all sit downstream and any of them can refuse.
         self._window_trades: Dict[int, int] = {}
@@ -909,34 +983,16 @@ class DipArb(PolymarketStrategy):
         candidate is ever chosen among more than one: a market with other
         than two outcomes has no single complement and gets `None`.
         """
-        out: Dict[str, bool] = {}
         now = self.clock(ctx)
-        if now is None or ctx.market is None:
-            return out
-        persist = not ctx.is_crypto_window
-        outcomes = getattr(ctx.market, 'outcomes', ()) or ()
-        condition_id = getattr(ctx.market, 'condition_id', None) or None
-        complements: Dict[str, str] = {}
-        if len(outcomes) == 2:
-            a, b = outcomes
-            if getattr(a, 'token_id', None) and getattr(b, 'token_id', None):
-                complements[a.token_id] = b.token_id
-                complements[b.token_id] = a.token_id
-        for outcome in outcomes:
-            token = getattr(outcome, 'token_id', None)
-            if not token:
-                continue
-            book = ctx.books.get(token)
-            price, source = reference_price(book)
-            if price is None:
-                continue
-            out[token] = self.tape.observe(
-                token, now, price, source, persist=persist,
-                best_bid=(None if book is None else book.best_bid),
-                best_ask=(None if book is None else book.best_ask),
-                condition_id=condition_id,
-                complement_id=complements.get(token))
-        return out
+        if now is None:
+            return {}
+        # `persist` still gates the BACKFILL read (see
+        # `PriceTapeByToken.observe`); D-362 R4 moved the WRITE to
+        # `write_enabled=False` on this instance's tape, so an off-crypto
+        # context restores this strategy's in-memory tape from `market_tape`
+        # and inserts nothing.
+        return observe_market_into_tape(self.tape, ctx, now,
+                                        persist=not ctx.is_crypto_window)
 
     def mean_for(self, token_id: Optional[str]) -> Optional[float]:
         return self.tape.mean(token_id, self.min_observations)

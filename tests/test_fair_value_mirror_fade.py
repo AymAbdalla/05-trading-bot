@@ -235,8 +235,18 @@ class TestNewEntryGates:
 
 class TestConcurrencyCap:
 
+    def test_the_module_default_concurrency_cap_is_the_lifted_sentinel(self):
+        """D-362 R2: the per-strategy count cap is GONE, not merely large.
+
+        The gate is still covered by the test below, with the cap passed
+        explicitly rather than defaulted.
+        """
+        assert MAX_CONCURRENT_POSITIONS == 100_000
+        assert FairValueMirrorFade().max_concurrent_positions == 100_000
+
     def test_two_fills_trip_the_cap_a_third_attempt_skips(self):
-        s = FairValueMirrorFade()
+        # Cap PASSED, not defaulted - see D-362 R2 above.
+        s = FairValueMirrorFade(max_concurrent_positions=2)
         ctx = _ctx()
         book = ctx.book('Down')
 
@@ -252,7 +262,7 @@ class TestConcurrencyCap:
         pos2 = _position(position_id='pos-2',
                          features={'attempt_number': d2.features['attempt_number']})
         s.manage_exit(pos2, book, now=WINDOW_TS + 10.0)
-        assert len(s._open) == 2 == MAX_CONCURRENT_POSITIONS
+        assert len(s._open) == 2 == s.max_concurrent_positions
 
         d3 = s.evaluate(ctx)
         assert d3.action == 'SKIP'

@@ -43,26 +43,36 @@ LOG_DIR="${LOG_DIR:-research/polymarket_paper_survivors}"
 # ---------------------------------------------------------------------------
 # ROSTER - the definition of env B. Read this before changing it.
 #
-# This is the R4 roster of NINE, verbatim what PID 11895 has been running since
-# the 2026-08-20 11:41 EDT restart. Capturing it unchanged is the whole point of
-# this file: it is a durability fix, not a behaviour change.
+# THE SPLIT IS APPLIED (D-362 R5/R7/R8, 2026-08-20). This is the R4 roster of
+# NINE plus the two fair_value members that were still in main, making ELEVEN.
+# Env B is the fair_value ISOLATION book now; main
+# (`run_polymarket_shadow.sh`) carries the explicit complementary roster and
+# runs no fair_value at all.
 #
 # `--strategies` filters the ROUTED sets AFTER construction. A strategy whose
 # `supported_market_types` is the `('smart_money',)` D-322 sentinel is never
-# routed anywhere, so naming it here matches NOTHING and the loop logs
-# "--strategies names matched nothing". That is why the D-361 split could not be
-# enacted by this script alone - see docs/handoffs/2026-08-20-restart2-d360-d361.md.
+# routed anywhere, so naming it here matches NOTHING - which is why Gate 4
+# below refuses on one rather than letting the book silently shrink.
 #
-# D-361 TARGET (NOT APPLIED - blocked, Aym's call):
-#   + PM_fair_value_arb          (live today in MAIN; moving it here is the split)
-#   + PM_fair_value_arb_wide     (live today in MAIN; family member the brief omits)
-#   + PM_fair_value_arb_hft      (INERT: D-322 sentinel, would match nothing)
-#   + PM_fair_value_arb_inverse  (INERT: D-322 sentinel, would match nothing)
-# Enacting env B's half WITHOUT main's half would run fair_value in BOTH books
-# and DOUBLE the contention the split exists to remove. Both halves land
-# together or neither does.
+# ADDED by D-362 over the R4 nine:
+#   + PM_fair_value_arb        the split's headline move, out of main
+#   + PM_fair_value_arb_wide   D-362 R7. UNACCOUNTED for in the D-361 brief
+#                              (113 closes in main) - without this line the
+#                              split would have killed it outright.
+# ALREADY PRESENT, no change: PM_fair_value_arb_patient,
+#   PM_fair_value_settlement_exit. Both are fair_value family and both were
+#   already in the nine, so the union is 11, not 13.
+#
+# DELIBERATELY NOT ADDED (D-362 R6 - D-322 STANDS):
+#   PM_fair_value_arb_hft, PM_fair_value_arb_inverse. Paused for bleed and
+#   they stay paused. Both are also sentinel-killed, so Gate 4 would refuse
+#   them anyway.
+#
+# BOTH HALVES LANDED TOGETHER. Enacting env B's half alone would run
+# fair_value in BOTH books and DOUBLE the contention the split exists to
+# remove. If you ever revert one launcher, revert the other in the same edit.
 # ---------------------------------------------------------------------------
-STRATEGIES="${STRATEGIES:-PM_temporal_arbitrage,PM_fair_value_arb_patient,PM_longshot_fade_hold_to_resolution,PM_weather_bracket_width_matched,PM_fair_value_settlement_exit,PM_weather_arb,PM_streak_snapper,PM_small_liq_continuation,PM_corridor_collector}"
+STRATEGIES="${STRATEGIES:-PM_temporal_arbitrage,PM_fair_value_arb_patient,PM_longshot_fade_hold_to_resolution,PM_weather_bracket_width_matched,PM_fair_value_settlement_exit,PM_weather_arb,PM_streak_snapper,PM_small_liq_continuation,PM_corridor_collector,PM_fair_value_arb,PM_fair_value_arb_wide}"
 
 die() {
     echo "run_polymarket_shadow_envb: REFUSING TO START: $*" >&2

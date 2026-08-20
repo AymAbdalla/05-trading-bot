@@ -46,7 +46,8 @@ from engine.polymarket.shadow_loop import (MarketSpace,  # noqa: E402
                                            space_status)
 from strategies.polymarket.base import (MARKET_TYPE_EVENT,  # noqa: E402
                                         MARKET_TYPE_POLITICAL,
-                                        MARKET_TYPE_SPORTS, Decision)
+                                        MARKET_TYPE_SPORTS, Decision,
+                                        MarketContext)
 
 NOW = 1787065200                      # 2026-08-18T15:00:00Z
 
@@ -332,6 +333,138 @@ def test_the_weather_context_also_stamps_its_type():
 
     assert status == 'ok'
     assert ctx.market_type == MARKET_TYPE_WEATHER
+
+
+# ===========================================================================
+# 2b. `market_tape` IS WRITTEN BY THE LOOP, NOT BY A STRATEGY (D-362 R4)
+# ===========================================================================
+
+def _tape_rows(loop):
+    return loop.store.conn.execute(
+        'SELECT market_id, condition_id, complement_id FROM market_tape'
+    ).fetchall()
+
+
+@pytest.mark.parametrize('name,market_type,_q', SPACES)
+def test_a_space_cycle_writes_market_tape_with_no_strategy_that_does(
+        events, name, market_type, _q):
+    """THE D-362 R4 REGRESSION, pinned.
+
+    The only `market_tape` writer in production used to be
+    `strategies/polymarket/dip_arb.py`, called from inside `DipArb.evaluate`.
+    So the tape only filled on cycles that evaluated `PM_dip_arb`, and when
+    that strategy was sentinel-killed the table froze in BOTH live books -
+    including `db/trading-survivors.db`, which had never run dip_arb at all
+    and therefore could not self-heal. Everything downstream
+    (`agents/forge_complement_check.py`, Forge proposal 031) was reading a
+    dead table without anything failing.
+
+    `_loop` here passes `strategies=[]`, so DipArb is not merely off the
+    roster, it does not exist in this process. Rows must appear anyway - that
+    is the whole claim.
+    """
+    client = FakeGammaClient(events=events)
+    space = _space(name, market_type, strategies=[SpyStrategy(
+        supported=(market_type,))])
+    loop = _loop(client, spaces=[space])
+    assert loop._registry_names == [], 'the registry must be empty here'
+
+    loop.run_space_cycle(space, now=NOW)
+
+    rows = _tape_rows(loop)
+    assert rows, 'the loop wrote no market_tape rows'
+    assert loop.tape_rows_written == len(rows)
+    assert loop.tape_contexts > 0
+
+
+def test_the_tape_row_carries_the_complement_key_the_check_joins_on(events):
+    """Proposal 036's key, stamped by the LOOP now. `forge_complement_check`
+    joins `market_tape` to itself on (condition_id, complement_id); a row
+    written without them is invisible to it, so moving the writer had to carry
+    the stamping across intact rather than reimplement it."""
+    client = FakeGammaClient(events=events)
+    name, market_type, _q = SPACES[0]
+    space = _space(name, market_type)
+    loop = _loop(client, spaces=[space])
+
+    loop.run_space_cycle(space, now=NOW)
+
+    rows = _tape_rows(loop)
+    assert rows
+    by_token = {r[0]: r for r in rows}
+    for market_id, condition_id, complement_id in rows:
+        assert condition_id, 'condition_id missing on %s' % market_id
+        # Two-outcome markets: the complement must be present AND must itself
+        # be a token we taped, pointing back. A one-way link is a keying bug
+        # that a COUNT(*) on this table would never surface.
+        assert complement_id in by_token
+        assert by_token[complement_id][2] == market_id
+
+
+def test_a_crypto_context_is_still_never_taped(events):
+    """Unchanged from proposal 031 phase 1, and deliberately so: a crypto
+    token id is new every 5-minute window, so a persisted crypto tape is never
+    read back after a restart and would only multiply the table's volume.
+    `_write_market_tape` returning 0 here is the exclusion, not a failure."""
+    from strategies.polymarket.base import MARKET_TYPE_CRYPTO_UPDOWN
+
+    client = FakeGammaClient(events=events)
+    loop = _loop(client)
+
+    class _Outcome(object):
+        token_id = 'UP-1'
+        name = 'Up'
+
+    class _Market(object):
+        slug = 'btc-updown-5m-x'
+        condition_id = 'cond-crypto'
+        outcomes = (_Outcome(),)
+
+    ctx = MarketContext(window_ts=int(NOW), market=_Market(), books={},
+                        seconds_into_window=5.0,
+                        market_type=MARKET_TYPE_CRYPTO_UPDOWN)
+    assert loop._write_market_tape(ctx) == 0
+    assert loop.tape_contexts == 0
+    assert _tape_rows(loop) == []
+
+
+def test_a_tape_write_that_throws_never_takes_the_cycle_down(events,
+                                                             monkeypatch):
+    """Instrumentation must not be able to kill a trading cycle. The failure
+    is COUNTED under its own health key rather than swallowed (convention 20),
+    so "the tape is broken" and "the board was empty" stay distinguishable."""
+    client = FakeGammaClient(events=events)
+    name, market_type, _q = SPACES[0]
+    space = _space(name, market_type)
+    loop = _loop(client, spaces=[space])
+
+    def _boom(*a, **k):
+        raise RuntimeError('tape exploded')
+
+    monkeypatch.setattr(sl, 'observe_market_into_tape', _boom)
+
+    summary = loop.run_space_cycle(space, now=NOW)
+
+    assert summary['status'] == 'ok'
+    assert loop.health['market_tape_write_exception'] > 0
+    assert loop.tape_rows_written == 0
+
+
+def test_stats_reports_the_tape_outside_the_identity(events):
+    client = FakeGammaClient(events=events)
+    name, market_type, _q = SPACES[0]
+    space = _space(name, market_type)
+    loop = _loop(client, spaces=[space])
+    loop.run_space_cycle(space, now=NOW)
+
+    tape = loop.stats()['market_tape']
+    assert tape['rows_written'] == loop.tape_rows_written > 0
+    # The DENOMINATOR is the point: rows==0 with contexts==0 means nothing
+    # off-crypto was pollable, rows==0 with contexts>0 means the writer ran
+    # and every book was empty. The old defect - nobody writing at all - now
+    # shows as contexts==0 on a loop that is polling.
+    assert tape['contexts'] == loop.tape_contexts > 0
+    assert tape['db_path'] == loop.store.db_path
 
 
 # ===========================================================================

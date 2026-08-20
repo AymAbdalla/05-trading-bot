@@ -221,9 +221,14 @@ DEPTH_MULTIPLE = 2.0
 #: `FairValueArbInverse.INVERSE_SLIPPAGE_ALLOWANCE`.
 MIRROR_SLIPPAGE_ALLOWANCE = PRICE_TICK
 
-#: Per-instance (per-asset) concurrency self-limit. Same number 034 uses -
-#: this is a probe, not a hog.
-MAX_CONCURRENT_POSITIONS = 2
+#: Per-instance (per-asset) concurrency self-limit.
+#:
+#: D-362 R2, 2026-08-20: LIFTED to the 100_000 SENTINEL, same ruling and same
+#: reasoning as `FairValueSettlementExit.MAX_CONCURRENT_POSITIONS` - a
+#: per-strategy count cap underneath the global cap D-360 removed was the real
+#: binding constraint and nobody had decided it should be. Global gate plus
+#: capital caps are the only position brakes now.
+MAX_CONCURRENT_POSITIONS = 100_000
 
 #: Belt-and-braces bound on internal open-position tracking, matching
 #: `FairValueSettlementExit.OPEN_TRACKING_MAX`'s reasoning.

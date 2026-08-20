@@ -273,7 +273,16 @@ SALVAGE_FLOOR = 0.10
 #: Per-instance (per-asset) concurrency self-limit. See the module docstring's
 #: honest-limit section for what this does and does not guarantee
 #: system-wide.
-MAX_CONCURRENT_POSITIONS = 2
+#:
+#: D-362 R2, 2026-08-20: LIFTED to the 100_000 SENTINEL. Aym: "lift all
+#: position caps on the strategies, only keep global position caps." A
+#: per-strategy count cap of 2 sat UNDERNEATH the global cap D-360 had already
+#: removed, so it - not the global gate - was the binding constraint, and it
+#: was binding without anyone having decided it should. The global gate
+#: (`PolymarketRiskGate.max_concurrent_positions`) and the capital caps in
+#: `engine/risk/constraints.py` are the only position brakes now. Restore a
+#: small integer here only under a new D-number.
+MAX_CONCURRENT_POSITIONS = 100_000
 
 #: D-327, 2026-08-19. Raised from the parent's inherited default (3) so 034
 #: can actually accumulate the 60 entries its own kill condition needs -

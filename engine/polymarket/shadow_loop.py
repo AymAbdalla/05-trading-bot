@@ -373,6 +373,8 @@ from strategies.polymarket.base import (MARKET_TYPE_CRYPTO_UPDOWN,
                                         MARKET_TYPE_SPORTS,
                                         MARKET_TYPE_WEATHER, MarketContext,
                                         window_atr)
+from strategies.polymarket.dip_arb import (PriceTapeByToken,
+                                           observe_market_into_tape)
 from strategies.polymarket.weather_arb import set_weather_config
 
 logger = logging.getLogger(__name__)
@@ -619,7 +621,17 @@ MAKER_ADAPTER_PREFIX = 'maker_adapter:'
 #: budget the first cycle that quotes fills all 5 slots and every one of the 17
 #: taker strategies is refused `max_concurrent_positions` for the rest of the
 #: session. Wiring the maker path on must not silently turn the taker path off.
-DEFAULT_MAX_RESTING_MAKER_ORDERS = 2
+#:
+#: D-362 R3, 2026-08-20: REMOVED - set to the 100_000 SENTINEL. Aym: "remove
+#: market order budget." The whole justification above is downstream of a
+#: FIVE-SLOT `max_concurrent_positions`, and D-360 removed that cap. With no
+#: count cap there are no slots for maker quotes to starve takers of, so this
+#: budget was refusing `maker_rest_budget_exhausted` for a reason that no
+#: longer exists. `SKIP_MAKER_BUDGET` stays wired: it is now reachable only by
+#: someone configuring `max_resting_maker_orders` down again, which is the
+#: point of leaving the mechanism in place. Restore a small integer here the
+#: day a real count cap comes back.
+DEFAULT_MAX_RESTING_MAKER_ORDERS = 100_000
 
 #: The WEATHER cycle's own cycle-level dispositions. Named here for the same
 #: reason the ones above are: a typo becomes a NameError rather than a new
@@ -1589,6 +1601,25 @@ class PolymarketShadowLoop:
         # for callers that reach for `loop.strike_proxy` by name.
         self.strike_proxy = self.runtimes[self.assets[0]].strike_proxy
 
+        # -- `market_tape` (D-362 R4). THE LOOP OWNS THIS WRITE.
+        #
+        # It used to live inside `DipArb.observe`, which meant the table only
+        # filled on cycles that evaluated `PM_dip_arb`. When that strategy was
+        # sentinel-killed the tape froze in EVERY book - including
+        # `db/trading-survivors.db`, which had never run dip_arb at all - and
+        # it could not self-heal, because no other strategy writes it. Every
+        # `market_tape` consumer (`agents/forge_complement_check.py`, Forge
+        # proposal 031) was silently reading a dead table.
+        #
+        # Written from `_write_market_tape`, called on every non-crypto context
+        # this loop builds, so no roster edit can turn it off again.
+        self.market_tape = PriceTapeByToken(db_path=self.store.db_path)
+        #: Counted, never inferred: rows accepted, and contexts that produced
+        #: no row at all. `market_tape` volume alone cannot distinguish "the
+        #: writer is off" from "the books were empty" (convention 20).
+        self.tape_rows_written = 0
+        self.tape_contexts = 0
+
         # -- accounting. Convention 20: every evaluation lands in exactly one
         # bucket and the identity below is asserted on every flush.
         self.evaluations = 0
@@ -2345,6 +2376,49 @@ class PolymarketShadowLoop:
             atr14=atr14,
         )
         return ctx, 'ok', detail
+
+    # -- market_tape --------------------------------------------------------
+
+    def _write_market_tape(self, ctx) -> int:
+        """Persist this context's quotes to `market_tape`. Returns rows accepted.
+
+        D-362 R4. Called on every NON-CRYPTO context the loop builds, before
+        any strategy is consulted, so the tape is a function of the cycle and
+        not of the roster - the defect this replaces.
+
+        NEVER RAISES. This is instrumentation: a tape failure must not take a
+        trading cycle down with it. `PriceTapeByToken` already swallows and
+        counts sqlite errors per row; the belt here catches anything the
+        stamping itself could throw on a malformed market object.
+
+        CRYPTO WINDOWS ARE EXCLUDED, deliberately and unchanged from proposal
+        031 phase 1: a crypto token id is new every 5-minute window, so a
+        persisted crypto tape is never read back after a restart, and writing
+        it would multiply the table's volume for no consumer. Off-crypto token
+        ids live for days and poll twelve times slower - that is the tape a
+        restart used to reset to empty, and the tape the complement check
+        reads.
+        """
+        if ctx is None or getattr(ctx, 'is_crypto_window', False):
+            return 0
+        self.tape_contexts += 1
+        try:
+            # The SAME clock `DipArb.clock` used, so rows written before and
+            # after this move carry timestamps on one scale: the window start
+            # plus the offset into it, derived from the context rather than
+            # read off the wall clock, so a row is reproducible from a logged
+            # context.
+            now = float(ctx.window_ts) + float(ctx.seconds_into_window or 0.0)
+            accepted = observe_market_into_tape(self.market_tape, ctx, now,
+                                                persist=True)
+        except Exception:
+            self.health['market_tape_write_exception'] += 1
+            logger.warning('market_tape: write pass failed for %s',
+                           getattr(ctx.market, 'slug', None), exc_info=True)
+            return 0
+        rows = sum(1 for ok in accepted.values() if ok)
+        self.tape_rows_written += rows
+        return rows
 
     # -- evaluation ---------------------------------------------------------
 
@@ -3858,6 +3932,9 @@ class PolymarketShadowLoop:
         ctx = MarketContext(window_ts=int(now), market=market, books=books,
                             seconds_into_window=float(now) - int(now),
                             market_type=MARKET_TYPE_WEATHER)
+        # D-362 R4: tape BEFORE any strategy is consulted, so the row exists
+        # whether or not this market reaches one.
+        detail['tape_rows'] = self._write_market_tape(ctx)
         return ctx, 'ok', detail
 
     def run_weather_cycle(self, now: Optional[float] = None) -> dict:
@@ -4149,6 +4226,10 @@ class PolymarketShadowLoop:
         ctx = MarketContext(window_ts=int(now), market=market, books=books,
                             seconds_into_window=float(now) - int(now),
                             market_type=space.market_type)
+        # D-362 R4: see `_build_weather_context`. This is the path that carries
+        # the two-outcome event/political/sports markets the complement check
+        # keys on, so it is the one that matters most.
+        detail['tape_rows'] = self._write_market_tape(ctx)
         return ctx, 'ok', detail
 
     def run_space_cycle(self, space: 'MarketSpace',
@@ -4508,6 +4589,19 @@ class PolymarketShadowLoop:
                 # separate from ours: it counts what the BOOK did to an order,
                 # we count what happened to the ORDER.
                 'adapter_observations': dict(self.adapter.maker_counts),
+            },
+            # D-362 R4. Outside the identity - a tape row is an observation of
+            # a book, not a decision about a window. `contexts` is the
+            # denominator: rows==0 with contexts==0 means nothing off-crypto
+            # was pollable, rows==0 with contexts>0 means the writer ran and
+            # every book was empty or refused. The old defect - nobody writing
+            # at all - now shows as contexts==0 on a loop that is polling,
+            # rather than as a table that simply stopped growing.
+            'market_tape': {
+                'rows_written': self.tape_rows_written,
+                'contexts': self.tape_contexts,
+                'drops': dict(self.market_tape.drops),
+                'db_path': self.market_tape.db_path,
             },
             # SECONDS, not events, and outside the identity for the same
             # reason. Reported as total / calls / per-call average because a

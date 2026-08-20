@@ -322,7 +322,13 @@ MIN_SHARES = 5
 #: Per-INSTANCE (per-asset) concurrency self-limit. See the module docstring's
 #: "SIZING AND THE CONCURRENCY SELF-LIMIT" section for what this does and does
 #: not guarantee across the three asset instances.
-MAX_CONCURRENT_POSITIONS = 2
+#:
+#: D-362 R2, 2026-08-20: LIFTED to the 100_000 SENTINEL, same ruling and same
+#: reasoning as `FairValueSettlementExit.MAX_CONCURRENT_POSITIONS`. This is a
+#: hold-to-resolution strategy, so it never frees a slot early - which made a
+#: cap of 2 the single tightest brake in the whole shadow book. Global gate
+#: plus capital caps are the only position brakes now.
+MAX_CONCURRENT_POSITIONS = 100_000
 
 #: How many (slug -> resolve_at) entries `self._open` keeps as a defensive
 #: bound, belt-and-braces on top of the prune-by-resolve-time logic above -

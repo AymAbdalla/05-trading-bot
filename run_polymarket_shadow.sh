@@ -50,6 +50,45 @@ PY=(env -u PYTHONPATH python3)
 POLL_SEC="${POLL_SEC:-5}"
 STARTING_EQUITY="${STARTING_EQUITY:-1000}"
 
+# ---------------------------------------------------------------------------
+# ROSTER - the DIVERSIFIED book. D-362 R5/R8, 2026-08-20. Read before changing.
+#
+# Main used to run the whole registry with no `--strategies` at all. It now runs
+# an EXPLICIT roster that EXCLUDES the fair_value family, because that family
+# moved to env B (`run_polymarket_shadow_envb.sh`). That is the D-361/D-362
+# split: one book isolates fair_value, the other runs everything else, and the
+# two rosters together must cover the registry with no overlap and no orphan.
+#
+# WHY THE SPLIT IS A ROSTER EDIT AND NOT A CODE OVERRIDE: `supported_market_types`
+# is a CLASS attribute. Both books import the same classes, so a D-322-style
+# per-book override would remove fair_value from BOTH - emptying the isolation
+# book of the very thing it isolates. `--strategies` is the only per-environment
+# mechanism there is.
+#
+# EXCLUDED, and why each one:
+#   PM_fair_value_arb            -> env B (the split)
+#   PM_fair_value_arb_patient    -> env B (the split)
+#   PM_fair_value_arb_wide       -> env B (the split). It was UNACCOUNTED for in
+#                                   the original D-361 brief - 113 closes in
+#                                   main - and would have been silently killed.
+#   PM_fair_value_settlement_exit-> env B (the split)
+#   PM_fair_value_arb_hft        -> STAYS PAUSED (D-322 stands, D-362 R6). Also
+#                                   sentinel-killed, so naming it would match
+#                                   nothing and Gate 5 below would refuse.
+#   PM_fair_value_arb_inverse    -> same as _hft.
+#   PM_fair_value_mirror_fade    -> sentinel-killed (D-322).
+#   PM_box_builder, PM_grid_hedge, PM_dip_arb -> sentinel-killed. The D-361
+#                                   brief named box_builder and grid_hedge as
+#                                   part of a "diversified main"; they are dead
+#                                   and cannot be part of anything.
+#
+# WHAT THIS COSTS, recorded because it is a real cost: 71.6% of main's closed
+# book (3003 of 4192) is the fair_value family. Nothing is deleted, but main
+# accrues no FURTHER fair_value closes, which ENDS the active measurement
+# proposals 043 and 046 run against main. Aym ruled that acceptable (D-362).
+# ---------------------------------------------------------------------------
+STRATEGIES="${STRATEGIES:-PM_streak_snapper,PM_mid_price_continuation,PM_corridor_collector,PM_temporal_arbitrage,PM_corridor_pair,PM_spread_harvest_taker,PM_liq_cascade_chaser,PM_small_liq_continuation,PM_near_liq_trigger,PM_smart_money_copy,PM_weather_arb,PM_maker_rebate_quote_ladder,PM_smart_money_callers,PM_status_quo_collector,PM_longshot_fade_hold_to_resolution,PM_weather_bracket_width_matched}"
+
 die() {
     echo "run_polymarket_shadow: REFUSING TO START: $*" >&2
     exit 1
@@ -118,7 +157,56 @@ sys.stdout.write('run_polymarket_shadow: paper-mode assertions OK\n')
 PYEOF
 
 # ---------------------------------------------------------------------------
-# Gate 4: the kill switch must be clear.
+# Gate 4: every name in the roster must match a REAL, ROUTED strategy.
+#
+# New with D-362 R5: main HAS a roster now, so it needs env B's gate. Copied
+# from `run_polymarket_shadow_envb.sh` deliberately rather than shared - two
+# launchers that can drift apart in what they accept is a smaller risk than a
+# sourced helper that silently changes both books at once.
+#
+# `--strategies` filters the ROUTED sets AFTER construction, so a
+# sentinel-killed name matches NOTHING and the loop merely warns. On a book
+# DEFINED by its roster that is a silent corruption of the experiment: the
+# session runs a smaller book and nothing says so. Refuse, and name the
+# offenders.
+# ---------------------------------------------------------------------------
+STRATEGIES="$STRATEGIES" "${PY[@]}" - <<'PYEOF' || die "roster check failed (see above)"
+import os
+import sys
+from strategies.polymarket import build_strategies
+
+CRYPTO_DEFAULT = ('crypto_updown',)
+SENTINEL = ('smart_money',)
+
+wanted = [n.strip() for n in os.environ['STRATEGIES'].split(',') if n.strip()]
+routed, dead = {}, {}
+for s in build_strategies():
+    declared = tuple(getattr(s, 'supported_market_types', CRYPTO_DEFAULT))
+    (dead if declared == SENTINEL else routed)[s.strategy_name] = declared
+
+unknown = [n for n in wanted if n not in routed and n not in dead]
+inert = [n for n in wanted if n in dead]
+
+if unknown:
+    sys.stderr.write('ROSTER: no such strategy: %s\n' % ', '.join(unknown))
+if inert:
+    sys.stderr.write(
+        'ROSTER: sentinel-killed, would match nothing once routed: %s\n'
+        % ', '.join(inert))
+if unknown or inert:
+    sys.exit(1)
+
+dupes = sorted({n for n in wanted if wanted.count(n) > 1})
+if dupes:
+    sys.stderr.write('ROSTER: duplicate names: %s\n' % ', '.join(dupes))
+    sys.exit(1)
+
+sys.stdout.write('run_polymarket_shadow: roster OK, %d strategies\n'
+                 % len(wanted))
+PYEOF
+
+# ---------------------------------------------------------------------------
+# Gate 5: the kill switch must be clear.
 #
 # Starting while halted produces a session that looks running and enters
 # nothing, which is the most confusing possible shadow run. Resume explicitly.
@@ -174,6 +262,7 @@ LOG="logs/polymarket_shadow_${STAMP}.log"
     echo "equity:   \$${STARTING_EQUITY}.00 starting paper balance"
     echo "poll:     ${POLL_SEC}s"
     echo "db:       db/trading.db (WAL; dashboard reads it mode=ro)"
+    echo "strategies: ${STRATEGIES}"
     echo "csv:      research/polymarket_paper/polymarket_paper_log.csv"
     echo "python:   $("${PY[@]}" --version 2>&1)"
     echo "launched-by: ${AGENT_ID:-UNDECLARED}"
@@ -190,6 +279,7 @@ echo "run_polymarket_shadow: log=${LOG}"
 "${PY[@]}" -u -m engine.polymarket.shadow_loop \
     --poll "${POLL_SEC}" \
     --equity "${STARTING_EQUITY}" \
+    --strategies "${STRATEGIES}" \
     > >(tee -a "$LOG") 2>&1 &
 CHILD=$!
 

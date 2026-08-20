@@ -99,7 +99,12 @@ risk:
   consecutive_loss_pause: 4     # 4 losing trades in a row = 24h pause on new entries
   daily_ops_stop_multiplier: 3  # equity drop > 3x notional_cap in a day = halt (ops backstop)
   weekly_ops_stop_multiplier: 15 # equity drop > 15x notional_cap in a week = halt (ops backstop)
-  max_concurrent_positions: 2
+  # D-362 R1: SENTINEL, not a limit. No real money funds the crypto/Alpaca
+  # path, so a count cap of 2 was throttling a paper book for no reason.
+  # Set a small integer here (and in engine/risk/__init__.py) the day real
+  # money ever funds this path. Capital caps in engine/risk/constraints.py
+  # are the only brake until then.
+  max_concurrent_positions: 100000
   max_positions_per_pair: 1
   atr_period: 14
   atr_stop_mult: 0.25           # stop = signal low - 0.25 * ATR

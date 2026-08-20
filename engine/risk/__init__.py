@@ -7,7 +7,9 @@ Checks:
 1. Position sizing: fixed notional cap (does NOT scale with balance)
 2. Fee-to-edge gate: reject if fees eat > 15% of edge
 3. Max trades/day: block after daily limit
-4. Max concurrent positions: block if 2 already open
+4. Max concurrent positions: block at `max_concurrent_positions` (D-362 R1
+   defaults this to the 100_000 sentinel - no count cap - until real money
+   funds the crypto path)
 5. Max positions per pair: block if pair already has open position
 6. Consecutive loss pause: block if 4 losses in a row (24h pause)
 7. Ops backstops: daily/weekly equity drop limits (tail-event)
@@ -46,7 +48,14 @@ class RiskGate:
         self.fee_to_edge_max = risk.get('fee_to_edge_max', 0.15)
         self.max_trades_per_day = risk.get('max_trades_per_day', 1)
         self.consecutive_loss_pause = risk.get('consecutive_loss_pause', 4)
-        self.max_concurrent_positions = risk.get('max_concurrent_positions', 2)
+        # D-362 R1: 100_000 is a SENTINEL meaning "no count cap", not a limit
+        # anybody expects to bind. Aym: "the crypto cap makes no sense because
+        # I have no real money in the shadow realm rn." This is the crypto /
+        # Alpaca path, so the cap comes back the day real money funds it -
+        # restore a small integer here AND at config.yaml `risk:` together.
+        # Capital is the cap until then (engine/risk/constraints.py).
+        self.max_concurrent_positions = risk.get('max_concurrent_positions',
+                                                 100_000)
         self.max_positions_per_pair = risk.get('max_positions_per_pair', 1)
         self.daily_ops_stop_mult = risk.get('daily_ops_stop_multiplier', 3)
         self.weekly_ops_stop_mult = risk.get('weekly_ops_stop_multiplier', 15)

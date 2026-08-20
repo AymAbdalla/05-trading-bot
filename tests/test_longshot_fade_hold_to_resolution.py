@@ -303,9 +303,21 @@ class TestSizeCap:
         d2 = s.evaluate(_baseline_ctx())
         assert d2.reason == 'already_entered_this_window'
 
+    def test_the_module_default_concurrency_cap_is_the_lifted_sentinel(self):
+        """D-362 R2: the per-strategy count cap is GONE, not merely large.
+
+        This one mattered most of the three: hold-to-resolution never frees a
+        slot early, so a cap of 2 was the tightest brake in the book. The gate
+        itself is still covered below, with the cap passed explicitly.
+        """
+        assert MAX_CONCURRENT_POSITIONS == 100_000
+        assert (LongshotFadeHoldToResolution().max_concurrent_positions
+                == 100_000)
+
     def test_max_two_concurrent_then_third_is_capped(self):
-        assert MAX_CONCURRENT_POSITIONS == 2
-        s = LongshotFadeHoldToResolution()
+        # Cap PASSED, not defaulted: D-362 R2 lifted the module default to a
+        # sentinel and this test is about the gate, not the default.
+        s = LongshotFadeHoldToResolution(max_concurrent_positions=2)
         _seed_tape(s)
         book = _book(UP_TOK, bids=((0.55, 500.0),))
 

@@ -378,14 +378,27 @@ class TestConcurrencyCap:
         s.manage_exit(pos, book, now=WINDOW_TS + 10.0)
         assert (SLUG, 'pos-fallback') in s._open
 
+    def test_the_module_default_concurrency_cap_is_the_lifted_sentinel(self):
+        """D-362 R2: the per-strategy count cap is GONE, not merely large.
+
+        Asserted as its own test so the ruling has a home. The mechanism it
+        turns off is still covered by
+        `test_max_two_concurrent_then_third_is_capped`, which now passes the
+        cap explicitly - lifting a default must not delete the test that
+        proves the gate still gates.
+        """
+        assert MAX_CONCURRENT_POSITIONS == 100_000
+        assert FairValueSettlementExit().max_concurrent_positions == 100_000
+
     def test_max_two_concurrent_then_third_is_capped(self):
         # Realistic overlap for a hold-to-resolution single-window strategy:
         # consecutive 5-minute windows never overlap (one resolves exactly
         # when the next opens), so genuine concurrency here comes from the
         # parent's own `max_trades_per_window` (3 attempts allowed inside
         # ONE window) rather than from distinct windows.
-        assert MAX_CONCURRENT_POSITIONS == 2
-        s = FairValueSettlementExit()
+        # The cap is PASSED now: D-362 R2 lifted the module default to a
+        # sentinel, and this test is about the gate, not the default.
+        s = FairValueSettlementExit(max_concurrent_positions=2)
         ctx = _ctx()
         book = _book(UP_TOK, bids=((0.55, 200.0),))
 

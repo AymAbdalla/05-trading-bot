@@ -753,6 +753,20 @@ def test_run_cycle_observes_resting_orders(tmp_path, monkeypatch):
     assert 'cycle_maker_observe' in loop.timings
 
 
+def test_the_default_maker_budget_is_the_lifted_sentinel(tmp_path):
+    """D-362 R3, 2026-08-20: the maker rest budget is REMOVED.
+
+    Its whole justification was that resting buys consume
+    `max_concurrent_positions` slots, and D-360 removed that cap - so the
+    budget was refusing quotes to protect slots that no longer exist. The
+    mechanism stays wired and the two tests above still prove it gates when
+    configured down; this pins the DEFAULT, which is the part Aym ruled on.
+    """
+    assert shadow_loop.DEFAULT_MAX_RESTING_MAKER_ORDERS == 100_000
+    loop = build_loop(tmp_path)
+    assert loop.max_resting_maker_orders == 100_000
+
+
 def test_stats_reports_the_maker_numbers_outside_the_identity(tmp_path):
     loop = build_loop(tmp_path)
     loop.evaluate_strategy(loop.strategies[0], box_ctx(), dict(DETAIL))

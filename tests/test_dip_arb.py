@@ -826,6 +826,18 @@ class TestEstimate:
 
 
 
+def _writer_tape(db_path):
+    """A WRITE-ENABLED tape, i.e. the shadow loop's side of the D-362 R4 split.
+
+    `DipArb`'s own tape is `write_enabled=False` now - it reads `market_tape`
+    and never inserts, because a strategy that can be sentinel-killed must not
+    be the only writer (that defect froze the table in both live books). The
+    write path these tests exercise is the one `ShadowLoop` owns; see
+    `tests/test_polymarket_shadow_loop.py` for the wiring itself.
+    """
+    return dip_mod.PriceTapeByToken(db_path=db_path)
+
+
 class TestMarketTapePersistence:
     """Proposal 031 phase 1 (pm_offcrypto_tape_bootstrap_probe).
 
@@ -835,6 +847,10 @@ class TestMarketTapePersistence:
     survives a fresh instance (the restart case), a crypto observation is
     never persisted at all (the volume argument in `DipArb.observe`'s
     docstring), and `tape_rows_available` reaches every decision's features.
+
+    D-362 R4 split reading from writing: the WRITE is driven through
+    `_writer_tape` / `observe_market_into_tape` here, and `DipArb` is the
+    reader whose backfill must still work against what that writer left.
     """
 
     @staticmethod
@@ -853,25 +869,44 @@ class TestMarketTapePersistence:
 
     def test_off_crypto_observation_survives_a_fresh_instance(self, tmp_path):
         db_path = str(tmp_path / 'tape.db')
-        s1 = DipArb(tape_db_path=db_path)
-        s1.observe(self._event_ctx())
-        assert s1.tape.count('tok-yes') == 1
+        # The LOOP writes the row (D-362 R4)...
+        dip_mod.observe_market_into_tape(_writer_tape(db_path),
+                                         self._event_ctx(), WINDOW_TS + 10.0)
 
-        # A fresh instance, as after a process restart: starts empty in
-        # memory, backfills from `market_tape` on first sight of the token.
+        # ...and a fresh DipArb, as after a process restart, starts empty in
+        # memory and backfills from `market_tape` on first sight of the token.
         s2 = DipArb(tape_db_path=db_path)
         assert s2.tape.count('tok-yes') == 0
         s2.observe(self._event_ctx(seconds_into_window=70.0))
         assert s2.tape.count('tok-yes') == 2
 
+    def test_dip_arb_reads_the_tape_but_never_writes_it(self, tmp_path):
+        """D-362 R4. The regression that froze `market_tape` in BOTH live
+        books was that this strategy was the only writer, so sentinel-killing
+        it stopped the table dead - in `db/trading-survivors.db` too, which had
+        never run it. `DipArb` is a reader now and the refusal is COUNTED, not
+        silent (convention 20)."""
+        db_path = str(tmp_path / 'tape.db')
+        s = DipArb(tape_db_path=db_path)
+        assert s.tape.write_enabled is False
+        s.observe(self._event_ctx())
+        assert s.tape.count('tok-yes') == 1        # in memory, as before
+        assert s.tape.drops['write_disabled'] == 2  # both outcomes refused
+
+        conn = sqlite3.connect(db_path)
+        rows = conn.execute('SELECT COUNT(*) FROM market_tape').fetchone()[0]
+        conn.close()
+        assert rows == 0
+
     def test_crypto_observations_are_never_persisted(self, tmp_path):
         db_path = str(tmp_path / 'tape.db')
-        s1 = DipArb(tape_db_path=db_path)
-        s1.observe(_ctx())  # default market_type is crypto_updown
+        tape = _writer_tape(db_path)
+        dip_mod.observe_market_into_tape(tape, _ctx(), WINDOW_TS + 10.0,
+                                         persist=False)
         s2 = DipArb(tape_db_path=db_path)
         s2.observe(_ctx(seconds_into_window=110.0))
         # No backfill: nothing was ever written, because a crypto ctx is
-        # never persisted regardless of `tape_db_path` being set.
+        # never persisted regardless of the db path being set.
         assert s2.tape.count(UP_TOK) == 1
 
     def test_a_missing_db_path_keeps_the_tape_pure_in_memory(self):
@@ -916,8 +951,8 @@ class TestComplementKeying:
 
     def test_condition_id_and_complement_id_are_stamped_on_the_row(self, tmp_path):
         db_path = str(tmp_path / 'tape.db')
-        s = DipArb(tape_db_path=db_path)
-        s.observe(self._event_ctx())
+        dip_mod.observe_market_into_tape(_writer_tape(db_path),
+                                         self._event_ctx(), WINDOW_TS + 10.0)
 
         conn = sqlite3.connect(db_path)
         rows = {r[0]: r for r in conn.execute(
@@ -941,8 +976,8 @@ class TestComplementKeying:
         ctx = MarketContext(window_ts=WINDOW_TS, market=market, books=books,
                             seconds_into_window=10.0,
                             market_type=MARKET_TYPE_EVENT)
-        s = DipArb(tape_db_path=db_path)
-        s.observe(ctx)
+        dip_mod.observe_market_into_tape(_writer_tape(db_path), ctx,
+                                         WINDOW_TS + 10.0)
 
         conn = sqlite3.connect(db_path)
         rows = {r[0]: r for r in conn.execute(
@@ -976,10 +1011,10 @@ class TestComplementKeying:
         conn.commit()
         conn.close()
 
-        s = DipArb(tape_db_path=db_path)
         # Would raise OperationalError: no such column: condition_id if the
         # migration were missing or ran after executescript's CREATE INDEX.
-        s.observe(self._event_ctx())
+        dip_mod.observe_market_into_tape(_writer_tape(db_path),
+                                         self._event_ctx(), WINDOW_TS + 10.0)
 
         conn = sqlite3.connect(db_path)
         cols = {r[1] for r in conn.execute('PRAGMA table_info(market_tape)')}
@@ -994,8 +1029,8 @@ class TestComplementKeying:
     def test_crypto_windows_are_still_never_persisted_with_the_new_columns(
             self, tmp_path):
         db_path = str(tmp_path / 'tape.db')
-        s = DipArb(tape_db_path=db_path)
-        d = s.observe(_ctx())  # crypto window: persist=False regardless
+        d = dip_mod.observe_market_into_tape(
+            _writer_tape(db_path), _ctx(), WINDOW_TS + 10.0, persist=False)
         assert d == {UP_TOK: True, DOWN_TOK: True}
         # persist=False never opens the connection at all (docstring: "most
         # callers ... never persist at all"), so the table was never created.
