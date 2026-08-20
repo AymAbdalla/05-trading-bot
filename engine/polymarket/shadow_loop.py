@@ -407,9 +407,11 @@ DEFAULT_RESOLVE_SEC = 60.0
 #:
 #: A-17 (Aym ruling 2026-08-20): auto-halt DISABLED in shadow mode. The
 #: drawdown guard fights the measurement goal in shadow (D-358: resume,
-#: keep measuring, fund-if-zero). max_drawdown_frac=1.0 means the halt
-#: NEVER fires for drawdown in shadow — the book runs until it zeroes
-#: and gets re-funded. The real-money default (0.25) is UNCHANGED.
+#: keep measuring, fund-if-zero). max_drawdown_frac=1.0 meant the halt
+#: could never fire and 049's drawdown-attribution stayed dormant. D-383
+#: (Aym ruling 2026-08-20) sets 0.25 = real-money parity, MEASUREMENT ONLY:
+#: the constraint fires and records a breach (enriching 049's data) but does
+#: NOT halt trading (D-359 stands). The book still runs to zero and re-funds.
 #: D-363 R3 (Aym ruling 2026-08-20): NO CAPITAL CAPS IN SHADOW. "this is a
 #: shadow paper trading environment. i don't want to limit anything i mostly
 #: want data back, with no constraints." The three notional ceilings below are
@@ -422,7 +424,7 @@ DEFAULT_RESOLVE_SEC = 60.0
 #: verbatim and this override is applied ONLY to the shadow loop's own gate
 #: call. Set real limits there, not here, the day real money funds this path.
 SHADOW_RISK_LIMITS = dataclasses.replace(
-    risk_constraints.DEFAULT_LIMITS, max_drawdown_frac=1.0,
+    risk_constraints.DEFAULT_LIMITS, max_drawdown_frac=0.25,
     per_trade_notional_usd=100_000.0,
     per_event_notional_usd=100_000.0,
     aggregate_notional_usd=100_000.0)
