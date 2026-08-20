@@ -4045,3 +4045,12 @@ R1. The tick7-complete sibling (PID 23571) was dispatched BEFORE D-363 was recor
 R2. The tick7 rulings, when they are recorded, get D-365+ (D-363 is taken). The sweep belongs to the D-363 realms brief ONLY (single owner).
 R3. D-363 supersedes the sibling draft on the three contradictions: tape = FULL (crypto included), overlap = FIXED (disjoint partition), restart = all three books.
 R4. D-363 realms re-dispatched as single-owner after the sibling died. No concurrent sessions on this work.
+
+### D-365. Per-trade order size lifted — no limit on trades taken (AYM RULING, 2026-08-20)
+
+Aym: "Per-trade ORDER SIZE - just don't want it to limit the trades taken."
+
+R1. The per-trade order size ($10, notional_cap_usdc) is LIFTED in shadow mode. It must NOT limit the trades taken.
+R2. Mechanism: raise to the sentinel (100_000) on the SHADOW instance only, same pattern as the other D-360/D-362/D-363 cap lifts — NOT config.yaml, NOT the real-money DEFAULT_LIMITS. config.yaml stays untouched.
+R3. Natural cap is the book hitting $0 (D-363 R6, fund-if-zero per D-358). A $1,000 paper book buying large premium may zero fast — that is the intended unconstrained measurement.
+R4. Requires a restart of the three realms to activate (inert until then, like all cap changes).
