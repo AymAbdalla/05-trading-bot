@@ -3993,3 +3993,12 @@ R1. SHADOW_RISK_LIMITS.max_drawdown_frac changed 0.40 -> 1.0 in engine/polymarke
 R2. Real-money default (DEFAULT_LIMITS max_drawdown_frac=0.25) is UNCHANGED and untouched. The halt stays fully armed for any future live mode.
 R3. The change is INERT until the next loop restart (running loop imported 0.40 at startup). Rides the Friday restart with keying + calibration + dip_arb kill + env B whitelist + 038 backfill. Until then, if the book re-halts, resume per D-358 (standing instruction).
 R4. Tests: 547 passed (no test pinned 0.40 as the limit). Recorded + committed by Raven.
+
+### D-360. Position COUNT cap removed in shadow mode — capital is the only cap (AYM RULING, 2026-08-20)
+
+Aym: "idk why we have a 10-position cap, remove that, i don't want a position cap, if the account is 1k the cap should be that there is no money left to buy anything."
+
+R1. max_concurrent_positions count cap REMOVED in shadow mode. No count limit on concurrent positions.
+R2. Capital is the ONLY cap: when the account has no money left to buy, that is the cap. Per-trade notional, per-event and aggregate capital limits stay (they are the natural cap).
+R3. Files to change: engine/polymarket/risk_gate.py (DEFAULT_MAX_CONCURRENT_POSITIONS 10 -> sentinel), engine/polymarket/paper_adapter.py (10 -> sentinel), engine/risk/__init__.py (2 -> sentinel if in shadow path). Tests updated.
+R4. The restart that landed at 11:41 EDT (Cody, cody-restart-now) executed BEFORE this ruling arrived, so D-360 requires a SECOND restart to activate. Aym pre-approved it ("we might have to do another restart"). The second restart happens after Cody lands the restart-now handoff and the D-360 changes are made + tested.
