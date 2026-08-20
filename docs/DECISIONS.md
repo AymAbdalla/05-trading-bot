@@ -3973,3 +3973,14 @@ on a human decision about the drawdown itself. Noted for whoever takes that
 decision: the Polymarket halt blocks ENTRIES only and cannot flatten a
 binary in paper mode, so re-arming it does not stop the loss it fires on.*
 
+
+### D-358. Drawdown-halt resume ruling: RESUME + keep measuring + fund-if-zero + data preservation mandate (AYM RULING, 2026-08-20)
+
+Aym direct instruction after the 03:21/04:21 dual halt: resume, keep measuring, if the book goes to zero fund it again and keep going, ensure no trade data is lost.
+
+R1. RESUME executed 2026-08-20 (botctl.py resume --ack ee842e60). HALT cleared.
+R2. Future zero does NOT retire a shadow book; it gets re-funded and keeps measuring (standing policy, both books).
+R3. Data preservation mandate: DB snapshots taken pre-resume at backups/2026-08-20-halt/ (trading.db 1.75GB + survivors 543MB). No row lost or overwritten.
+R4. The 04:06:12 external resume is UNATTRIBUTED: not Aym, not Cody (session logs verified), not Hermes cron, not shell history, no login events. HALT removal has no audit trail. Open item for the A-8 audit.
+R5. Env B market_tape freeze is expected, not data loss: the only tape writer is dip_arb, which env B (survivors set) does not run. Its signals/positions/equity all fresh. Main tape healthy (75,419 rows).
+R6. Single-bankroll reality: both books collectively past zero on one unbroken bankroll. 0.40 line stays (already widened from 0.25 once; second widening needs Aym's word).
