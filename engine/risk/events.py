@@ -62,6 +62,40 @@ def _ms():
     return int(time.time() * 1000)
 
 
+def _drawdown_attribution(conn, decision):
+    """Sigma and hours-to-limit for a drawdown breach, or `{}` (049 hold 3).
+
+    D-380 R2 hold 3: a breach must be readable as "the rate changed" or "the
+    clock ran out" AT THE MOMENT IT HAPPENS, not only in hindsight, because the
+    numbers it needs - the epoch's own hourly distribution and its market-side
+    counts - are cheapest to capture while the breach is happening.
+
+    Three properties this deliberately has:
+
+    1. **Informational only.** Nothing written here may ever be read back by a
+       gate, a strategy or a halt decision (049 rule 3). It is a field on a
+       record, not an input.
+    2. **It cannot block the write.** Any failure - a missing table, a thin
+       epoch, an import error under a partial checkout - returns `{}` and logs.
+       A breach that went unrecorded because its *annotation* raised would be a
+       far worse defect than a breach recorded without a sigma.
+    3. **The import is lazy.** `backtest/` is analysis tooling and the risk
+       path must not depend on it at import time; only a breach - which is
+       rare, and today impossible in shadow - pays for it.
+    """
+    if decision.constraint != C.CONSTRAINT_DRAWDOWN:
+        return {}
+    try:
+        from backtest.drawdown_attribution import breach_payload_fields
+        limit_frac = (decision.detail or {}).get(
+            'limit_frac', C.DEFAULT_LIMITS.max_drawdown_frac)
+        return breach_payload_fields(conn, float(limit_frac))
+    except Exception:
+        logger.warning('risk: drawdown attribution unavailable for this '
+                       'breach; the row is written without it', exc_info=True)
+        return {}
+
+
 def record_denial(conn, decision, ts_ms=None):
     """Write one `risk_events` row for a denial. Returns the row id.
 
@@ -77,6 +111,7 @@ def record_denial(conn, decision, ts_ms=None):
         'halt_required': decision.halt_required,
     }
     details.update(decision.detail or {})
+    details.update(_drawdown_attribution(conn, decision))
     conn.execute(
         'INSERT INTO risk_events (id, ts, type, details_json) VALUES (?, ?, ?, ?)',
         (row_id, _ms() if ts_ms is None else int(ts_ms), RISK_EVENT_TYPE,
@@ -104,7 +139,8 @@ def engage_drawdown_halt(conn, decision):
                      'event': 'halt_engaged',
                      'halt_id': halt_id,
                      'reason': decision.reason,
-                     **(decision.detail or {})}, default=str)))
+                     **(decision.detail or {}),
+                     **_drawdown_attribution(conn, decision)}, default=str)))
     logger.error('RISK HALT (drawdown): %s; resume requires: '
                  'botctl.py resume --ack %s', decision.reason, halt_id)
     return halt_id
