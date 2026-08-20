@@ -4027,3 +4027,14 @@ R7. PM_fair_value_arb_wide: move to env B with the family (113 closes, -6.64, li
 R8. SPLIT ROSTERS: env B = fair_value isolation book: PM_fair_value_arb, PM_fair_value_arb_patient, PM_fair_value_settlement_exit, PM_fair_value_arb_wide (NOT hft/inverse). Main = diversified, explicit roster excluding the fair_value family.
 R9. SEQUENCE: all fixes + tests land FIRST, then ONE clean second restart (D-360 + D-361 + D-362 together). No D-360-only restart.
 R10. DUPLICATE-LANE fix: the webhook lane caused a double-dispatch. Raven fixes on its side (single-owner briefs; webhook lane = review-only). The message clutter (Cody backup notification + Raven review) stays on A-7.4 agenda (CLAUDE.md edit, needs approval).
+
+### D-363. Full-unconstrained measurement: sweep, 3rd realm for untested, NO capital caps, full tape, no strategy overlap (AYM RULINGS, 2026-08-20)
+
+Aym: "this is a shadow paper trading environment. i don't want to limit anything i mostly want data back, with no constraints, we can confine the strats and parameters as we move along."
+
+R1. ORPHAN SWEEP: implement now (D-353 finally). Sweep boundary from owning process start time. 53+83 = 136 orphans across both books.
+R2. THIRD SHADOW REALM: any strategy NOT currently tested or ruled out (sentinel-paused, dead, unlaunched, box_builder/grid_hedge included) goes into a 3rd realm so EVERYTHING is tested. No strategy is untested or unrouted.
+R3. NO CAPITAL CAPS: remove per-trade $10, per-event $30, aggregate $60 notional limits in shadow. Money is not the constraint — data is. Capital limits apply ONLY if real money ever funds. Aym: "i don't want to limit anything i mostly want data back, with no constraints."
+R4. FULL MARKET TAPE: tape covers ALL windows including crypto. No exclusion. Aym: "let's have full market tape, no reason to limit it."
+R5. NO STRATEGY OVERLAP across realms: each strategy runs in exactly ONE realm. Fix the 7-strategy overlap (env B currently runs 7 survivors that main also runs). Every strategy is in exactly one book.
+R6. D-362 safety note superseded: with R3, the ONLY remaining constraint is the paper book hitting $0 (fund-if-zero per D-358). That is the natural cap Aym specified.
