@@ -666,15 +666,31 @@ def test_risk_gate_rejection_reason_is_verbatim(tmp_path, entry_time):
 
 
 def test_risk_constraint_per_event_cap_blocks_before_the_adapter_fills(
-        tmp_path, entry_time):
+        tmp_path, entry_time, monkeypatch):
     """D-343: the model-free per-event cap is wired into the entry path and
     binds strictly before the adapter fills. This is the constraint the PM
     gate itself has no equivalent of - correlated SAME-EPOCH exposure across
     btc/eth/sol, not a per-market or per-correlation-group budget - so only
     this new check can catch it.
+
+    THE CAP IS INJECTED, not taken from the shipped default (changed 2026-08-20,
+    D-363 R3). Shadow now runs with the per-event ceiling at the 100_000
+    sentinel, so the $30 this test seeds no longer blocks anything and the test
+    silently stopped exercising its own subject. What it defends is the WIRING -
+    that the constraint is consulted before the adapter fills, denies, and
+    writes a `risk_events` row - and that claim is independent of whatever
+    number policy currently sets. Pinning the policy number is
+    `tests/test_realm_partition.py`'s job.
     """
+    import dataclasses as _dc
+
+    from engine.polymarket import shadow_loop as _sl
     from engine.polymarket.markets import current_window_ts
     from engine.polymarket.paper_adapter import PaperPosition
+
+    monkeypatch.setattr(
+        _sl, 'SHADOW_RISK_LIMITS',
+        _dc.replace(_sl.SHADOW_RISK_LIMITS, per_event_notional_usd=30.0))
 
     client = FakeClient(gamma_ok(), books_ok)
     loop = build_loop(tmp_path, client, candles=streak_candles(entry_time))

@@ -150,9 +150,18 @@ def sibling_inference_map(conn, since_ms=None):
     factor-of-1000 error that produces an empty result and looks like a market
     that was never traded.
     """
+    # D-353 R4: swept orphans are NOT settlement observations. A row closed by
+    # `scripts/sweep_orphan_positions.py` carries a synthetic `exit_px = 0.00`
+    # that records a dead process, not a market that settled NO. Letting them
+    # through would do two separate kinds of damage: they would inflate the
+    # coverage DENOMINATOR with market-sides no live position ever resolved,
+    # and - worse - their fake 0.00 would enter `observed` as a settlement
+    # price, manufacturing agreement or contradiction out of process hygiene.
+    # `exit_reason` is the only marker they carry, so it is the filter.
     sql = ('SELECT p.pair, p.exit_px, p.exit_reason, s.features_json '
            'FROM positions p LEFT JOIN signals s ON s.id = p.signal_id '
-           'WHERE p.closed_ts IS NOT NULL')
+           'WHERE p.closed_ts IS NOT NULL '
+           "AND (p.exit_reason IS NULL OR p.exit_reason != 'orphaned:process_death')")
     params = []
     if since_ms is not None:
         sql += ' AND p.opened_ts >= ?'

@@ -401,11 +401,17 @@ def test_the_tape_row_carries_the_complement_key_the_check_joins_on(events):
         assert by_token[complement_id][2] == market_id
 
 
-def test_a_crypto_context_is_still_never_taped(events):
-    """Unchanged from proposal 031 phase 1, and deliberately so: a crypto
-    token id is new every 5-minute window, so a persisted crypto tape is never
-    read back after a restart and would only multiply the table's volume.
-    `_write_market_tape` returning 0 here is the exclusion, not a failure."""
+def test_a_crypto_context_IS_taped(events):
+    """D-363 R4 REVERSES proposal 031 phase 1: the tape covers crypto too.
+
+    Aym: "let's have full market tape, no reason to limit it." 031's argument
+    for the exclusion was that a crypto token id is new every 5-minute window,
+    so the complement check never reads a persisted crypto tape back after a
+    restart. That argument is about one CONSUMER; the tape is the raw record
+    future consumers get derived from, and untaped is unrecoverable.
+
+    This test asserted the exclusion until 2026-08-20. It now asserts its
+    removal, on purpose - if it ever reads 0 again, the tape lost crypto."""
     from strategies.polymarket.base import MARKET_TYPE_CRYPTO_UPDOWN
 
     client = FakeGammaClient(events=events)
@@ -420,12 +426,24 @@ def test_a_crypto_context_is_still_never_taped(events):
         condition_id = 'cond-crypto'
         outcomes = (_Outcome(),)
 
-    ctx = MarketContext(window_ts=int(NOW), market=_Market(), books={},
+    # A real book: the writer tapes a token only when it can read a reference
+    # price off one, so an empty `books` would return 0 for a reason that has
+    # nothing to do with the crypto exclusion this test is about.
+    from engine.polymarket.types import Orderbook, PriceLevel
+
+    book = Orderbook(token_id='UP-1',
+                     bids=(PriceLevel(price=0.48, size=100.0),),
+                     asks=(PriceLevel(price=0.52, size=100.0),))
+
+    ctx = MarketContext(window_ts=int(NOW), market=_Market(),
+                        books={'UP-1': book},
                         seconds_into_window=5.0,
                         market_type=MARKET_TYPE_CRYPTO_UPDOWN)
-    assert loop._write_market_tape(ctx) == 0
-    assert loop.tape_contexts == 0
-    assert _tape_rows(loop) == []
+    assert ctx.is_crypto_window, 'this test is meaningless off a crypto window'
+    assert loop._write_market_tape(ctx) == 1
+    assert loop.tape_contexts == 1
+    rows = _tape_rows(loop)
+    assert [r[0] for r in rows] == ['UP-1']
 
 
 def test_a_tape_write_that_throws_never_takes_the_cycle_down(events,

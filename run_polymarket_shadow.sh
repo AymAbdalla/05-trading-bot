@@ -82,6 +82,30 @@ STARTING_EQUITY="${STARTING_EQUITY:-1000}"
 #                                   part of a "diversified main"; they are dead
 #                                   and cannot be part of anything.
 #
+# D-363 R2/R5 UPDATE (2026-08-20). MAIN'S ROSTER IS UNCHANGED - the 16 names
+# below are exactly what D-362 set. What changed is around it:
+#
+#   * The six "sentinel-killed, cannot be part of anything" names above are now
+#     part of something. REALM C (`run_polymarket_shadow_realmc.sh`) un-pauses
+#     them for its own process and measures them. The line above stays true of
+#     THIS book and is no longer true of the registry.
+#   * Env B narrowed from 11 to 4. The seven diversified survivors it used to
+#     share with main (temporal_arbitrage, streak_snapper, small_liq_continuation,
+#     corridor_collector, weather_arb, weather_bracket_width_matched,
+#     longshot_fade_hold_to_resolution) now run ONLY here. Main is their sole
+#     book, which makes main's numbers for them a clean read for the first time.
+#
+# The three rosters are now a true partition of the registry:
+#
+#   main    16  THIS FILE
+#   env B    4  run_polymarket_shadow_envb.sh
+#   realm C  6  run_polymarket_shadow_realmc.sh
+#   -----------
+#   total   26  = len(build_strategies())
+#
+# `tests/test_realm_partition.py` asserts it. Adding a strategy to the registry
+# without giving it a realm FAILS THE SUITE.
+#
 # WHAT THIS COSTS, recorded because it is a real cost: 71.6% of main's closed
 # book (3003 of 4192) is the fair_value family. Nothing is deleted, but main
 # accrues no FURTHER fair_value closes, which ENDS the active measurement

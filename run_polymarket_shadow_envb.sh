@@ -43,36 +43,48 @@ LOG_DIR="${LOG_DIR:-research/polymarket_paper_survivors}"
 # ---------------------------------------------------------------------------
 # ROSTER - the definition of env B. Read this before changing it.
 #
-# THE SPLIT IS APPLIED (D-362 R5/R7/R8, 2026-08-20). This is the R4 roster of
-# NINE plus the two fair_value members that were still in main, making ELEVEN.
-# Env B is the fair_value ISOLATION book now; main
-# (`run_polymarket_shadow.sh`) carries the explicit complementary roster and
-# runs no fair_value at all.
+# NARROWED TO FOUR BY D-363 R5 (2026-08-20). Env B is now PURE fair_value
+# isolation: these four and nothing else.
+#
+# WHAT CHANGED AND WHY. Under D-362 this roster was ELEVEN - the four below
+# plus seven diversified survivors (PM_temporal_arbitrage, PM_streak_snapper,
+# PM_small_liq_continuation, PM_corridor_collector, PM_weather_arb,
+# PM_weather_bracket_width_matched, PM_longshot_fade_hold_to_resolution) that
+# ALSO ran in main. That overlap was deliberate then - env B was a "survivors"
+# book - but it meant seven strategies were being measured twice, in two books,
+# under two different sets of neighbours, and neither copy was a clean read.
+#
+# D-363 R5: "each strategy runs in exactly ONE realm." The seven stay in MAIN,
+# which is the diversified book and where their comparison group lives. Env B
+# keeps only what it exists to isolate. This is now a partition of the whole
+# REGISTRY, not just of the fair_value family:
+#
+#   main    16  diversified, no fair_value       run_polymarket_shadow.sh
+#   env B    4  fair_value isolation             THIS FILE
+#   realm C  6  sentinel-paused, D-363 R2        run_polymarket_shadow_realmc.sh
+#   -----------
+#   total   26  = len(build_strategies())
+#
+# `tests/test_realm_partition.py` asserts that against the live registry and
+# all three launchers, so adding a strategy without giving it a realm FAILS
+# THE SUITE instead of leaving it silently unmeasured.
 #
 # `--strategies` filters the ROUTED sets AFTER construction. A strategy whose
 # `supported_market_types` is the `('smart_money',)` D-322 sentinel is never
 # routed anywhere, so naming it here matches NOTHING - which is why Gate 4
 # below refuses on one rather than letting the book silently shrink.
 #
-# ADDED by D-362 over the R4 nine:
-#   + PM_fair_value_arb        the split's headline move, out of main
-#   + PM_fair_value_arb_wide   D-362 R7. UNACCOUNTED for in the D-361 brief
-#                              (113 closes in main) - without this line the
-#                              split would have killed it outright.
-# ALREADY PRESENT, no change: PM_fair_value_arb_patient,
-#   PM_fair_value_settlement_exit. Both are fair_value family and both were
-#   already in the nine, so the union is 11, not 13.
+# DELIBERATELY NOT HERE (D-362 R6 - D-322 STANDS): PM_fair_value_arb_hft,
+# PM_fair_value_arb_inverse. Both are fair_value family by name, and both are
+# paused for measured bleed. D-363 R2 sends them to REALM C to be measured
+# there rather than admitting them here - keeping this book's four comparable
+# to the run before it.
 #
-# DELIBERATELY NOT ADDED (D-362 R6 - D-322 STANDS):
-#   PM_fair_value_arb_hft, PM_fair_value_arb_inverse. Paused for bleed and
-#   they stay paused. Both are also sentinel-killed, so Gate 4 would refuse
-#   them anyway.
-#
-# BOTH HALVES LANDED TOGETHER. Enacting env B's half alone would run
-# fair_value in BOTH books and DOUBLE the contention the split exists to
-# remove. If you ever revert one launcher, revert the other in the same edit.
+# ALL THREE ROSTERS ARE ONE EDIT. Changing this file without changing the other
+# two breaks the partition, and the break is silent at runtime: a duplicated
+# strategy just quietly trades in two books. Run the suite.
 # ---------------------------------------------------------------------------
-STRATEGIES="${STRATEGIES:-PM_temporal_arbitrage,PM_fair_value_arb_patient,PM_longshot_fade_hold_to_resolution,PM_weather_bracket_width_matched,PM_fair_value_settlement_exit,PM_weather_arb,PM_streak_snapper,PM_small_liq_continuation,PM_corridor_collector,PM_fair_value_arb,PM_fair_value_arb_wide}"
+STRATEGIES="${STRATEGIES:-PM_fair_value_arb,PM_fair_value_arb_patient,PM_fair_value_arb_wide,PM_fair_value_settlement_exit}"
 
 die() {
     echo "run_polymarket_shadow_envb: REFUSING TO START: $*" >&2

@@ -410,8 +410,146 @@ DEFAULT_RESOLVE_SEC = 60.0
 #: keep measuring, fund-if-zero). max_drawdown_frac=1.0 means the halt
 #: NEVER fires for drawdown in shadow — the book runs until it zeroes
 #: and gets re-funded. The real-money default (0.25) is UNCHANGED.
+#: D-363 R3 (Aym ruling 2026-08-20): NO CAPITAL CAPS IN SHADOW. "this is a
+#: shadow paper trading environment. i don't want to limit anything i mostly
+#: want data back, with no constraints." The three notional ceilings below are
+#: the 100_000 SENTINEL, not limits - the same style D-360/D-362 used for the
+#: count caps. They are ceilings only: nothing here SIZES an order, so lifting
+#: them widens how many positions can be held concurrently without changing
+#: what any single trade costs.
+#:
+#: REAL MONEY IS UNAFFECTED. `risk_constraints.DEFAULT_LIMITS` keeps 10/30/60
+#: verbatim and this override is applied ONLY to the shadow loop's own gate
+#: call. Set real limits there, not here, the day real money funds this path.
 SHADOW_RISK_LIMITS = dataclasses.replace(
-    risk_constraints.DEFAULT_LIMITS, max_drawdown_frac=1.0)
+    risk_constraints.DEFAULT_LIMITS, max_drawdown_frac=1.0,
+    per_trade_notional_usd=100_000.0,
+    per_event_notional_usd=100_000.0,
+    aggregate_notional_usd=100_000.0)
+
+#: The gate's capital ceilings that D-363 R3 lifts, and the sentinel value.
+#: These live in `config.yaml` (`polymarket.risk`), so lifting them in
+#: `engine/risk/constraints.py` alone would leave the CONFIG value binding and
+#: R3 would read as implemented while still capping every book at $60.
+SHADOW_LIFTED_GATE_CAPS = ('max_total_exposure_usdc',
+                           'max_exposure_per_market_type_usdc',
+                           'max_correlated_exposure_usdc')
+CAP_SENTINEL_USDC = 100_000.0
+
+
+def lift_shadow_capital_caps(gate) -> dict:
+    """Raise the gate's pure capital CEILINGS to the D-363 R3 sentinel.
+
+    Returns `{attr: (was, now)}` so the caller can LOG what it changed. A cap
+    that moves silently is a book whose results cannot be compared to the run
+    before it (convention 20).
+
+    WHAT IS DELIBERATELY NOT LIFTED, and why
+    ----------------------------------------
+    `notional_cap_usdc` STAYS. Under `sizing_mode: flat` - which is what this
+    book runs - that number is not a ceiling at all, it is the ORDER SIZE:
+    `budget = self.notional_cap_usdc` in `risk_gate.size_order`. Raising it to
+    the sentinel would not remove a constraint, it would try to buy $100,000 of
+    premium per trade on a $1,000 paper book. Every fill would be liquidity-
+    clipped or would zero the book on its first trade, which destroys the very
+    measurement R3 exists to produce, and it would break comparability with
+    every one of the ~2,300 trades already measured at $10. R3's per-trade
+    ceiling IS lifted, in `SHADOW_RISK_LIMITS.per_trade_notional_usd` above -
+    that one is a genuine ceiling. Sizing is a separate decision from capping,
+    and it needs its own ruling. See the handoff.
+
+    The structural caps (`max_positions_per_market_side`,
+    `max_positions_per_market`) and the price bounds (`min_premium`,
+    `max_premium`) are not capital caps and are untouched.
+    """
+    changed = {}
+    for attr in SHADOW_LIFTED_GATE_CAPS:
+        was = getattr(gate, attr, None)
+        if was is None or float(was) >= CAP_SENTINEL_USDC:
+            continue
+        setattr(gate, attr, CAP_SENTINEL_USDC)
+        changed[attr] = (float(was), CAP_SENTINEL_USDC)
+    return changed
+
+
+# ---------------------------------------------------------------------------
+# Realm C: running the sentinel-paused strategies (D-363 R2)
+# ---------------------------------------------------------------------------
+#
+# D-322/D-323/D-326/D-329 paused six strategies with the D-312 mechanism in
+# reverse: "a strategy joins a universe by declaring it", so declaring a market
+# type no cycle ever routes (`('smart_money',)`) leaves every universe at once.
+# That is a PAUSE, not a deletion - `build_strategies()` still returns all six
+# and every pinned index still holds.
+#
+# D-363 R2 wants them measured rather than merely paused: "if any are not tested
+# or were ruled out we should just test them together in a 3rd shadow realm."
+# So realm C needs to undo the sentinel - but ONLY in realm C.
+#
+# WHY MUTATING THE CLASS IS SAFE HERE. Each realm is its OWN OS PROCESS
+# (`run_polymarket_shadow.sh`, `..._envb.sh`, `..._realmc.sh`). A class
+# attribute set in realm C's interpreter cannot be observed by main's or env
+# B's, so this cannot leak into the books the pause is protecting. The SOURCE
+# stays sentinel-killed, which means the pause is still the default everywhere
+# and a book has to ASK for the un-pause, by name, on its command line.
+#
+# The restored values are not invented: each one is the value that strategy's
+# own pause comment names as the revert target.
+SENTINEL_MARKET_TYPES = ('smart_money',)
+
+REALM_C_UNPAUSED_MARKET_TYPES = {
+    # "restore `supported_market_types = FairValueArb.supported_market_types`"
+    'PM_fair_value_arb_hft': ('crypto_updown', 'weather',
+                              'event', 'sports', 'political'),
+    'PM_fair_value_arb_inverse': ('crypto_updown', 'weather',
+                                  'event', 'sports', 'political'),
+    # "restore `supported_market_types = (MARKET_TYPE_CRYPTO_UPDOWN,)`"
+    'PM_fair_value_mirror_fade': ('crypto_updown',),
+    # "delete this override to fall back to the parent's ('crypto_updown',)"
+    'PM_box_builder': ('crypto_updown',),
+    'PM_grid_hedge': ('crypto_updown',),
+    # "restores `(MARKET_TYPE_CRYPTO_UPDOWN, MARKET_TYPE_WEATHER)
+    #  + GENERAL_BINARY_MARKET_TYPES`"
+    'PM_dip_arb': ('crypto_updown', 'weather', 'event', 'sports', 'political'),
+}
+
+
+def unpause_sentinel_strategies(names) -> dict:
+    """Restore real market types on the named sentinel-paused strategies.
+
+    MUST be called BEFORE the loop is constructed: routing happens inside
+    `PolymarketShadowLoop.__init__`, against instances built there, so an
+    un-pause applied afterwards would change nothing and look like it worked.
+
+    Returns `{strategy_name: restored_types}`. RAISES on a name that is not in
+    the un-pause table, or on one that is not actually sentinel-paused - both
+    mean the caller believes something about the registry that is not true, and
+    a realm that silently runs a smaller book than its roster claims is exactly
+    the corruption `--strategies` Gate 4 exists to prevent.
+    """
+    wanted = [n.strip() for n in names if n and n.strip()]
+    unknown = [n for n in wanted if n not in REALM_C_UNPAUSED_MARKET_TYPES]
+    if unknown:
+        raise ValueError(
+            'not sentinel-paused / no restore value recorded: %s'
+            % ', '.join(sorted(unknown)))
+
+    by_name = {s.strategy_name: s for s in build_strategies()}
+    missing = [n for n in wanted if n not in by_name]
+    if missing:
+        raise ValueError('not in the registry: %s' % ', '.join(sorted(missing)))
+
+    restored = {}
+    for name in wanted:
+        cls = type(by_name[name])
+        current = tuple(getattr(cls, 'supported_market_types', ()))
+        if current != SENTINEL_MARKET_TYPES:
+            raise ValueError(
+                '%s is not sentinel-paused (declares %r) - refusing to '
+                'overwrite a live declaration' % (name, current))
+        cls.supported_market_types = REALM_C_UNPAUSED_MARKET_TYPES[name]
+        restored[name] = cls.supported_market_types
+    return restored
 
 #: How often the settlement resolution ledger sweeps its pending markets
 #: (Forge proposal 038). Matched to the resolve cadence rather than the poll
@@ -1463,6 +1601,16 @@ class PolymarketShadowLoop:
         self.store = store if store is not None else ShadowStore(db_path)
         self.gate = (risk_gate if risk_gate is not None
                      else PolymarketRiskGate(config))
+        # D-363 R3. Applied to the gate INSTANCE, after construction, rather
+        # than by editing config.yaml: the config is the real-money-shaped
+        # description of the caps and stays intact. This is the shadow book
+        # saying "not here". Logged, never silent.
+        _lifted = lift_shadow_capital_caps(self.gate)
+        if _lifted:
+            logger.info(
+                'D-363 R3: shadow capital ceilings lifted: %s',
+                ', '.join('%s %.2f -> %.0f' % (k, v[0], v[1])
+                          for k, v in sorted(_lifted.items())))
         # -- Forge proposal 038, the settlement resolution ledger. Records what
         # every market the loop FETCHED settled at, whether or not a position
         # was ever held in it. It is WRITE-ONLY from the loop's point of view:
@@ -1611,8 +1759,9 @@ class PolymarketShadowLoop:
         # `market_tape` consumer (`agents/forge_complement_check.py`, Forge
         # proposal 031) was silently reading a dead table.
         #
-        # Written from `_write_market_tape`, called on every non-crypto context
-        # this loop builds, so no roster edit can turn it off again.
+        # Written from `_write_market_tape`, called on EVERY context this loop
+        # builds - crypto included since D-363 R4 - so no roster edit can turn
+        # it off again and no market type is silently missing from the record.
         self.market_tape = PriceTapeByToken(db_path=self.store.db_path)
         #: Counted, never inferred: rows accepted, and contexts that produced
         #: no row at all. `market_tape` volume alone cannot distinguish "the
@@ -2375,6 +2524,19 @@ class PolymarketShadowLoop:
             lead_bps=lead_bps,
             atr14=atr14,
         )
+        # D-363 R4: FULL market tape, crypto included.
+        #
+        # The old exclusion had TWO independent locks and both had to come off:
+        # `_write_market_tape` tested `ctx.is_crypto_window` (a real property,
+        # `strategies/polymarket/base.py`) AND this builder - the only one that
+        # produces crypto contexts - never called the writer at all. Removing
+        # only the guard would have changed nothing observable.
+        #
+        # Placed on the 'ok' path, after the context is complete and before any
+        # strategy is consulted, so the tape stays a function of the CYCLE and
+        # not of the roster - the property D-362 R4 established for the other
+        # two builders, now true for all three.
+        detail['tape_rows'] = self._write_market_tape(ctx)
         return ctx, 'ok', detail
 
     # -- market_tape --------------------------------------------------------
@@ -2391,15 +2553,23 @@ class PolymarketShadowLoop:
         counts sqlite errors per row; the belt here catches anything the
         stamping itself could throw on a malformed market object.
 
-        CRYPTO WINDOWS ARE EXCLUDED, deliberately and unchanged from proposal
-        031 phase 1: a crypto token id is new every 5-minute window, so a
-        persisted crypto tape is never read back after a restart, and writing
-        it would multiply the table's volume for no consumer. Off-crypto token
-        ids live for days and poll twelve times slower - that is the tape a
-        restart used to reset to empty, and the tape the complement check
-        reads.
+        CRYPTO WINDOWS ARE INCLUDED (D-363 R4, Aym: "let's have full market
+        tape, no reason to limit it"). This REVERSES proposal 031 phase 1's
+        exclusion, and the reversal is deliberate rather than an oversight, so
+        031's argument is worth stating and answering: a crypto token id is new
+        every 5-minute window, so a persisted crypto tape is never read back
+        after a restart by the complement check, and off-crypto ids live for
+        days. That argument is about one CONSUMER. D-363 is not written for a
+        consumer - it is a measurement directive, and the tape is the raw
+        record a future consumer is derived FROM. Untaped is unrecoverable.
+
+        KNOWN COST, accepted: crypto contexts poll on the 5s cadence against
+        the off-crypto contexts' much slower one, so `market_tape` row volume
+        rises steeply - this is the single largest volume change in the D-363
+        set. `tape_rows_written` and `tape_contexts` are the counters to watch
+        if the table ever needs bounding.
         """
-        if ctx is None or getattr(ctx, 'is_crypto_window', False):
+        if ctx is None:
             return 0
         self.tape_contexts += 1
         try:
@@ -4898,6 +5068,13 @@ def build_parser() -> argparse.ArgumentParser:
                         'names; default = all. The registry itself '
                         '(build_strategies() and its pinned indices) is '
                         'untouched.')
+    p.add_argument('--unpause', default=None,
+                   help='D-363 R2 (realm C ONLY): comma-separated '
+                        'sentinel-paused strategy_ids to restore to their real '
+                        'market types for THIS PROCESS, so they can be routed '
+                        'and measured. Refuses any name that is not '
+                        'sentinel-paused. Use with --strategies and a separate '
+                        '--db; never on the main or env B books.')
     return p
 
 
@@ -5015,6 +5192,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     candle_source_factory = None
     if not args.no_candles:
         candle_source_factory = default_candle_source_factory(config)
+
+    # D-363 R2. BEFORE the loop is built: routing happens in __init__ against
+    # instances made there, so un-pausing afterwards would be a no-op that
+    # reads as success. A bad name REFUSES the start rather than quietly
+    # producing a realm that measures fewer strategies than it claims.
+    if args.unpause:
+        try:
+            restored = unpause_sentinel_strategies(args.unpause.split(','))
+        except ValueError as exc:
+            logger.error('REFUSING TO START: --unpause: %s', exc)
+            return 1
+        logger.info('D-363 R2: un-paused %d sentinel strategies for this '
+                    'process: %s', len(restored),
+                    ', '.join('%s->%s' % (k, '/'.join(v))
+                              for k, v in sorted(restored.items())))
 
     loop = PolymarketShadowLoop(
         config=config, poll_sec=args.poll, starting_equity=args.equity,
