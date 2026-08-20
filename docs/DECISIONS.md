@@ -4012,3 +4012,18 @@ R2. APPROVE the shadow-environment split per Cody's section 5.3: make env B the 
 R3. The split is RE-MEASURED after the second restart before acting further — the 5.1 table moves once the cap lifts (Cody's recommended sequence).
 R4. Both changes land with the second restart (D-360 + D-359 + split membership + 038 backfill all ride it).
 R5. Safety note accepted: with D-359 (no auto-halt) + D-360 (no count cap), the only remaining limits are per-trade notional, per-event (30 USD) and aggregate capital — exactly as Aym specified. Paper money, blast radius is a number in a database.
+
+### D-362. Cap rulings, tape fix, split mechanism, maker budget (AYM RULINGS, 2026-08-20)
+
+Aym answered all seven questions plus new items. Recorded verbatim intent:
+
+R1. CRYPTO CAP: lift to sentinel. Aym: "The crypto cap makes no sense because I have no real money in the shadow realm rn". engine/risk/__init__.py:49 + config.yaml:102 (both 2) -> 100,000 sentinel. NOTE: this is the Alpaca real-money path; Aym's ruling is explicit that there is no real money funded anywhere. When real money ever funds, this must be re-set.
+R2. STRATEGY SELF-CAPS: lift all per-strategy position caps (fair_value_settlement_exit, fair_value_mirror_fade, longshot_fade_hold_to_resolution each enforce MAX_CONCURRENT_POSITIONS = 2). Aym: "lift all position caps on the strategies only keep global position caps". Global = sentinel + capital limits stay.
+R3. MAKER ORDER BUDGET: remove DEFAULT_MAX_RESTING_MAKER_ORDERS = 2 (shadow_loop.py:622). Aym: "remove market order budget".
+R4. MARKET_TAPE: fix the freeze. Root cause: dip_arb was the ONLY tape writer; its sentinel kill froze the tape for BOTH books. Fix: move the tape writer out of dip_arb into shadow_loop so tape is written every cycle regardless of roster. Aym: "fix this, work with cody to find a fix. Move the tape writer, make it workable and usable".
+R5. SPLIT MECHANISM: approved. --strategies rosters on both launchers is the per-book mechanism (D-322 override is global, cannot express a split).
+R6. hft/inverse: KEEP PAUSED (D-322 stands, -21, 22.7% win rate). env B does NOT get them.
+R7. PM_fair_value_arb_wide: move to env B with the family (113 closes, -6.64, live in main today).
+R8. SPLIT ROSTERS: env B = fair_value isolation book: PM_fair_value_arb, PM_fair_value_arb_patient, PM_fair_value_settlement_exit, PM_fair_value_arb_wide (NOT hft/inverse). Main = diversified, explicit roster excluding the fair_value family.
+R9. SEQUENCE: all fixes + tests land FIRST, then ONE clean second restart (D-360 + D-361 + D-362 together). No D-360-only restart.
+R10. DUPLICATE-LANE fix: the webhook lane caused a double-dispatch. Raven fixes on its side (single-owner briefs; webhook lane = review-only). The message clutter (Cody backup notification + Raven review) stays on A-7.4 agenda (CLAUDE.md edit, needs approval).
