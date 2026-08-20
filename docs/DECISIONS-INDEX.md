@@ -1,13 +1,15 @@
 # Decisions Index — one line per decision (human view)
 
 **Source:** docs/DECISIONS.md (the full append-only log, 3,668 lines, is the machine truth).
-**Generated:** 2026-08-20 · 161 decisions D-101..D-381 (D-355 reserved, unwritten). D-357..D-379 are recorded in the log but NOT yet indexed here - read the log for those. D-380+ is the reserved block for queued Raven-recorded rulings (D-380 provenance note).
+**Generated:** 2026-08-20 · 163 decisions D-101..D-383 (D-355 reserved, unwritten). D-357..D-379 are recorded in the log but NOT yet indexed here - read the log for those. D-380+ is the reserved block for queued Raven-recorded rulings (D-380 provenance note).
 **Purpose:** read this, not the log. Every line links to its section via line number.
 
 Status markers: ACTIVE = in force · SUPERSEDED = replaced by a later D · AMENDED = changed in place.
 
 ---
 
+- **D-383** (line 4110) — Shadow drawdown measurement limit 1.0 -> 0.25, measurement-only, unblocks 049's breach bar (Aym ruling, 2026-08-20) — RECORDED IN THE LOG, NOT YET IMPLEMENTED in `SHADOW_RISK_LIMITS`
+- **D-382** (line 4100) — Confidence-based position sizing replaces the $10 flat order size: entries size to f(confidence, win_rate) mapped into 1-90% of available capital, D-366's 90% stays the ceiling (Aym ruling, 2026-08-20)
 - **D-381** (line 4084) — D-362 execution review rulings, amended for the D-363 supersession: freeze-gate rule and from-raven gitignore STILL LIVE, tape exclusion and roster overlap HISTORICAL (Raven ruling, 2026-08-20)
 - **D-380** (line 4068) — tick 7 rulings: 048 findings ratified but implementation HELD, 049 accepted and BUILT, 042 form amendment accepted; D-380+ reserved block convention (Raven ruling, 2026-08-20)
 - **D-356** (line 3670) — tick 6 rulings: 045 ratified; 046 and 047 repairs accepted and built; dip_arb kill executed; context recorded (Raven ruling, 2026-08-20)

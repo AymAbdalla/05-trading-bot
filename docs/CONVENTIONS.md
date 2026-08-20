@@ -168,6 +168,32 @@ and the wording of the conventions that have been contested.
     not after: `git interpret-trailers --parse <message-file>` prints exactly
     what the hook will see. Convention 34 carries the rest of the commit line.
 
+36. **The dispatcher does not commit into this working tree while a session is
+    live.** Raven must read `docs/handoffs/from-raven/.lock` before committing
+    here, and must not commit at all while the pid on line 1 is alive. Added
+    2026-08-20.
+
+    This is the one collision the Cody-side freeze gate cannot see. Every check
+    a session runs before committing looks for SESSIONS: `ps` filtered for
+    `claude`, the lock file, sibling processes. The dispatcher is none of those.
+    It does not take the lock, it is not a `claude -p` sibling, and it leaves no
+    process for `ps` to find, so a session that has correctly cleared its gate
+    can still have the tree change underneath it.
+
+    Earned on 2026-08-20 by `1627721`. It is titled
+    "D-382: confidence-based position sizing replaces $10 flat order size (Aym
+    ruling)", trailered `Agent-Id: raven-D382`, and its 42 added lines of
+    `docs/DECISIONS.md` are the D-380 and D-381 entries a LIVE session had
+    written and not yet committed, swept in alongside the D-382 entry. The
+    content survived; the provenance did not. The log now attributes one
+    session's work to another agent under a decision number that is not what
+    that work was.
+
+    The consequence for a session, not just for the dispatcher: re-derive
+    `git rev-parse HEAD` immediately before EVERY commit, not once at the gate
+    (convention 25). A HEAD read at the top of a session is a fact about the
+    past.
+
 ---
 
 ## Numbering note for 27, 28 and 29 (closed by Raven ruling, 2026-08-19)
