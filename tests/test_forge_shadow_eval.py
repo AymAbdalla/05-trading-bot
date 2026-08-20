@@ -32,7 +32,8 @@ CREATE TABLE signals (
     tf TEXT NOT NULL, strategy_id TEXT NOT NULL, pattern TEXT NOT NULL,
     direction TEXT NOT NULL, confidence REAL NOT NULL,
     features_json TEXT NOT NULL, acted INTEGER NOT NULL DEFAULT 0,
-    skip_reason TEXT, mode TEXT NOT NULL DEFAULT 'paper')
+    skip_reason TEXT, mode TEXT NOT NULL DEFAULT 'paper',
+    market_duration TEXT)
 """
 POSITIONS_DDL = """
 CREATE TABLE positions (
@@ -56,9 +57,10 @@ def _build_db(path, signals=(), positions=(), equity=()):
     conn.executescript(SIGNALS_DDL + ';' + POSITIONS_DDL + ';' + EQUITY_DDL)
     for i, (strategy, acted, reason) in enumerate(signals):
         conn.execute(
-            'insert into signals values (?,?,?,?,?,?,?,?,?,?,?,?)',
+            'insert into signals values (?,?,?,?,?,?,?,?,?,?,?,?,?)',
             (f'sig{i}', 1_787_000_000_000 + i, 'btc-updown-5m-1', '5m',
-             strategy, strategy, 'long', 0.0, '{}', acted, reason, 'paper'))
+             strategy, strategy, 'long', 0.0, '{}', acted, reason, 'paper',
+             None))
     for i, (strategy, closed_ts, pnl) in enumerate(positions):
         conn.execute(
             'insert into positions values '

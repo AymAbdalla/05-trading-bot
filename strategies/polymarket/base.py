@@ -348,6 +348,24 @@ class PolymarketStrategy(Strategy):
     #: someone who has read what that strategy reads off the context.
     supported_market_types = (MARKET_TYPE_CRYPTO_UPDOWN,)
 
+    #: Which market-duration window this strategy evaluates, declared by
+    #: the strategy itself: '5m', '15m', 'mixed', or None.
+    #:
+    #: This exists for the SKIP path. A skip has no legs, so the loop
+    #: cannot infer the duration from what was traded, and the slug it
+    #: records is ALWAYS the 5m market (`ctx.market`) even for a strategy
+    #: that only ever reads `ctx.market_15m`.
+    #: `PM_longshot_fade_hold_to_resolution` is exactly that case, and it
+    #: is why reading the slug alone is not sufficient.
+    #:
+    #: None means "this strategy has not declared a scope", NOT "5m". The
+    #: loop then falls back to reading the duration off the recorded slug,
+    #: which is a true statement about that row. Any strategy that touches
+    #: `ctx.market_15m` MUST override this, and
+    #: `tests/test_market_duration_keying.py` fails the suite if one does
+    #: not - a silent 5m reading on a 15m evaluation is the original bug.
+    market_duration_scope = None
+
     #: Never False in this repo. See the module docstring.
     paper_mode = PAPER_MODE
 

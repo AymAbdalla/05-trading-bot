@@ -332,7 +332,8 @@ from engine.db import get_db_path
 from engine.halt import is_halted
 from engine.risk import constraints as risk_constraints
 from engine.risk import events as risk_events
-from engine.polymarket.assets import (SHADOW_ASSETS, asset_for_slug, get_asset)
+from engine.polymarket.assets import (SHADOW_ASSETS, asset_for_slug,
+                                      get_asset, market_duration_for_slug)
 from engine.polymarket.client import PolymarketClient
 from engine.polymarket.strike import (ERROR_UNAVAILABLE_FLAG,
                                      NOISE_FLOOR_ERROR_BY_ASSET,
@@ -649,6 +650,21 @@ def _ms(seconds: Optional[float] = None) -> int:
 # Persistence
 # ---------------------------------------------------------------------------
 
+def window_ts_from_slug(slug: Optional[str]) -> Optional[int]:
+    """Trailing epoch off a window slug, or None.
+
+    btc-updown-15m-1787064300 -> 1787064300. The trailing integer IS the
+    window START (verified: entries land 1-241s into a 300s window), so the
+    close is this plus the duration, never this alone.
+
+    Returns None rather than guessing on a slug with no numeric tail. A
+    weather slug has no window and must not come back as one.
+    """
+    if not slug:
+        return None
+    tail = str(slug).rsplit('-', 1)[-1]
+    return int(tail) if tail.isdigit() else None
+
 class ShadowStore:
     """SQLite writer for the shadow loop.
 
@@ -810,6 +826,46 @@ class ShadowStore:
                     name, sql_type))
         self.conn.commit()
 
+    #: D-339 clause (3): the 15m signal keying. Same reasoning as
+    #: _POSITIONS_FILL_PROVENANCE_COLUMNS above - CREATE TABLE IF NOT
+    #: EXISTS is a no-op against a signals table that already exists on
+    #: disk, and every live database predates this column.
+    #:
+    #: NOTE the absence of NOT NULL DEFAULT, which is deliberate and is the
+    #: single most important line in this migration. fill_was_maker above
+    #: carries DEFAULT 0 and that backfilled every pre-existing row into a
+    #: value indistinguishable from a real measurement. NULL here means
+    #: "this row predates the key" and nothing else. ALTER TABLE ADD COLUMN
+    #: with no default does not rewrite the existing rows; it is a
+    #: header-only change and is fast even on ~700k rows.
+    _SIGNALS_DURATION_COLUMNS = (
+        ('market_duration', 'TEXT'),
+    )
+
+    def _migrate_signals_duration_column(self) -> None:
+        """ALTER TABLE ADD COLUMN for market_duration if missing.
+
+        Same table-existence guard and the same "must run before
+        executescript" ordering as the migrations above - see
+        _migrate_positions_pair_linkage_columns for why. A signals table
+        that does not exist yet is left alone: schema.sql creates it a
+        moment later with the column already in the CREATE TABLE.
+        """
+        table_exists = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='signals'").fetchone()
+        if not table_exists:
+            return
+        existing = {row[1] for row in
+                    self.conn.execute('PRAGMA table_info(signals)')}
+        for name, sql_type in self._SIGNALS_DURATION_COLUMNS:
+            if name in existing:
+                continue
+            self.conn.execute(
+                'ALTER TABLE signals ADD COLUMN {} {}'.format(
+                    name, sql_type))
+        self.conn.commit()
+
     def ensure_schema(self) -> None:
         """Idempotent migration. Replays db/schema.sql verbatim.
 
@@ -823,6 +879,7 @@ class ShadowStore:
         self._migrate_positions_pair_linkage_columns()
         self._migrate_positions_fill_provenance_column()
         self._migrate_market_tape_complement_columns()
+        self._migrate_signals_duration_column()
         with open(self.SCHEMA_PATH) as f:
             self.conn.executescript(f.read())
         self.conn.commit()
@@ -858,7 +915,8 @@ class ShadowStore:
                       pattern: str, direction: str, confidence: float,
                       features: dict, acted: bool,
                       skip_reason: Optional[str],
-                      ts_ms: Optional[int] = None) -> str:
+                      ts_ms: Optional[int] = None,
+                      market_duration: Optional[str] = None) -> str:
         """One row per EVALUATION, entry or skip. Returns the signal id.
 
         `direction` is 'long' on every row: the only Polymarket action this loop
@@ -866,20 +924,97 @@ class ShadowStore:
         `features_json['outcome_side']`, because the direction column is a
         'long' | 'exit' contract shared with the crypto path and overloading it
         with 'Up'/'Down' would break every existing reader.
+
+        market_duration is D-339 clause (3): which window this evaluation
+        was actually against, 5m | 15m | mixed. It defaults to None and
+        None is WRITTEN AS NULL, never coerced to a value - the crypto
+        path in engine/db.py and every test caller pass nothing and must
+        keep meaning "not recorded" rather than "5m". pair and tf are
+        untouched by this column: that is the additive contract, and
+        tests/test_market_duration_keying.py enforces it.
         """
         signal_id = str(uuid.uuid4())
         with self.conn:
             self.conn.execute(
                 'INSERT INTO signals (id, ts, pair, tf, strategy_id, pattern, '
-                'direction, confidence, features_json, acted, skip_reason, mode) '
-                'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                'direction, confidence, features_json, acted, skip_reason, '
+                'mode, market_duration) '
+                'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                 (signal_id, ts_ms if ts_ms is not None else _ms(),
                  market_slug or 'POLYMARKET', '5m', strategy_id, pattern,
                  direction, float(confidence), self._json(features),
                  1 if acted else 0,
-                 None if acted else skip_reason, MODE))
+                 None if acted else skip_reason, MODE, market_duration))
         return signal_id
 
+    #: Window length per duration key, seconds. Used to derive
+    #: seconds_remaining and to decide whether a window has CLOSED yet.
+    CALIBRATION_SPANS = {'5m': UPDOWN_5M_DURATION,
+                         '15m': UPDOWN_15M_DURATION}
+
+    def record_calibration_rows(self, rows) -> int:
+        """Bulk-insert one poll of the calibration tape. Returns rows written.
+
+        One transaction for the whole cycle rather than one per token: this
+        runs every poll over 12 tokens, and a per-statement commit would
+        land squarely in the loop hot path.
+        """
+        if not rows:
+            return 0
+        with self.conn:
+            self.conn.executemany(
+                'INSERT INTO calibration_tape (token_id, market_slug, '
+                'market_duration, outcome_side, condition_id, ts, '
+                'window_ts, seconds_remaining, mid, best_bid, best_ask, '
+                'book_depth_levels, selected) '
+                'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', rows)
+        return len(rows)
+
+    def stamp_calibration_resolution(self, *, token_id: str,
+                                     market_slug: str,
+                                     market_duration: str,
+                                     window_ts: int,
+                                     resolved_outcome: str, won: int,
+                                     resolved_ts: float,
+                                     source: str = 'oracle') -> bool:
+        """Write the resolution stamp. True if THIS call wrote it.
+
+        INSERT OR IGNORE against a PRIMARY KEY on token_id, so a SECOND
+        stamp for a token is dropped by the key. That is the design, not a
+        limitation: a resolution that changes is a data error, and INSERT
+        OR REPLACE would overwrite the first reading and hide it. False
+        here means "already stamped", and the caller counts it into health
+        so a changed resolution is COUNTED rather than lost (convention 20).
+        """
+        with self.conn:
+            cur = self.conn.execute(
+                'INSERT OR IGNORE INTO calibration_resolution (token_id, '
+                'market_slug, market_duration, window_ts, '
+                'resolved_outcome, won, resolved_ts, source) '
+                'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                (token_id, market_slug, market_duration, int(window_ts),
+                 resolved_outcome, int(won), float(resolved_ts), source))
+        return cur.rowcount > 0
+
+    def pending_calibration_tokens(self, now: float, limit: int = 48):
+        """Taped tokens whose window has CLOSED and that carry no stamp yet.
+
+        The closed test is done in SQL off the row own duration, so a 15m
+        window is never declared closed on the 5m clock. Oldest first, and
+        capped: the stamp costs one Gamma read per token and must not turn
+        into an unbounded backlog sweep inside a poll.
+        """
+        return self.conn.execute(
+            'SELECT DISTINCT t.token_id, t.market_slug, t.market_duration, '
+            't.window_ts, t.outcome_side '
+            'FROM calibration_tape t '
+            'LEFT JOIN calibration_resolution r ON r.token_id = t.token_id '
+            'WHERE r.token_id IS NULL '
+            'AND t.window_ts + (CASE t.market_duration WHEN ? '
+            'THEN ? ELSE ? END) <= ? '
+            'ORDER BY t.window_ts ASC LIMIT ?',
+            ('15m', UPDOWN_15M_DURATION, UPDOWN_5M_DURATION,
+             float(now), int(limit))).fetchall()
     def record_entry(self, position, *, signal_id: str, limit_price: float,
                      strategy_id: str, stop_px: Optional[float] = None,
                      pair_id: Optional[str] = None,
@@ -1460,6 +1595,13 @@ class PolymarketShadowLoop:
         # Ditto, and for the same reason: an open-position exit check is not an
         # evaluation of a window. Its own categorised taxonomy - see the module
         # docstring's exit-management section.
+        # Token ids some strategy actually ENTERED on this cycle. Reset
+        # every poll and read by the calibration sampler, which runs after
+        # the evaluation phase so that selected is a fact about this cycle
+        # rather than a guess from the registry. An unselected market is
+        # the arm 029 condition (b) exists to measure, so selected = 0 is
+        # WRITTEN, never omitted (convention 20).
+        self._cycle_selected_tokens: set = set()
         self.exit_counts: Counter = Counter()
         # Ditto, fourth space: what happened to RESTING ORDERS this cycle. A
         # resting order is looked at on every cycle and usually nothing happens
@@ -2224,7 +2366,9 @@ class PolymarketShadowLoop:
         self.store.record_signal(
             strategy_id=strategy_name, market_slug=market_slug,
             pattern=strategy_name, direction='long', confidence=confidence,
-            features=features, acted=acted, skip_reason=reason)
+            features=features, acted=acted, skip_reason=reason,
+            market_duration=self._market_duration_for(strategy_name,
+                                                      market_slug))
         return disposition
 
     @staticmethod
@@ -2402,6 +2546,43 @@ class PolymarketShadowLoop:
 
     # -- the stop that gets written to the positions row ----------------------
 
+    @staticmethod
+    def _collapse_durations(durations) -> Optional[str]:
+        """Collapse the per-leg durations of ONE decision to one value.
+
+        One distinct duration means the decision sat entirely on that
+        window. Two means it spanned both, which is the corridor family and
+        is exactly what mixed exists to say. Nothing readable means None:
+        an unknown is a missing number, not a 5m (convention 20).
+        """
+        seen = {d for d in durations if d}
+        if not seen:
+            return None
+        if len(seen) == 1:
+            return next(iter(seen))
+        return 'mixed'
+
+    def _market_duration_for(self, strategy_name: Optional[str],
+                             market_slug: Optional[str]) -> Optional[str]:
+        """The market-duration key for a row with no legs to read.
+
+        The strategy DECLARATION wins over the slug, and that ordering is
+        the whole reason the declaration exists. On a skip the loop records
+        ctx.market.slug, which is always the 5m market - even for
+        PM_longshot_fade_hold_to_resolution, which evaluates nothing but
+        the 15m book. Trusting the slug there would write 5m onto a 15m
+        evaluation, which is the original keying bug wearing a new column.
+
+        Falling back to the slug is not a default: it reads the duration
+        off the market actually named on the row. When neither can say -
+        an undeclared strategy on a weather slug, say - the answer is None
+        and NULL is written.
+        """
+        declared = getattr(self._strategy_named(strategy_name),
+                           'market_duration_scope', None)
+        if declared:
+            return declared
+        return market_duration_for_slug(market_slug)
     def _strategy_named(self, name: Optional[str]):
         """The strategy instance called `name`, or None.
 
@@ -2548,6 +2729,11 @@ class PolymarketShadowLoop:
             if all(p is not None for p in prices):
                 pair_cost_expected = round(sum(prices), 4)
         prev_leg_fill_monotonic: Optional[float] = None
+        # D-339 clause (3): one entry per LEG that actually filled, read
+        # off the market object the leg was routed to rather than off the
+        # decision. A corridor fills a 15m leg and a 5m leg from this same
+        # loop, and collapsing those two readings is what produces mixed.
+        filled_durations = []
 
         for leg_index, leg in enumerate(decision.legs, start=1):
             leg_slug = leg.market_slug or slug
@@ -2633,6 +2819,9 @@ class PolymarketShadowLoop:
 
             filled.append((position, leg, leg_index, leg_bid, leg_ask,
                            leg2_latency_ms))
+            filled_durations.append(market_duration_for_slug(
+                getattr(market, 'slug', None) or leg_slug))
+            self._cycle_selected_tokens.add(token_id)
 
         if not filled:
             reason = first_block or 'adapter:unreported'
@@ -2663,7 +2852,9 @@ class PolymarketShadowLoop:
                           outcome_side=filled[0][1].outcome_side,
                           pair_id=pair_id,
                           pair_cost_expected=pair_cost_expected),
-            acted=True, skip_reason=None)
+            acted=True, skip_reason=None,
+            market_duration=(self._collapse_durations(filled_durations)
+                             or self._market_duration_for(name, slug)))
         for position, leg, leg_index, leg_bid, leg_ask, leg2_latency_ms \
                 in filled:
             self.store.record_entry(
@@ -3024,6 +3215,8 @@ class PolymarketShadowLoop:
         the CSV and NOWHERE in `db/trading.db`, which is the table every
         downstream reader (Forge, the critic, the dashboard) actually reads.
         """
+        if getattr(order, 'token_id', None):
+            self._cycle_selected_tokens.add(order.token_id)
         position = self.adapter.positions.get(order.position_id or '')
         if position is None:
             self.health['maker_fill_without_position'] += 1
@@ -3039,7 +3232,11 @@ class PolymarketShadowLoop:
                               max_through_shares=order.max_through_shares,
                               observations=order.observations,
                               maker_fill_model=MAKER_FILL_MODEL),
-                acted=True, skip_reason=None)
+                acted=True, skip_reason=None,
+                market_duration=(
+                    market_duration_for_slug(order.market_slug)
+                    or self._market_duration_for(order.strategy,
+                                                 order.market_slug)))
             self.store.record_entry(
                 position, signal_id=signal_id,
                 limit_price=order.limit_price, strategy_id=order.strategy,
@@ -3261,6 +3458,108 @@ class PolymarketShadowLoop:
 
     # -- cycle --------------------------------------------------------------
 
+    #: Stamps attempted per cycle. Each one costs a Gamma read, so the
+    #: backlog is drained at a bounded rate rather than in one sweep.
+    CALIBRATION_STAMP_BATCH = 8
+
+    def sample_calibration_tape(self, contexts, now: float) -> int:
+        """One calibration row per token in the universe. Returns rows written.
+
+        029 condition (b): the curve needs EVERY market, not the ones a
+        strategy picked. The universe here is 3 assets x {5m, 15m} x 2
+        outcomes = 12 tokens per cycle, which is the narrow scope Raven R1
+        shipped; widening it to adjacent windows or the 16-window lookback
+        scales linearly and needs its own number first.
+
+        Costs NO extra network. build_context has already fetched both
+        books for both markets through fetch_orderbook, so every price
+        here comes off the CLOB book. That is not a convenience, it is the
+        D-339 trap: gamma bestBid/bestAsk read 0.63/0.64 on a token whose
+        live book was 0.06/0.08 three minutes from expiry, and a curve
+        built on the summary fields would measure Gamma staleness and call
+        it market miscalibration - worst exactly where the curve matters
+        most. market.raw is never read here.
+
+        A token with no book still gets a row, with NULL prices and NULL
+        depth. Dropping it would make an unreadable book indistinguishable
+        from a market that was never in the universe (convention 11).
+        """
+        rows = []
+        for ctx in contexts.values():
+            for market, books in ((ctx.market, ctx.books),
+                                  (ctx.market_15m, ctx.books_15m)):
+                if market is None:
+                    continue
+                slug = getattr(market, 'slug', None)
+                duration = market_duration_for_slug(slug)
+                window_ts = window_ts_from_slug(slug)
+                if duration is None or window_ts is None:
+                    self.health['calibration_unkeyed_market'] += 1
+                    continue
+                span = self.store.CALIBRATION_SPANS.get(duration)
+                remaining = (window_ts + span - now) if span else None
+                for outcome in (market.outcomes or ()):
+                    book = (books or {}).get(outcome.token_id)
+                    depth = (len(book.bids) + len(book.asks)) if book else None
+                    rows.append((
+                        outcome.token_id, slug, duration, outcome.name,
+                        market.condition_id or None, float(now),
+                        int(window_ts), remaining,
+                        book.midpoint if book else None,
+                        book.best_bid if book else None,
+                        book.best_ask if book else None,
+                        depth,
+                        1 if outcome.token_id in
+                        self._cycle_selected_tokens else 0))
+        written = self.store.record_calibration_rows(rows)
+        self.health['calibration_rows'] += written
+        return written
+
+    def stamp_calibration_resolutions(self, now: float) -> int:
+        """Stamp closed windows with their oracle outcome. Returns stamps written.
+
+        Runs on windows that have already CLOSED, so it lags the tape by one
+        window. resolved_ts records when we OBSERVED the resolution, not
+        when the window settled; conflating those two is how a calibration
+        curve quietly acquires a lookahead.
+
+        Reads each market by its own slug rather than through
+        resolved_windows_checked, which the spec named: that helper is
+        get_updown_5m_checked underneath and cannot see a 15m market at
+        all, and the 15m arm is half of what this tape exists to measure.
+        Its failure taxonomy is kept - read_failed / not_listed /
+        unresolved / not_binary each land in health under their own name,
+        so an oracle running behind is never confused with a read that
+        failed (convention 20).
+        """
+        stamped = 0
+        for row in self.store.pending_calibration_tokens(
+                now, limit=self.CALIBRATION_STAMP_BATCH):
+            token_id, slug, duration, window_ts, side = row
+            market, status = get_market_by_slug_checked(self.client, slug)
+            if market is None:
+                self.health['calibration_resolve:' + str(status)] += 1
+                continue
+            if not market.is_binary:
+                self.health['calibration_resolve:not_binary'] += 1
+                continue
+            winner = market.resolved_outcome
+            if winner is None:
+                self.health['calibration_resolve:unresolved'] += 1
+                continue
+            won = 1 if ((side or '').strip().lower()
+                        == winner.strip().lower()) else 0
+            wrote = self.store.stamp_calibration_resolution(
+                token_id=token_id, market_slug=slug,
+                market_duration=duration, window_ts=window_ts,
+                resolved_outcome=winner.strip().upper(), won=won,
+                resolved_ts=float(now))
+            if wrote:
+                stamped += 1
+                self.health['calibration_resolutions'] += 1
+            else:
+                self.health['calibration_resolution_duplicate'] += 1
+        return stamped
     def run_cycle(self, now: Optional[float] = None) -> dict:
         """One poll. Never raises: an unexpected failure is a counted category.
 
@@ -3271,6 +3570,9 @@ class PolymarketShadowLoop:
         self.cycles += 1
         window_ts = current_window_ts(now)
         detail: dict = {'cycle': self.cycles}
+        # Per-cycle, so selected describes THIS poll. Carrying it across
+        # cycles would mark a market selected forever after one entry.
+        self._cycle_selected_tokens = set()
 
         # -- Phase 1: build every asset's context before deciding anything.
         # Contexts first, entries later, because exits run BETWEEN the two and
@@ -3387,6 +3689,27 @@ class PolymarketShadowLoop:
         # separately from `cycle_contexts` so "the venue is slow" and "we are
         # slow" can never be read off one number.
         self._record_timing('cycle_evaluate', time.perf_counter() - evaluate_t0)
+
+        # -- Phase 5: the calibration tape (029 condition (b)).
+        # AFTER the evaluation phase, deliberately: selected is read off
+        # what strategies actually entered on this cycle, which is not
+        # known until they have run. The books were fetched in phase 1 and
+        # are reused, so this phase adds sqlite writes and no network.
+        # Never raises: a tape that dies must not take the loop with it,
+        # and the failure is a counted category rather than a silent gap.
+        try:
+            detail['calibration_rows'] = self._timed(
+                'cycle_calibration', self.sample_calibration_tape,
+                contexts, now)
+            detail['calibration_stamps'] = self._timed(
+                'cycle_calibration_stamp', self.stamp_calibration_resolutions,
+                now)
+        except Exception:
+            logger.error('PM SHADOW cycle %d calibration tape raised: %s',
+                         self.cycles,
+                         traceback.format_exc().strip().splitlines()[-1])
+            self.health['calibration_exceptions'] += 1
+
         self._record_timing('cycle_total', time.perf_counter() - cycle_t0)
 
         detail['assets'] = per_asset

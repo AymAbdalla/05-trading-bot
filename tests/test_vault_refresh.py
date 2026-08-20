@@ -31,7 +31,8 @@ CREATE TABLE positions (
 CREATE TABLE signals (
     id INTEGER PRIMARY KEY, ts INTEGER, pair TEXT, tf TEXT,
     strategy_id TEXT, pattern TEXT, direction TEXT, confidence REAL,
-    features_json TEXT, acted INTEGER, skip_reason TEXT, mode TEXT);
+    features_json TEXT, acted INTEGER, skip_reason TEXT, mode TEXT,
+    market_duration TEXT);
 CREATE TABLE equity_snapshots (
     ts INTEGER PRIMARY KEY, equity REAL, cash REAL, open_risk REAL,
     mode TEXT);
@@ -64,17 +65,19 @@ def db(tmp_path):
     # A strategy that was evaluated many times and never traded.
     for i in range(1, 51):
         conn.execute(
-            'INSERT INTO signals VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+            'INSERT INTO signals VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
             (i, BASE_TS + i, 'btc-updown-5m-1', '5m', 'PM_never_fires',
-             'p', 'up', 0.5, '{}', 0, 'wallet_address_unresolved', 'paper'))
+             'p', 'up', 0.5, '{}', 0, 'wallet_address_unresolved',
+             'paper', '5m'))
     for i in range(100, 130):
         conn.execute(
-            'INSERT INTO signals VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+            'INSERT INTO signals VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
             (i, BASE_TS + i, 'btc-updown-5m-1', '5m', 'PM_loser',
-             'p', 'up', 0.5, '{}', 0, 'max_trades_this_window', 'paper'))
+             'p', 'up', 0.5, '{}', 0, 'max_trades_this_window',
+             'paper', '5m'))
     conn.execute('INSERT INTO signals VALUES '
                  '(200,?,"btc-updown-5m-1","5m","PM_loser","p","up",0.5,'
-                 '"{}",1,NULL,"paper")', (BASE_TS + 200,))
+                 '"{}",1,NULL,"paper","5m")', (BASE_TS + 200,))
     for i in range(60):
         conn.execute('INSERT INTO equity_snapshots VALUES (?,?,?,0,"paper")',
                      (BASE_TS + i * 1000, 1000.0 - i, 1000.0 - i))

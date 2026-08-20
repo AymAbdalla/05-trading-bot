@@ -173,6 +173,9 @@ class CorridorPairLive(PolymarketStrategy):
     #: No rows exist under any key yet (this strategy has never been scored,
     #: D-268), so nothing is being split by settling it now.
     strategy_name = 'PM_corridor_pair'
+
+    #: Same two-market shape as `PM_corridor_collector`.
+    market_duration_scope = 'mixed'
     paper_mode = PAPER_MODE
 
     def __init__(self, lead_bps_min: float = LEAD_BPS_MIN,

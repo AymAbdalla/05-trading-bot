@@ -996,8 +996,25 @@ def read_decisions(conn: sqlite3.Connection,
                    mode: Optional[str] = None) -> List[Dict[str, Any]]:
     """Every signal/decision row. `acted=1` is an entry, `acted=0` is a skip."""
     _require_tables(conn, ('signals',))
-    sql = ('select ts, pair, tf, strategy_id, pattern, direction, confidence, '
-           'acted, skip_reason, mode from signals')
+    # market_duration is selected as a COLUMN, not derived (Raven R3): the
+    # tool that evaluates 029 has to join and filter on the key directly.
+    # Without it the keying is unblocked in the database and still
+    # invisible to forge, which is the gap audit 4.2 named.
+    #
+    # Selected CONDITIONALLY, because this reader is pointed at databases
+    # that have not migrated yet - env B carries no market_duration column
+    # until its own restart, and naming the column unconditionally would
+    # turn this function into an OperationalError against every
+    # pre-migration database including the archived ones. A database
+    # without the column reports None, which is the same thing the column
+    # says about a row written before the key existed.
+    has_duration = any(
+        row[1] == 'market_duration'
+        for row in conn.execute('PRAGMA table_info(signals)'))
+    duration_col = 'market_duration' if has_duration else 'NULL as market_duration'
+    sql = ('select ts, pair, tf, ' + duration_col + ', strategy_id, '
+           'pattern, direction, confidence, acted, skip_reason, mode '
+           'from signals')
     params: Tuple[Any, ...] = ()
     if mode:
         sql += ' where mode = ?'

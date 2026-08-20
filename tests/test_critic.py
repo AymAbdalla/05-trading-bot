@@ -62,7 +62,8 @@ CREATE TABLE signals (
     features_json TEXT NOT NULL,
     acted INTEGER NOT NULL DEFAULT 0,
     skip_reason TEXT,
-    mode TEXT NOT NULL DEFAULT 'paper'
+    mode TEXT NOT NULL DEFAULT 'paper',
+    market_duration TEXT
 )
 """
 

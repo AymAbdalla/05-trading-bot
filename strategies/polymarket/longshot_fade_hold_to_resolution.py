@@ -500,6 +500,12 @@ class LongshotFadeHoldToResolution(PolymarketStrategy):
     resolution. See the module docstring for the full ruling."""
 
     strategy_name = 'PM_longshot_fade_hold_to_resolution'
+
+    #: Single-leg and purely 15m: the only Leg this strategy builds
+    #: carries `market_slug=slug_15`. Its SKIP rows are 15m
+    #: evaluations too, even though the slug recorded on them is the
+    #: 5m market - which is why this must be declared, not inferred.
+    market_duration_scope = '15m'
     paper_mode = PAPER_MODE
 
     #: Crypto-only. Needs spot, the 15m window's own open and 20 windows of

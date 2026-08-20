@@ -117,3 +117,35 @@ def asset_for_slug(slug: Optional[str]) -> Optional[str]:
         return None
     head = str(slug).split('-', 1)[0].lower()
     return head if head in ASSETS else None
+
+
+#: The market-duration vocabulary, shared by `signals.market_duration` and
+#: `calibration_tape.market_duration` (D-339 clause (3)). Three values and
+#: no fourth: a decision is on the 5m window, on the native 15m window, or
+#: it spans both. `None` is deliberately not a member - it means "not
+#: recorded", which is a different statement from any of these three.
+MARKET_DURATIONS = ('5m', '15m', 'mixed')
+
+
+def market_duration_for_slug(slug: Optional[str]) -> Optional[str]:
+    """`btc-updown-15m-1787064300` -> `15m`. None when the slug cannot say.
+
+    This reads the duration OFF THE SLUG, so what it returns is a
+    measurement of the market actually recorded on the row, not a default.
+    That distinction is the point: `signals.market_duration` must never
+    carry a fabricated value (design 3.2, and the `fill_was_maker`
+    precedent it cites - a `DEFAULT 0` there backfilled every existing row
+    into a value that reads like a measurement nobody made).
+
+    Returns None - never `5m` - for a slug that is absent, unparseable, or
+    from a non-crypto universe such as weather. A weather market has no
+    up/down window at all, and guessing `5m` for one would put an invented
+    reading in the same column as real ones (convention 20).
+    """
+    if not slug:
+        return None
+    text = str(slug)
+    for duration in ('5m', '15m'):
+        if '-updown-{}-'.format(duration) in text:
+            return duration
+    return None

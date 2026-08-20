@@ -3822,3 +3822,138 @@ salvage 153 -> 157 and 141 -> 145; every figure above is point-in-time
 either database, no orphan sweep (D-353/D-355 stay unexecuted), 037 left
 BLOCKED, 039's counting scheme untouched, no wallet or API key touched, no live
 path, no backtest run.*
+
+---
+
+### D-357. Keying restart session: 15m keying and the calibration tape are BUILT; the ONE restart is HELD on an automatic drawdown halt (Cody build against Raven rulings R1-R8, 2026-08-20)
+
+Raven rulings R1-R8 (brief `docs/handoffs/from-raven/2026-08-20-keying-restart.md`,
+2026-08-19) are carried as written. What follows records how each landed and,
+for the three that could not land, why.
+
+**R1 (calibration universe narrow) SHIPPED AS RULED.** The sampler walks 3
+assets x {5m, 15m} x 2 outcomes = 12 tokens per cycle and nothing wider. No
+adjacent windows, no 16-window lookback.
+
+**R2 (the three hand-written signals fixtures) DONE, and it needed one more
+edit than R2 names.** `tests/test_critic.py`, `tests/test_forge_shadow_eval.py`
+and `tests/test_vault_refresh.py` gained `market_duration TEXT` nullable.
+`test_vault_refresh.py` ALSO carries three POSITIONAL `INSERT INTO signals
+VALUES` statements with twelve placeholders, which raise against a
+13-column table; all three gained a thirteenth value. The consumer audit had
+flagged that positional insert as safe BECAUSE the fixture was isolated - R2
+removes that isolation, so the insert had to move with it.
+
+**R3 (forge_shadow_eval selects the column) DONE.** `market_duration` is in
+the explicit select list as a column, not a derived field.
+
+**R5 (no market_tape merge) HONOURED.** `market_tape` was read once,
+read-only, for the V7 window check and not otherwise touched.
+
+**R6 (the cron is real) CONFIRMED BY OBSERVATION.** Hermes cron
+`b4b677c33385` fired and spawned this session at 03:45:30 EDT 2026-08-20
+(pid 93117, parent tmux 37068), which is the scheduled time.
+
+**R8 (the engine/risk sibling tree) RESOLVED CLEAN.** That work committed
+before this session: no `engine/risk/` file was dirty. R8 did not fire on
+its own terms - but its ELSE branch did, on a different file. See below.
+
+**THE HALT, and why the ONE restart did not happen.** At **03:21:42 EDT
+2026-08-20**, twenty-four minutes before this session was spawned, the
+shadow book engaged its own kill switch automatically:
+`HALT` at the repo root reads `auto: portfolio drawdown 0.4011 exceeds
+0.4000`, halt id `b7bd22a8`. The main loop logged it and env B picked it up
+three seconds later. Both loops are ALIVE and blocking entries
+(`halted` counts climbing in both). This is the PAPER book: peak equity
+USD 1,027.96, USD 614.01 at the halt, USD 652.41 (drawdown 0.3653) at 03:42.
+No real money moved, and the halt persists across restarts by design until
+`botctl.py resume --ack b7bd22a8`.
+
+The 0.40 limit is itself already a widened one: `DEFAULT_LIMITS` sets
+`max_drawdown_frac=0.25` and the loop overrides it to 0.40 against a book
+whose historical worst was 35.99 percent. The book has now exceeded the
+widened line.
+
+The restart is **HELD, not skipped**, on three grounds, in order of weight:
+
+1. **A restart would orphan the evidence.** D-353 records that a restart
+   orphans every open position. The open book right now IS the drawdown
+   incident. Restarting during it destroys the only record of what caused
+   the breach, irreversibly, and the orphan sweep D-353 ruled for is still
+   unimplemented.
+2. **The restart could not be VERIFIED under a halt, so it would be spent
+   for nothing.** The kill-switch check sits at the TOP of the entry path,
+   before any leg is priced: under a halt the loop records a `halted` skip
+   and never reaches the entry writer. Design section 6 verifications V5
+   (corridor entry rows read `mixed`) and V6 (positions join back to a 15m
+   signal) both require entries and are unrunnable while halted. D-339
+   schedules ONE restart; spending it on an activation that cannot be
+   checked is worse than waiting.
+3. **Task 0.3 fails on its own terms.** The tree was not clean: `HALT` was
+   untracked. R8 says a dirty file that is not an `engine/risk/` file is a
+   real guard failure to be reported rather than worked around.
+
+The brief anticipated exactly this shape of answer - if the gate fails,
+WAIT, then report, do not force it - and this is that report.
+
+**R4 (env B whitelist corrections) NOT APPLIED, blocked by the hold.** The
+correction only takes effect on an env B restart, and env B is halted with
+the same open-position problem. Carried forward to whichever restart Aym
+authorises.
+
+**R7 (038 backfill + first coverage baseline) NOT RUN, blocked by the hold.**
+R7 sequences it AFTER Task 4.3 (loop up, keying verified). That precondition
+never arrived. The backfill is unrun on both databases and D-354 R4 stands.
+
+**Two places the implementation departs from the design docs. Both
+deliberate, neither silent.**
+
+*(1) The skip path needed a DECLARATION mechanism the design left
+unspecified.* Design 3.3 says a skip takes its duration from "the
+strategy own declared scope" but no strategy declares anything today, and
+verification V4 requires `PM_longshot_fade_hold_to_resolution` to read 100
+percent `15m` INCLUDING its skip rows. Reading the slug cannot deliver that:
+the slug recorded on a skip is always `ctx.market`, the 5m market, even for
+a strategy that only ever looks at the 15m book. So
+`PolymarketStrategy.market_duration_scope` was added (default None, the same
+opt-in shape as `supported_market_types`) and declared on the three
+strategies that read `ctx.market_15m`: `15m` on longshot_fade, `mixed` on
+both corridors. Where nothing is declared the loop falls back to reading the
+duration off the recorded slug, which is a true statement about that row
+rather than a default, and where neither can say the answer is NULL.
+The fragility this creates - a future 15m strategy that forgets to declare
+would be keyed `5m` silently - is closed by a static test that fails the
+suite if any strategy referencing `ctx.market_15m` carries no declaration.
+
+*(2) The resolution stamp reads each market by its own slug, not through
+`resolved_windows_checked`.* Spec section 5 names that helper, but it is
+`get_updown_5m_checked` underneath and cannot see a 15m market at all - and
+the 15m arm is half of what this tape exists to measure. The stamp calls
+`get_market_by_slug_checked` per pending token instead, KEEPING the failure
+taxonomy the spec asked for: read_failed, not_listed, unresolved and
+not_binary each land in `health` under their own name, so an oracle running
+behind is never confused with a read that failed.
+
+*Measured, not quoted, this session: the `ALTER TABLE signals ADD COLUMN`
+was timed against a synthetic 700,000-row table (the live table size) at
+**0.0004s**, backfilling **zero** rows - the design header-only claim,
+checked rather than assumed. The live databases were never written to.*
+
+*The calibration sampler costs NO additional network. `build_context`
+already fetches both books for both markets through `fetch_orderbook`, so
+every price on the tape comes off the CLOB book and `market.raw` is never
+read - the D-339 gamma trap (0.63/0.64 summary against a 0.06/0.08 live
+book) is closed by construction rather than by discipline.*
+
+
+*Post-append correction to the R2 paragraph above, recorded rather than
+edited away: the consumer audit named ONE positional `insert into signals`
+(`tests/test_vault_refresh.py`) and judged it insulated by its local
+schema. R2 removes that insulation, and there was a SECOND positional
+insert the audit did not list, in `tests/test_forge_shadow_eval.py`
+`_build_db`. Migrating the three fixture DDLs without it took the suite to
+**15 failed / 4,146 passed**; with it, green. Four positional inserts
+gained a thirteenth value in total. Adding a column to a hand-written
+fixture is never a one-line DDL change - grep the same file for positional
+inserts against that table.*
+

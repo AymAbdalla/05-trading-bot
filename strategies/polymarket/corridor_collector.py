@@ -131,6 +131,10 @@ class CorridorCollector(PolymarketStrategy):
     needs_strike = True
 
     strategy_name = 'PM_corridor_collector'
+
+    #: One decision over TWO markets: a 15m leader leg and a 5m
+    #: opposite leg. Neither duration alone describes it.
+    market_duration_scope = 'mixed'
     paper_mode = PAPER_MODE
 
     def __init__(self, lead_bps_min: float = LEAD_BPS_MIN,

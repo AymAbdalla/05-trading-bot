@@ -30,7 +30,13 @@ CREATE TABLE IF NOT EXISTS signals (
     features_json   TEXT NOT NULL,       -- JSON snapshot: rsi, volume_ratio, trend_state, sr_distance, etc.
     acted           INTEGER NOT NULL DEFAULT 0,  -- 0 = skipped, 1 = acted on
     skip_reason     TEXT,                -- NULL if acted, reason if skipped
-    mode            TEXT NOT NULL DEFAULT 'paper'  -- paper | live | shadow
+    mode            TEXT NOT NULL DEFAULT 'paper',  -- paper | live | shadow
+    -- D-339 clause (3). NULLABLE, NO DEFAULT, and that is load-bearing:
+    -- NULL means "this row predates the key". A DEFAULT here would
+    -- fabricate a measurement on every pre-existing row, which is exactly
+    -- the `fill_was_maker` mistake this repo already carries a standing
+    -- correction about. '5m' | '15m' | 'mixed'.
+    market_duration TEXT
 );
 
 -- Orders: every order attempt (before API call)
@@ -341,3 +347,48 @@ CREATE INDEX IF NOT EXISTS idx_market_resolutions_window
     ON market_resolutions(window_ts);
 CREATE INDEX IF NOT EXISTS idx_market_resolutions_source
     ON market_resolutions(source);
+
+
+-- Calibration tape (029 condition (b)). One row per (token, poll), written
+-- for EVERY market in the universe, selected or not. `selected` is what
+-- makes this an unselected-market tape rather than another
+-- selection-biased one; convention 20 says selected = 0 must be WRITTEN,
+-- not omitted.
+--
+-- Deliberately NOT an extension of `market_tape`: that table is filled by
+-- a STRATEGY (`dip_arb`), EXCLUDES the crypto up/down universe by design
+-- (dip_arb.py, persist = not ctx.is_crypto_window), and is mid-measurement
+-- for 026/037. See docs/keying-prep/calibration-tape-spec.md findings 2-4.
+CREATE TABLE IF NOT EXISTS calibration_tape (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_id           TEXT NOT NULL,     -- CLOB token id, the join key
+    market_slug        TEXT NOT NULL,     -- e.g. btc-updown-15m-1787064300
+    market_duration    TEXT NOT NULL,     -- 5m | 15m; signals vocabulary
+    outcome_side       TEXT,              -- Up | Down; NULL if unreadable
+    condition_id       TEXT,              -- Gamma join key
+    ts                 REAL NOT NULL,     -- unix seconds, poll time
+    window_ts          INTEGER NOT NULL,  -- the window this settles
+    seconds_remaining  REAL,              -- NULL if not derivable
+    mid                REAL,
+    best_bid           REAL,
+    best_ask           REAL,
+    book_depth_levels  INTEGER,           -- 0 is a reading, NULL is unread
+    selected           INTEGER NOT NULL   -- 1 = a strategy evaluated it
+);
+CREATE INDEX IF NOT EXISTS idx_cal_tape_token_ts ON calibration_tape(token_id, ts);
+CREATE INDEX IF NOT EXISTS idx_cal_tape_window   ON calibration_tape(window_ts, market_duration);
+
+-- Write-once. One row per token, ever. `PRIMARY KEY (token_id)` plus
+-- `INSERT OR IGNORE`: a resolution that CHANGES is a data error, and
+-- `INSERT OR REPLACE` would hide it. The ignored inserts are counted into
+-- `health` so a changed resolution is COUNTED rather than lost.
+CREATE TABLE IF NOT EXISTS calibration_resolution (
+    token_id         TEXT PRIMARY KEY,
+    market_slug      TEXT NOT NULL,
+    market_duration  TEXT NOT NULL,
+    window_ts        INTEGER NOT NULL,
+    resolved_outcome TEXT NOT NULL,       -- UP | DOWN, verbatim
+    won              INTEGER NOT NULL,    -- 1 if THIS token is the winner
+    resolved_ts      REAL NOT NULL,       -- observed, not settled
+    source           TEXT NOT NULL        -- oracle
+);
