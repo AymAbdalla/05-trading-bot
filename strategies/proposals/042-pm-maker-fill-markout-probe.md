@@ -170,3 +170,106 @@ cannot be compared with one measured before it. The clean pre-desk baseline is
 available now and will not be available indefinitely. Source is a web3.career
 job listing surfaced 2026-08-19 and reported by coin360; it is a hiring
 signal, not an announced product, and it is recorded here at that strength.
+
+### Signal 1 (2026-08-20 cycle 6): fee-surface movement, filed as a scenario
+note - and it exposes the CONFIRM threshold, not the ceiling
+
+**Cycle 6 fee-surface movement, recorded 2026-08-20 by the forge reasoner
+(tick 7). NO THRESHOLD IS RE-SIZED HERE and none should be.** The sources are
+press and X reports, not venue documentation, and the unverified-external-claim
+rule applies exactly as it did to the TWAP claims that became proposal 045.
+
+What is reported: a taker fee REBATE programme refunding up to 50% to takers;
+maker rebates of up to 25% of matched taker fees; an 80% rebate to selected
+accounts, reported as a scandal on 2026-08-20 with a founder response; and an
+alleged VPC rollout giving selected users roughly 10ms of Cloudflare-bypass
+latency. The last is the refused latency family and is filed only.
+
+**Direction on the -0.0315 ceiling: unchanged in principle, more conservative
+in fact.** The ceiling is the taker fee at 50/50, chosen because it is the
+hard upper bound on any rebate the venue can fund without knowing how the
+venue pays it back. Every reported change moves the fundable pool DOWN. A 50%
+taker refund means the venue retains roughly half of what it collects. A maker
+rebate stated as up to 25% of matched taker fees caps the maker side at
+0.25 x 0.0315 = 0.0079 per share. An 80% rebate to selected accounts shrinks
+the collected pool further. Same structure as the Signal 2 note above: the
+ceiling can only become more conservative, never less, which is the property it
+was chosen for. The ceiling STANDS at -0.0315 and is not re-derived on press
+numbers.
+
+**What the signal does expose is a gap in the other branch, and this part does
+not depend on the press numbers being true.** The kill condition gave the
+RETIRE branch the property of not needing the rebate number. It did not give
+the same property to the CONFIRM branch. CONFIRM fires when the mean 60-second
+markout is above -0.0100 per share and the 10-second markout is not more
+negative than the 60-second one. That -0.0100 silently assumes the rebate is
+worth at least 0.0100 per share, because a fill that marks out at -0.0095 is
+only survivable if the rebate exceeds 0.0095.
+
+If the reported 25%-of-matched-taker-fees schedule is real, the maximum maker
+rebate is 0.0079 per share, which is SMALLER than the 0.0100 the CONFIRM
+threshold assumes. The INCONCLUSIVE band from -0.0315 to -0.0100 would then
+not merely narrow, it would INVERT: any markout worse than -0.0079 already
+exceeds the maximum fundable rebate, so a markout of -0.0095 would CONFIRM the
+ladder under the rule as written while being unprofitable under the reported
+schedule.
+
+**This is recorded as a scenario note and a referred question, not an
+amendment to any number.** The correct repair is not to re-size -0.0100 on a
+kucoin flash and two X posts. It is to give the CONFIRM branch the same
+property the RETIRE branch already has - state it as a fraction of the
+measured taker fee rather than as an absolute per-share constant - so that it
+stops depending on a rebate number nobody in this system has ever observed.
+That is a change to the kill condition's FORM and is referred to Raven rather
+than made here.
+
+The adapter's `taker_fee_rate` stays 0.0 (`config.yaml:136`, `:231`) until a
+venue-sourced schedule exists, per the standing correction. Lifetime realised
+fees on both books are still exactly 0.0000.
+
+Re-derived read-only 2026-08-20T08:55Z, both books LIVE under read,
+point-in-time: `db/trading.db` now holds **87** closed positions with
+`fill_was_maker = 1`, carrying **-39.35 USD**, 39 of them winners.
+`db/trading-survivors.db` still holds **ZERO** maker fills. The proposal was
+filed on 27 observed fills and the RULED note above recorded 45; the count has
+grown because the main loop restarted on 2026-08-19 at 20:06:30Z, which
+resolves the operational precondition in rule 9 - the clock HAS started. It is
+currently stopped again: the book auto-halted at 2026-08-20T08:21:16Z
+(`ee842e60`) and a halt blocks entries, so maker fills accrue at zero rows per
+hour again until that is decided. 87 of the 200 required. Still NOT_TESTED,
+and **the 87 must not be graded** - the markout instrument this proposal asks
+for has still not been built, so there is nothing to grade them with.
+
+## RULING NOTE - D-380 R3 (Raven, recorded 2026-08-20)
+
+**The amendment is ACCEPTED as written, and the referred FORM question is
+RULED: express the CONFIRM branch as a fraction of the measured taker fee.**
+
+The amendment above (prose only, no frontmatter change, no threshold re-sized)
+is ratified, including its refusal to move the -0.0315 ceiling on press-reported
+rebate numbers. The unverified-external-claim rule holds: no ceiling moves on a
+flash and two posts, and `taker_fee_rate` stays 0.0 until a venue-sourced
+schedule exists.
+
+**FORM RULING.** The CONFIRM branch's absolute **-0.0100 per share** boundary
+becomes **a fraction of the measured taker fee**, giving CONFIRM the same
+property the RETIRE branch already has: it stops depending on a rebate number
+nobody in this system has ever observed. The derivation in the amendment is
+accepted as the reason - a 25%-of-matched-taker-fees schedule yields at most
+0.25 x 0.0315 = 0.0079 per share, so an absolute -0.0100 can INVERT the
+inconclusive band and CONFIRM a ladder that is unprofitable under the very
+schedule that motivated the number.
+
+**This is a change to the kill condition's FORM and to nothing else.** No code,
+no constant re-sized, no threshold moved, no re-scope. The retire-vs-confirm
+decision is NOT made here and the probe stays live.
+
+**The maker census stays NOT_TESTED and UNGRADED.** 87 closed maker fills in
+`db/trading.db` carrying -39.35 USD, zero in `db/trading-survivors.db`, against
+the 200 rule 9 requires. The markout instrument this proposal asks for still
+does not exist, so there is nothing to grade them with, and the 87 must not be
+graded. Rule 9's operational precondition has since been unblocked from the
+direction the amendment described: the halt `ee842e60` that was stopping entries
+is no longer binding (D-358 resume, D-359 auto-halt disabled in shadow), and
+`box_builder`/`grid_hedge` are maker-only strategies that may never enter at all
+- for those the honest report is "no entries", never "no edge".
