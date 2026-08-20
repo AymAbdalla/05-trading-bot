@@ -322,3 +322,68 @@ applied. That is a Raven call, not mine.
 8. The auto-halt can no longer fire in shadow. **Nothing now stops a bleed
    except a human reading the equity curve.** That was the intent of D-359,
    but it is worth saying out loud.
+
+---
+
+## 8. ADDENDUM - D-360 landed one minute after the restart
+
+Discovered at push time, not assumed: **HEAD moved underneath this session.**
+`dc2be8e` (D-360, `raven-D360-cap`) was committed at **11:42:27 EDT**, 61
+seconds after the loops relaunched at 11:41:26. My commit `74b4ffa` sits on
+top of it. This is the second time `git` state changing underneath a session
+has been the thing that surfaced an external actor (convention 25 earns its
+keep again).
+
+**D-360 removes the position COUNT cap in shadow** - Aym's ruling, capital
+becomes the only cap. Two facts about its current status, both measured:
+
+- **It is docs-only so far.** `dc2be8e` changed `docs/DECISIONS.md` and
+  nothing else (9 insertions, 1 file). The code named in D-360 R3
+  (`risk_gate.py`, `paper_adapter.py`, `engine/risk/__init__.py`) is
+  **unchanged**. The cap is still 10.
+- **It is therefore inert in the loops I started**, which is what D-360 R4
+  already says: the restart "executed BEFORE this ruling arrived, so D-360
+  requires a SECOND restart to activate."
+
+**I did not implement D-360 this session.** My brief carries a FREEZE banner
+scoping me to the restart and forbidding config changes beyond it, and D-360
+R3 edits risk-gate code. That is a different brief. D-360 R4 sequences it
+anyway: changes made + tested first, then the second restart.
+
+### D-360 sharpens section 5's recommendation - it does not retire it
+
+This matters and it cuts against the obvious reading. One could conclude
+"the cap is going away, so the masking goes away, so no split is needed."
+**That is wrong, and section 5's proposal gets *more* important under D-360,
+not less.**
+
+The 10-slot cap was never the disease. The disease is that **one strategy
+with 1061 fills shares a finite resource with a strategy that got 3.**
+D-360 does not remove contention; it changes the currency of contention from
+*slots* to *capital*. With no count cap and a 1,000 USD book,
+`PM_fair_value_arb` will consume the capital exactly as it consumed the
+slots, and `PM_fair_value_arb_patient` will still be starved of sample -
+only now the starvation will be invisible, because there will be no
+`adapter:SKIP:max_concurrent_positions` counter incrementing to make it
+legible. **D-360 removes the instrument that made the masking measurable.**
+
+So the recommendation stands and gains urgency: separate the fair_value
+family from the other families into its own book, so each family contends
+for its own capital. Under D-360 that is the *only* remaining mechanism that
+keeps one high-volume loser from crowding out everything else's sample.
+
+**Recommended sequence for Raven:** land D-360's code + tests, take the
+pre-approved second restart, then **re-measure the section 5.1 table before
+acting on the split** - the counts will move once the cap lifts, and the
+proposal deserves fresh numbers rather than these. The masking conclusion is
+robust to that (3 vs 887 in the same window is not a marginal reading), but
+the magnitudes will change.
+
+**One safety note, offered once and not repeated.** After this restart the
+drawdown auto-halt cannot fire (D-359). If D-360 also removes the position
+count cap, then a 1,000 USD paper book will have no count limit and no
+automatic stop - per-trade notional, per-event (30 USD) and aggregate
+capital limits are all that remain, which is precisely what Aym specified.
+Both rulings are his and both are recorded; I am flagging the *interaction*
+of the two, which no single ruling states, not re-litigating either one.
+It is paper money and the blast radius is a number in a database.
