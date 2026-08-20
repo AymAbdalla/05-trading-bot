@@ -1564,3 +1564,61 @@ def test_the_ledger_table_exists_on_a_fresh_loop_database(tmp_path,
     loop = build_loop(tmp_path, client, candles=streak_candles(entry_time))
 
     assert rows(loop, 'SELECT * FROM market_resolutions') == []
+
+
+# ---------------------------------------------------------------------------
+# D-383: a book PAST the drawdown limit keeps trading (measurement only)
+# ---------------------------------------------------------------------------
+
+def test_a_book_past_the_drawdown_limit_still_enters(tmp_path, entry_time):
+    """D-383 R2 end-to-end: the breach is RECORDED and nothing else happens.
+
+    The semantics live in `tests/test_d383_measurement_only.py`. What THIS test
+    defends is the wiring, and it is the assertion that would have caught the
+    naive version of D-383: a live loop, a real drawdown, and an entry that
+    still happens. A number-only change fails here on every assert below - the
+    cycle would enter nothing, count a `risk_constraint:` block, and leave a
+    HALT file that blocks the other two books too.
+
+    The drawdown is manufactured the way `_risk_equity_state` measures it: a
+    recorded PEAK above the book's current equity. $2,000 peak against the
+    $1,000 default start is 50% down, past the 0.25 limit.
+    """
+    from engine.risk import events as risk_events
+
+    risk_events.reset_measure_only_throttle()
+
+    client = FakeClient(gamma_ok(), books_ok)
+    loop = build_loop(tmp_path, client, candles=streak_candles(entry_time))
+    loop.store.conn.execute(
+        'INSERT INTO equity_snapshots (ts, equity, cash, open_risk, mode) '
+        'VALUES (?, ?, ?, ?, ?)',
+        (int(entry_time * 1000) - 3600_000, 2000.0, 2000.0, 0.0, 'paper'))
+
+    state = loop._risk_equity_state()
+    assert state.drawdown_frac() > shadow_loop.SHADOW_RISK_LIMITS.max_drawdown_frac
+
+    loop.run_cycle(now=entry_time)
+
+    # 1. The entry HAPPENED. This is the whole ruling.
+    assert loop.counts['entry'] == 1, dict(loop.counts)
+
+    # 2. No refusal was counted, under any name (the D-382 no-refusal
+    #    discipline: a measurement must not quietly become a skip).
+    assert loop.health['risk_constraint_blocks'] == 0, dict(loop.health)
+    assert [k for k in loop.counts if k.startswith('risk_constraint:')] == []
+    assert loop.counts.get(shadow_loop.SKIP_HALTED, 0) == 0
+
+    # 3. No halt - the file is redirected to tmp_path by the autouse fixture,
+    #    so this also proves the repository's real HALT was never touched.
+    assert halt.is_halted() is False
+
+    # 4. The breach WAS recorded, which is what 049 was waiting for.
+    events = rows(loop, "SELECT * FROM risk_events WHERE type = 'risk_constraint'")
+    breaches = [json.loads(e['details_json']) for e in events]
+    breaches = [b for b in breaches if b['constraint'] == 'portfolio_drawdown']
+    assert len(breaches) == 1, breaches
+    assert breaches[0]['limit_frac'] == 0.25
+    assert breaches[0]['drawdown_frac'] > 0.25
+    # ... and no halt row alongside it.
+    assert [b for b in breaches if b.get('event') == 'halt_engaged'] == []

@@ -9,7 +9,7 @@ Status markers: ACTIVE = in force · SUPERSEDED = replaced by a later D · AMEND
 ---
 
 - **D-384** (line 4119) — D-382 implementation rulings: size-TO ratified (confidence budget replaces strategy ask; paired-leg distortion is a watch item), over_notional_cap re-pointed to confidence budget, D-383 index line kept (Raven ruling, 2026-08-20)
-- **D-383** (line 4110) — Shadow drawdown measurement limit 1.0 -> 0.25, measurement-only, unblocks 049's breach bar (Aym ruling, 2026-08-20) — RECORDED IN THE LOG, NOT YET IMPLEMENTED in `SHADOW_RISK_LIMITS`
+- **D-383** (line 4110) — Shadow drawdown measurement limit 1.0 -> 0.25, measurement-only, unblocks 049's breach bar (Aym ruling, 2026-08-20) — IMPLEMENTED: `SHADOW_RISK_LIMITS.max_drawdown_frac` is 0.25 and `SHADOW_MEASURE_ONLY_CONSTRAINTS` makes it record-and-step-over (no halt, no refusal) per R2; live on all three books
 - **D-382** (line 4100) — Confidence-based position sizing replaces the $10 flat order size: entries size to f(confidence, win_rate) mapped into 1-90% of available capital, D-366's 90% stays the ceiling (Aym ruling, 2026-08-20)
 - **D-381** (line 4084) — D-362 execution review rulings, amended for the D-363 supersession: freeze-gate rule and from-raven gitignore STILL LIVE, tape exclusion and roster overlap HISTORICAL (Raven ruling, 2026-08-20)
 - **D-380** (line 4068) — tick 7 rulings: 048 findings ratified but implementation HELD, 049 accepted and BUILT, 042 form amendment accepted; D-380+ reserved block convention (Raven ruling, 2026-08-20)

@@ -34,6 +34,7 @@ It does not check `is_halted()` as an entry gate. The entry path already owns
 that check, and a second copy is the failure mode `engine/halt.py` was written
 to end. This module only ever ADDS a halt; it never re-decides one.
 """
+import dataclasses
 import json
 import logging
 import time
@@ -96,6 +97,92 @@ def _drawdown_attribution(conn, decision):
         return {}
 
 
+#: Constraints a caller wants MEASURED rather than ENFORCED, per constraint
+#: name. D-383 (Aym ruling 2026-08-20) puts the shadow book here: the shadow
+#: `max_drawdown_frac` moved 1.0 -> 0.25 so the portfolio drawdown constraint
+#: finally FIRES and feeds 049's attribution instrument, but D-383 R2 is
+#: explicit that this is MEASUREMENT ONLY - "it does NOT halt trading. The book
+#: still runs to $0 and re-funds per D-358."
+#:
+#: A naive limit change cannot deliver that, and the failure is silent. The
+#: drawdown check is the FIRST check in `constraints.check`, so once a book is
+#: past the limit EVERY entry attempt denies on drawdown, and
+#: `evaluate_and_record` engages `engine.halt` on the first one. That HALT file
+#: is process-wide and not per-database, so one book breaching would freeze
+#: entries on ALL THREE shadow books. The book would look alive and enter
+#: nothing.
+#:
+#: So "measure only" has to mean two things at once, and both are required:
+#:
+#:   1. NO HALT. The breach never reaches `engage_drawdown_halt`.
+#:   2. NO REFUSAL. The breach is recorded and then STEPPED OVER, so the
+#:      remaining constraints - per-trade, per-event, aggregate - decide the
+#:      entry on their own merits. A measured constraint must not become an
+#:      unenforced one for its NEIGHBOURS: an oversized order is still denied,
+#:      and denied under its own name.
+#:
+#: Step-over is done by re-running the pure evaluator with the measured
+#: constraint neutralised, which is why the neutraliser is a limits transform
+#: rather than a flag inside `check`. `constraints.check` stays deterministic
+#: and side-effect free (its own docstring promises that), and the real-money
+#: path never sees any of this: `measure_only` defaults to empty, so
+#: `DEFAULT_LIMITS` behaviour is byte-for-byte what it was.
+_MEASURE_ONLY_NEUTRALISERS = {
+    # +inf rather than 1.0: `drawdown_frac()` is bounded above by 1.0, and the
+    # check is `drawdown > limit`, so 1.0 leaves a total wipeout unmeasurable
+    # by exactly one edge case. Nothing can exceed +inf.
+    C.CONSTRAINT_DRAWDOWN: lambda limits: dataclasses.replace(
+        limits, max_drawdown_frac=float('inf')),
+}
+
+#: Minimum seconds between two recorded rows for the SAME measured constraint.
+#:
+#: THIS IS A DELIBERATE DEPARTURE from "record every denial exactly as today"
+#: (convention 20), and it is here because measurement-only breaks the
+#: assumption convention 20 was written under. Enforced, a drawdown breach
+#: records once and then halts, so "every denial" is a handful of rows.
+#: Measured, nothing stops it: the book keeps trading while in breach, so every
+#: entry attempt for as long as the drawdown persists - hours - writes another
+#: identical row. Two things break if it does. `denials_by_constraint` is the
+#: kill-condition harness and counts rows, so an unthrottled drawdown would
+#: report as the least decorative constraint in the module purely because it is
+#: the only one that repeats. And `_drawdown_attribution` runs
+#: `backtest.drawdown_attribution.epochs`, a full scan of the closed book, in
+#: the entry hot path.
+#:
+#: 300s keeps every distinct breach EPISODE (049 reads episodes, and a drawdown
+#: instrument that needs sub-5-minute resolution is measuring noise) while
+#: bounding both costs. It applies ONLY in measure-only mode; the enforced path
+#: is untouched and `test_an_existing_halt_is_never_reminted` still records all
+#: three of its denials.
+#:
+#: OPEN JUDGEMENT CALL for Raven/Aym - see the D-383 handoff. If the ruling is
+#: that literally every breach attempt must be a row, set this to 0.0.
+MEASURE_ONLY_RECORD_INTERVAL_SEC = 300.0
+
+#: Last monotonic time each measured constraint was recorded, this process.
+#: Process-global on purpose: each shadow book is its own process, so there is
+#: no cross-book leakage to reason about.
+_measure_only_last_record = {}
+
+
+def reset_measure_only_throttle():
+    """Clear the throttle. For tests, and for a caller starting a fresh book."""
+    _measure_only_last_record.clear()
+
+
+def _measure_only_should_record(constraint, now=None):
+    """True if this measured breach is due to be written. Advances the clock."""
+    if MEASURE_ONLY_RECORD_INTERVAL_SEC <= 0:
+        return True
+    now = time.monotonic() if now is None else now
+    last = _measure_only_last_record.get(constraint)
+    if last is not None and (now - last) < MEASURE_ONLY_RECORD_INTERVAL_SEC:
+        return False
+    _measure_only_last_record[constraint] = now
+    return True
+
+
 def record_denial(conn, decision, ts_ms=None):
     """Write one `risk_events` row for a denial. Returns the row id.
 
@@ -147,24 +234,46 @@ def engage_drawdown_halt(conn, decision):
 
 
 def evaluate_and_record(conn, open_positions, candidate, equity,
-                        limits=C.DEFAULT_LIMITS):
+                        limits=C.DEFAULT_LIMITS, measure_only=frozenset()):
     """Evaluate `candidate`, record any denial, engage the halt if required.
 
-    The one function an entry path should call. Returns the `Decision`
-    unchanged, so the caller still sees which constraint bound and why.
+    The one function an entry path should call. Returns the `Decision` the
+    caller must act on, so the caller still sees which constraint bound and why.
 
     WIRED into `engine.polymarket.shadow_loop`'s entry path as of D-343
     (Task 1); the PM gate's duplicate caps were delegated in the same change
     (D-343 R1, see `constraints.py`). The code is in the tree but a running
-    process only picks it up at its next restart (convention 13) - which is
-    NOT the ~03:45 EDT 2026-08-20 restart (that one is already fully loaded;
-    see the wake-up file), it is the restart after it.
+    process only picks it up at its next restart (convention 13).
+
+    `measure_only` is the D-383 shadow path - see `_MEASURE_ONLY_NEUTRALISERS`
+    for the whole argument. Constraints named in it are RECORDED and then
+    stepped over: no halt, no refusal, and the constraints after them still
+    decide the entry. It defaults to empty, so the real-money path through
+    `DEFAULT_LIMITS` is exactly what it was before D-383.
     """
     decision = C.check(open_positions, candidate, equity, limits)
+
+    # Step over each measured constraint in turn. `measured` bounds the loop at
+    # one pass per constraint: a neutraliser that failed to neutralise (a bug)
+    # must not spin here, it must fall through to the enforcement below.
+    measured = set()
+    while (not decision.allowed
+           and decision.constraint in measure_only
+           and decision.constraint in _MEASURE_ONLY_NEUTRALISERS
+           and decision.constraint not in measured):
+        measured.add(decision.constraint)
+        if _measure_only_should_record(decision.constraint):
+            record_denial(conn, decision)
+        limits = _MEASURE_ONLY_NEUTRALISERS[decision.constraint](limits)
+        decision = C.check(open_positions, candidate, equity, limits)
+
     if decision.allowed:
         return decision
     record_denial(conn, decision)
-    if decision.halt_required:
+    # A measured constraint never engages the halt, even on the fall-through
+    # path where no neutraliser existed for it. That path still DENIES - it is
+    # the safe direction - but D-383 R2 forbids the halt unconditionally.
+    if decision.halt_required and decision.constraint not in measure_only:
         engage_drawdown_halt(conn, decision)
     return decision
 

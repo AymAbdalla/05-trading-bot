@@ -40,6 +40,18 @@ PY=(env -u PYTHONPATH python3)
 DB="${DB:-db/trading-survivors.db}"
 LOG_DIR="${LOG_DIR:-research/polymarket_paper_survivors}"
 
+# Starting paper balance. THE RESTART KNOB (D-383). A shadow book is restarted
+# by killing it and launching it again, and there is no equity resume: a fresh
+# process has no positions, so `--equity` IS the carry-over. Leaving it at the
+# default silently re-funds the book to $1,000 and destroys the continuity of
+# every measurement taken across the restart.
+#
+#   STARTING_EQUITY="$(<last measured get_equity() for THIS db>)" ./run_polymarket_shadow_envb.sh
+#
+# Derive that number from `equity_snapshots` on this book's OWN database, never
+# by hand and never from another book's handoff note.
+STARTING_EQUITY="${STARTING_EQUITY:-1000}"
+
 # ---------------------------------------------------------------------------
 # ROSTER - the definition of env B. Read this before changing it.
 #
@@ -90,6 +102,27 @@ die() {
     echo "run_polymarket_shadow_envb: REFUSING TO START: $*" >&2
     exit 1
 }
+
+# ---------------------------------------------------------------------------
+# Gate 0: this launcher takes NO positional arguments.
+#
+# WHY THIS EXISTS (2026-08-20, during D-383). All three books were restarted
+# as `./<launcher> --equity <number>` - this one with 838.4441. Every one of
+# these launchers configures itself from the ENVIRONMENT, and none of them has
+# ever read "$@", so the flag was silently discarded and all three came up at
+# the $1,000 default: an injection of $106.48, $218.15 and $209.44 of capital
+# that had never been traded for, $534.06 in total.
+#
+# Nothing failed. Three books came up green, and the only evidence was a jump
+# in `equity_snapshots` that nobody was looking at. A launcher that accepts a
+# flag it does not implement is worse than one that rejects it, so: reject it,
+# and name the variable that actually works.
+# ---------------------------------------------------------------------------
+if [ "$#" -gt 0 ]; then
+    die "this launcher takes no arguments (got: $*). It is configured by" \
+        "environment variable, not by flags. Equity:" \
+        "STARTING_EQUITY=<usd> ./run_polymarket_shadow_envb.sh"
+fi
 
 # ---------------------------------------------------------------------------
 # Gate 1: the config must resolve to paper mode.
@@ -217,6 +250,7 @@ LOG="logs/polymarket_shadow_envb_${STAMP}.log"
     echo "commit:     $(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
     echo "mode:       ${MODE}  (PAPER ONLY - no wallet, no signer, no order API)"
     echo "db:         ${DB}"
+    echo "equity:     \$${STARTING_EQUITY} starting paper balance"
     echo "log-dir:    ${LOG_DIR}"
     echo "strategies: ${STRATEGIES}"
     echo "python:     $("${PY[@]}" --version 2>&1)"
@@ -233,6 +267,7 @@ echo "run_polymarket_shadow_envb: log=${LOG}"
 # running and reports a clean shutdown.
 "${PY[@]}" -u -m engine.polymarket.shadow_loop \
     --db "${DB}" \
+    --equity "${STARTING_EQUITY}" \
     --strategies "${STRATEGIES}" \
     --log-dir "${LOG_DIR}" \
     > >(tee -a "$LOG") 2>&1 &

@@ -119,6 +119,27 @@ die() {
 }
 
 # ---------------------------------------------------------------------------
+# Gate 0: this launcher takes NO positional arguments.
+#
+# WHY THIS EXISTS (2026-08-20, during D-383). All three books were restarted
+# as `./<launcher> --equity <number>` - this one with 893.5235. Every one of
+# these launchers configures itself from the ENVIRONMENT, and none of them has
+# ever read "$@", so the flag was silently discarded and all three came up at
+# the $1,000 default: an injection of $106.48, $218.15 and $209.44 of capital
+# that had never been traded for, $534.06 in total.
+#
+# Nothing failed. Three books came up green, and the only evidence was a jump
+# in `equity_snapshots` that nobody was looking at. A launcher that accepts a
+# flag it does not implement is worse than one that rejects it, so: reject it,
+# and name the variable that actually works.
+# ---------------------------------------------------------------------------
+if [ "$#" -gt 0 ]; then
+    die "this launcher takes no arguments (got: $*). It is configured by" \
+        "environment variable, not by flags. Equity:" \
+        "STARTING_EQUITY=<usd> ./run_polymarket_shadow.sh"
+fi
+
+# ---------------------------------------------------------------------------
 # Gate 1: the config must resolve to paper mode.
 # ---------------------------------------------------------------------------
 [ -f config.yaml ] || die "no config.yaml at ${REPO_ROOT}"

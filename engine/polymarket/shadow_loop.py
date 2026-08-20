@@ -429,6 +429,28 @@ SHADOW_RISK_LIMITS = dataclasses.replace(
     per_event_notional_usd=100_000.0,
     aggregate_notional_usd=100_000.0)
 
+#: The constraints this book MEASURES instead of ENFORCING (D-383 R2).
+#:
+#: The 0.25 above is only half of D-383. On its own it is worse than the 1.0 it
+#: replaced: the drawdown check runs FIRST in `constraints.check`, so a book
+#: past 25% denies EVERY entry on drawdown, and the first denial writes a HALT
+#: file that is process-wide rather than per-database - freezing entries on all
+#: three shadow books at once. D-383 R2 says the opposite: "This is MEASUREMENT
+#: ONLY ... it does NOT halt trading. The book still runs to $0 and re-funds
+#: per D-358."
+#:
+#: Naming the constraint here is what makes the number measurement rather than
+#: enforcement. `engine.risk.events.evaluate_and_record` records the breach with
+#: 049's attribution payload, then steps over it and lets the remaining
+#: constraints decide. D-359's auto-halt disable STANDS - this is how it is
+#: implemented now that the limit can actually be crossed.
+#:
+#: This is a SHADOW override and nothing else reads it. Real money runs
+#: `DEFAULT_LIMITS` with an empty `measure_only`, where a drawdown breach
+#: denies and halts exactly as it always has.
+SHADOW_MEASURE_ONLY_CONSTRAINTS = frozenset(
+    {risk_constraints.CONSTRAINT_DRAWDOWN})
+
 #: The gate's capital ceilings that D-363 R3 lifts, and the sentinel value.
 #: These live in `config.yaml` (`polymarket.risk`), so lifting them in
 #: `engine/risk/constraints.py` alone would leave the CONFIG value binding and
@@ -449,7 +471,7 @@ def lift_shadow_capital_caps(gate) -> dict:
     WHAT IS DELIBERATELY NOT LIFTED, and why
     ----------------------------------------
     `notional_cap_usdc` STAYS. Under `sizing_mode: flat` - which is what this
-    book runs - that number is not a ceiling at all, it is the ORDER SIZE:
+    book ran until D-382 - that number is not a ceiling at all, it is the ORDER SIZE:
     `budget = self.notional_cap_usdc` in `risk_gate.size_order`. Raising it to
     the sentinel would not remove a constraint, it would try to buy $100,000 of
     premium per trade on a $1,000 paper book. Every fill would be liquidity-
@@ -2941,14 +2963,21 @@ class PolymarketShadowLoop:
         """The model-free entry constraints (D-343 Task 1): per-trade,
         per-event, aggregate and portfolio drawdown - independent of the risk
         gate above and of any forecast. Every denial writes a `risk_events`
-        row and a drawdown breach engages `engine.halt`, both handled inside
-        `evaluate_and_record`; this method only builds the inputs.
+        row, handled inside `evaluate_and_record`; this method only builds the
+        inputs.
+
+        D-383: portfolio drawdown is MEASURED here, not enforced. It records a
+        breach (with 049's attribution) and does NOT halt and does NOT refuse -
+        see `SHADOW_MEASURE_ONLY_CONSTRAINTS`. The other three constraints are
+        enforced normally, which on this book means the lifted D-363 R3
+        ceilings.
         """
         candidate = risk_constraints.Exposure.from_slug(
             leg_slug, window_ts, notional_usd)
         return risk_events.evaluate_and_record(
             self.store.conn, self._risk_open_exposures(), candidate,
-            self._risk_equity_state(), limits=SHADOW_RISK_LIMITS)
+            self._risk_equity_state(), limits=SHADOW_RISK_LIMITS,
+            measure_only=SHADOW_MEASURE_ONLY_CONSTRAINTS)
 
     def _attempt_entry(self, strategy, decision, ctx: MarketContext,
                        feats: dict, confidence: float,
